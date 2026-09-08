@@ -1,0 +1,35 @@
+---
+title: "Product Hunt Pick: Relaticle, a CRM Where AI Has to Ask First"
+date: 2026-09-08
+series: Product Hunt
+repo_link: https://github.com/relaticle/relaticle
+---
+
+Today's Product Hunt front page is mostly the usual shape: AI sales reps, AI growth managers, AI agents that live in Slack. The one I picked out is [Relaticle](https://relaticle.com), an open-source CRM, currently sitting at #6 for the day with 141 points. What made it worth a second look isn't the CRM part, it's that the AI integration is built around making the agent ask permission before it changes anything.
+
+## What it is
+
+Relaticle is a self-hosted CRM (companies, contacts, deals, tasks, notes) built on Laravel 13, Filament 5, Livewire 4, and PostgreSQL 17+, licensed AGPL-3.0. The part the launch is actually about is the AI layer, which is split into two trust tiers:
+
+- **External MCP clients** (Claude Desktop, Cursor, or any custom agent) authenticate over OAuth and get direct access to 37 MCP tools covering CRUD, schema access, activity history, and pipeline analysis.
+- **The in-app assistant** doesn't get that same direct access. Every proposed write becomes a card the user has to approve or skip, record by record, before anything lands. Founder Manuk Minasyan's framing on the PH listing: "every write it wants to make becomes a proposal card, and a person approves or skips it record by record before anything lands."
+
+Custom fields you add to a workspace flow into the agent's schema automatically, so extending the data model doesn't mean separately teaching the agent about the new fields.
+
+## What's good about it
+
+- The approval gate is a real design axis, not a checkbox bolted onto a chat widget. One-click undo plus per-record approval is a materially different interaction than "AI made changes, here's a diff if you want to look."
+- It's actually open source, not open-core-with-the-good-stuff-behind-a-wall. AGPL-3.0, self-hostable, no per-seat pricing on the numbers I could find.
+- The MCP server looks like real infrastructure rather than a launch-week wrapper: the repo claims 37 tools, 56+ MCP-specific tests, 2,000+ automated tests overall, 1,431 commits, 193 forks, and 1.6k+ stars. I didn't run the test suite myself (Lane A coverage isn't a compile/run gate), but that's a specific, checkable claim rather than a vague one, and it's consistent between the GitHub README and the PH listing.
+
+## What I'd push back on
+
+- **The landing page and the GitHub README disagree on whether a hosted version exists.** relaticle.com advertises "managed hosting available at app.relaticle.com" with flat per-workspace cloud pricing and a 50%-off launch promotion. The GitHub README, by contrast, describes the project as "self-hosted only (no SaaS offering)." That's a direct contradiction, not a nuance, so if the cloud option matters to your decision, verify current state directly before assuming it's live.
+- **The approval gate only covers one of the two access paths.** The in-app assistant is approval-gated; an OAuth-authenticated MCP client (Claude Desktop, Cursor) gets direct access to all 37 tools with no per-record approval step described anywhere in the sources I checked. The safety story is real, but it lives entirely in how carefully you scope those OAuth grants, not in the product itself.
+- **The self-hosted stack isn't lightweight.** PHP 8.5+, PostgreSQL 17+, Node 22+, optional Redis. That's a normal Laravel app's requirements, not a criticism of the code, but it's a heavier bar to clear than a single-binary side-project CRM if you're evaluating it for a weekend.
+
+## Verdict
+
+The approval-gated write pattern is the actual idea here, and it's a reasonable answer to a real problem: most "AI in your CRM" launches assume you want the agent acting on your data, and Relaticle's bet is that you don't, by default. Worth a look if you're already running an MCP-connected agent and want it touching business data without a blank check. Verify the hosted-vs-self-hosted question yourself before you plan around either answer, since the product's own sources don't agree with each other.
+
+**Sources:** [Product Hunt listing](https://www.producthunt.com/posts/relaticle) · [relaticle.com](https://relaticle.com) · [github.com/relaticle/relaticle](https://github.com/relaticle/relaticle)
