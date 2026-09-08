@@ -1,0 +1,300 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=IBM+Plex+Mono:wght@400;500;600&display=swap">
+  <style>
+    body { margin: 0; }
+    a { color: #4fd8ff; text-decoration: none; }
+    a:hover { color: #9fe9ff; }
+  </style>
+</helmet>
+
+<div style="position: relative; width: 1440px; background: #0b1f3a; font-family: 'IBM Plex Mono', ui-monospace, SFMono-Regular, Menlo, monospace; overflow: hidden;">
+
+  <sc-if value="{{showGrid}}" hint-placeholder-val="{{true}}">
+    <div style="position: absolute; inset: 0; pointer-events: none; background-image: repeating-linear-gradient(0deg, rgba(219,234,254,0.06) 0px, rgba(219,234,254,0.06) 1px, transparent 1px, transparent 40px), repeating-linear-gradient(90deg, rgba(219,234,254,0.06) 0px, rgba(219,234,254,0.06) 1px, transparent 1px, transparent 40px);"></div>
+  </sc-if>
+
+  <!-- sheet frame corner marks -->
+  <div style="position: absolute; top: 24px; left: 24px; color: rgba(219,234,254,0.55);">
+    <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M1,11 L1,1 L11,1" stroke="currentColor" stroke-width="1.5"/></svg>
+  </div>
+  <div style="position: absolute; top: 24px; right: 24px; color: rgba(219,234,254,0.55); transform: scaleX(-1);">
+    <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M1,11 L1,1 L11,1" stroke="currentColor" stroke-width="1.5"/></svg>
+  </div>
+  <div style="position: absolute; bottom: 24px; left: 24px; color: rgba(219,234,254,0.55); transform: scaleY(-1);">
+    <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M1,11 L1,1 L11,1" stroke="currentColor" stroke-width="1.5"/></svg>
+  </div>
+  <div style="position: absolute; bottom: 24px; right: 24px; color: rgba(219,234,254,0.55); transform: scale(-1,-1);">
+    <svg width="22" height="22" viewBox="0 0 22 22" fill="none"><path d="M1,11 L1,1 L11,1" stroke="currentColor" stroke-width="1.5"/></svg>
+  </div>
+
+  <div style="position: relative;">
+
+    <!-- utility nav bar -->
+    <div style="display: flex; align-items: center; justify-content: space-between; padding: 22px 96px; border-bottom: 1px dashed rgba(219,234,254,0.22);">
+      <div style="display: flex; align-items: center; gap: 10px; color: #f3f8fc;">
+        <svg width="16" height="16" viewBox="0 0 20 20" fill="none" style="color: {{accent}}"><circle cx="10" cy="10" r="6" stroke="currentColor" stroke-width="1"/><line x1="10" y1="0" x2="10" y2="20" stroke="currentColor" stroke-width="1"/><line x1="0" y1="10" x2="20" y2="10" stroke="currentColor" stroke-width="1"/></svg>
+        <span style="font-size: 13px; letter-spacing: 0.12em; font-weight: 500;">INDIE&nbsp;/&nbsp;MACHINE</span>
+      </div>
+      <div style="display: flex; align-items: center; gap: 36px; font-size: 12px; letter-spacing: 0.14em;">
+        <span style="color: {{accent}}; padding-bottom: 6px; border-bottom: 1px solid {{accent}};">LATEST</span>
+        <span style="color: #6f93b8;">ARCHIVE</span>
+        <span style="color: #6f93b8;">SERIES</span>
+        <span style="color: #6f93b8;">ABOUT</span>
+      </div>
+    </div>
+
+    <!-- masthead -->
+    <div style="padding: 88px 96px 56px 96px;">
+      <div style="font-size: 13px; letter-spacing: 0.14em; color: {{accent}};">// ENGINEERING JOURNAL</div>
+      <h1 style="margin: 14px 0 0 0; font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif; font-weight: 700; font-size: 100px; line-height: 0.96; letter-spacing: -0.02em; color: #f3f8fc;">Indie Machine</h1>
+      <div style="margin-top: 18px; font-size: 15px; letter-spacing: 0.2em; color: {{accent}}; text-transform: uppercase;">Rust — Native — Complex Applications</div>
+      <p style="margin-top: 28px; max-width: 680px; font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif; font-size: 18px; line-height: 1.65; color: #b9d2e6;">Indie Machine documents Entropy — a native engine built from scratch in Rust — as it's built: its own GPU compute pipelines, its own immediate-mode GUI kit, its own docking system. Every post ships with the commit it was measured against, the exact command that produced the numbers, and a screenshot pulled from the session that ran it. Nothing here is a mockup.</p>
+
+      <div style="margin-top: 40px; display: inline-flex; border: 1px solid rgba(219,234,254,0.28);">
+        <div style="padding: 12px 20px; border-right: 1px solid rgba(219,234,254,0.28);">
+          <div style="font-size: 10px; letter-spacing: 0.12em; color: #6f93b8;">SHEET</div>
+          <div style="margin-top: 4px; font-size: 13px; color: #f3f8fc;">001 / 003</div>
+        </div>
+        <div style="padding: 12px 20px; border-right: 1px solid rgba(219,234,254,0.28);">
+          <div style="font-size: 10px; letter-spacing: 0.12em; color: #6f93b8;">REV</div>
+          <div style="margin-top: 4px; font-size: 13px; color: #f3f8fc;">A</div>
+        </div>
+        <div style="padding: 12px 20px; border-right: 1px solid rgba(219,234,254,0.28);">
+          <div style="font-size: 10px; letter-spacing: 0.12em; color: #6f93b8;">DATE</div>
+          <div style="margin-top: 4px; font-size: 13px; color: #f3f8fc;">2026.09.08</div>
+        </div>
+        <div style="padding: 12px 20px; border-right: 1px solid rgba(219,234,254,0.28);">
+          <div style="font-size: 10px; letter-spacing: 0.12em; color: #6f93b8;">DISCIPLINE</div>
+          <div style="margin-top: 4px; font-size: 13px; color: #f3f8fc;">RUST / WGPU</div>
+        </div>
+        <div style="padding: 12px 20px;">
+          <div style="font-size: 10px; letter-spacing: 0.12em; color: #6f93b8;">STATUS</div>
+          <div style="margin-top: 4px; font-size: 13px; color: {{accent}};">ACTIVE BUILD</div>
+        </div>
+      </div>
+    </div>
+
+    <!-- dimension divider -->
+    <div style="display: flex; align-items: center; gap: 14px; padding: 0 96px; height: 56px;">
+      <div style="color: {{accent}};"><svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M7,1 L2,5 L7,9" stroke="currentColor" stroke-width="1.3"/></svg></div>
+      <div style="flex: 1; height: 1px; background: repeating-linear-gradient(90deg, {{accent}} 0, {{accent}} 4px, transparent 4px, transparent 9px); opacity: 0.6;"></div>
+      <div style="font-size: 12px; letter-spacing: 0.18em; color: {{accent}}; white-space: nowrap;">3 POSTS LOGGED</div>
+      <div style="flex: 1; height: 1px; background: repeating-linear-gradient(90deg, {{accent}} 0, {{accent}} 4px, transparent 4px, transparent 9px); opacity: 0.6;"></div>
+      <div style="color: {{accent}};"><svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M3,1 L8,5 L3,9" stroke="currentColor" stroke-width="1.3"/></svg></div>
+    </div>
+
+    <!-- featured post -->
+    <div style="padding: 24px 96px 0 96px;">
+      <div style="position: relative; border: 1px solid rgba(219,234,254,0.32); padding: 48px; display: flex; gap: 48px;">
+
+        <div style="flex: 1; min-width: 0;">
+          <div style="display: flex; align-items: center; gap: 12px;">
+            <span style="border: 1px solid {{accent}}; color: {{accent}}; font-size: 11px; letter-spacing: 0.1em; padding: 4px 8px;">FIG. 01 — FEATURED</span>
+            <span style="border: 1px solid rgba(219,234,254,0.28); color: #b9d2e6; font-size: 11px; letter-spacing: 0.1em; padding: 4px 8px;">ENTROPY SERIES</span>
+            <span style="flex: 1;"></span>
+            <span style="font-size: 12px; color: #6f93b8;">2026.09.08</span>
+          </div>
+          <h2 style="margin: 22px 0 0 0; font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif; font-weight: 700; font-size: 38px; line-height: 1.15; color: #f3f8fc;">FFT Ocean Water: A GPU Compute Pipeline for Entropy</h2>
+          <p style="margin-top: 16px; max-width: 560px; font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif; font-size: 16px; line-height: 1.65; color: #b9d2e6;">A Phillips-spectrum height field, evolved in the frequency domain and brought back to real space with a GPU-side Cooley–Tukey FFT, textured with foam and capillary glints. Measured end to end: 21 compute dispatches per frame, ~120 calls/sec sustained on integrated graphics.</p>
+          <div style="margin-top: 24px; font-size: 12px; color: #6f93b8; letter-spacing: 0.04em;">wgpu 27.0.1 · winit 0.30.12 · edition 2024</div>
+          <div style="margin-top: 28px; display: inline-flex; align-items: center; gap: 8px; font-size: 13px; letter-spacing: 0.08em; color: {{accent}};">
+            READ FIG. 01
+            <svg width="12" height="12" viewBox="0 0 10 10" fill="none"><path d="M3,1 L8,5 L3,9" stroke="currentColor" stroke-width="1.3"/></svg>
+          </div>
+        </div>
+
+        <div style="width: 340px; flex-shrink: 0; border: 1px dashed rgba(219,234,254,0.32); padding: 20px; display: flex; flex-direction: column; align-items: center;">
+          <svg width="300" height="200" viewBox="0 0 300 200" fill="none">
+            <line x1="0" y1="0" x2="0" y2="200" stroke="rgba(219,234,254,0.18)" stroke-width="1"/>
+            <line x1="0" y1="199" x2="300" y2="199" stroke="rgba(219,234,254,0.18)" stroke-width="1"/>
+            <path d="M0,150 C23,135 47,165 70,150 C93,135 117,165 140,150 C163,135 187,165 210,150 C233,135 257,165 280,150" stroke="rgba(219,234,254,0.35)" stroke-width="1.2" stroke-dasharray="3 3" fill="none"/>
+            <path d="M0,120 C23,60 47,180 70,120 C93,60 117,180 140,120 C163,60 187,180 210,120 C233,60 257,180 280,120" stroke="rgba(219,234,254,0.55)" stroke-width="1.2" fill="none"/>
+            <path d="M0,100 C23,65 47,135 70,100 C93,65 117,135 140,100 C163,65 187,135 210,100 C233,65 257,135 280,100" stroke="{{accent}}" stroke-width="1.6" fill="none"/>
+            <text x="6" y="18" font-family="IBM Plex Mono, monospace" font-size="10" fill="#6f93b8">H(k, t)</text>
+            <text x="252" y="192" font-family="IBM Plex Mono, monospace" font-size="10" fill="#6f93b8">k →</text>
+          </svg>
+          <div style="margin-top: 12px; font-size: 10px; letter-spacing: 0.1em; color: #6f93b8;">FIG. 01 — SPECTRUM → DISPLACEMENT</div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- dimension divider -->
+    <div style="display: flex; align-items: center; gap: 14px; padding: 0 96px; height: 88px; margin-top: 24px;">
+      <div style="color: {{accent}};"><svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M7,1 L2,5 L7,9" stroke="currentColor" stroke-width="1.3"/></svg></div>
+      <div style="flex: 1; height: 1px; background: repeating-linear-gradient(90deg, {{accent}} 0, {{accent}} 4px, transparent 4px, transparent 9px); opacity: 0.6;"></div>
+      <div style="font-size: 12px; letter-spacing: 0.18em; color: {{accent}}; white-space: nowrap;">ENTROPY — BUILD SEQUENCE</div>
+      <div style="flex: 1; height: 1px; background: repeating-linear-gradient(90deg, {{accent}} 0, {{accent}} 4px, transparent 4px, transparent 9px); opacity: 0.6;"></div>
+      <div style="color: {{accent}};"><svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M3,1 L8,5 L3,9" stroke="currentColor" stroke-width="1.3"/></svg></div>
+    </div>
+
+    <!-- series diagram -->
+    <div style="padding: 0 96px;">
+      <div style="border: 1px solid rgba(219,234,254,0.32); padding: 40px;">
+
+        <div style="font-size: 12px; letter-spacing: 0.14em; color: #6f93b8;">OCEAN PIPELINE</div>
+        <div style="margin-top: 14px; display: flex; align-items: center; gap: 20px;">
+          <div style="flex: 1; border: 1px solid rgba(219,234,254,0.28); padding: 16px;">
+            <span style="font-size: 11px; color: {{accent}};">FIG. 01</span>
+            <div style="margin-top: 6px; font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif; font-size: 15px; font-weight: 500; color: #f3f8fc;">Spectrum → Displacement</div>
+            <div style="margin-top: 4px; font-size: 12px; color: #6f93b8;">Phillips spectrum · GPU FFT</div>
+          </div>
+          <div style="display: flex; flex-direction: column; align-items: center; gap: 6px; width: 120px; flex-shrink: 0;">
+            <span style="font-size: 10px; color: #6f93b8; white-space: nowrap;">adds ripples</span>
+            <div style="display: flex; align-items: center; width: 100%;">
+              <div style="flex: 1; height: 1px; background: repeating-linear-gradient(90deg, {{accent}} 0, {{accent}} 4px, transparent 4px, transparent 9px); opacity: 0.7;"></div>
+              <div style="color: {{accent}};"><svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M3,1 L8,5 L3,9" stroke="currentColor" stroke-width="1.3"/></svg></div>
+            </div>
+          </div>
+          <div style="flex: 1; border: 1px solid rgba(219,234,254,0.28); padding: 16px;">
+            <span style="font-size: 11px; color: {{accent}};">FIG. 02</span>
+            <div style="margin-top: 6px; font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif; font-size: 15px; font-weight: 500; color: #f3f8fc;">Ripples</div>
+            <div style="margin-top: 4px; font-size: 12px; color: #6f93b8;">Leapfrog wave eq · mouse raycast</div>
+          </div>
+        </div>
+
+        <div style="margin-top: 28px; font-size: 12px; letter-spacing: 0.14em; color: #6f93b8;">EDITOR CHROME</div>
+        <div style="margin-top: 14px; display: flex; align-items: center; gap: 20px;">
+          <div style="flex: 1; max-width: calc(33.33% - 14px); border: 1px solid rgba(219,234,254,0.28); padding: 16px;">
+            <span style="font-size: 11px; color: {{accent}};">FIG. 03</span>
+            <div style="margin-top: 6px; font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif; font-size: 15px; font-weight: 500; color: #f3f8fc;">entropy_gui</div>
+            <div style="margin-top: 4px; font-size: 12px; color: #6f93b8;">Slate theme · docking tree</div>
+          </div>
+          <div style="font-size: 11px; color: #6f93b8; font-style: italic;">— independent of the ocean pipeline</div>
+        </div>
+
+      </div>
+    </div>
+
+    <!-- dimension divider -->
+    <div style="display: flex; align-items: center; gap: 14px; padding: 0 96px; height: 88px; margin-top: 24px;">
+      <div style="color: {{accent}};"><svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M7,1 L2,5 L7,9" stroke="currentColor" stroke-width="1.3"/></svg></div>
+      <div style="flex: 1; height: 1px; background: repeating-linear-gradient(90deg, {{accent}} 0, {{accent}} 4px, transparent 4px, transparent 9px); opacity: 0.6;"></div>
+      <div style="font-size: 12px; letter-spacing: 0.18em; color: {{accent}}; white-space: nowrap;">FULL INDEX</div>
+      <div style="flex: 1; height: 1px; background: repeating-linear-gradient(90deg, {{accent}} 0, {{accent}} 4px, transparent 4px, transparent 9px); opacity: 0.6;"></div>
+      <div style="color: {{accent}};"><svg width="10" height="10" viewBox="0 0 10 10" fill="none"><path d="M3,1 L8,5 L3,9" stroke="currentColor" stroke-width="1.3"/></svg></div>
+    </div>
+
+    <!-- post index -->
+    <div style="padding: 0 96px 24px 96px;">
+
+      <!-- row 01 -->
+      <div style="display: flex; gap: 32px; align-items: flex-start; padding: 32px 0; border-top: 1px dashed rgba(219,234,254,0.22);">
+        <div style="width: 48px; flex-shrink: 0; font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif; font-size: 28px; font-weight: 600; color: {{accent}};">01</div>
+        <div style="width: 40px; flex-shrink: 0; color: rgba(219,234,254,0.7);">
+          <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+            <path d="M2,20 C6,12 10,28 14,20 C18,12 22,28 26,20 C29,14 32,26 34,20" stroke="currentColor" stroke-width="1.3"/>
+          </svg>
+        </div>
+        <div style="flex: 1; min-width: 0;">
+          <div style="font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif; font-size: 21px; font-weight: 600; color: #f3f8fc;">FFT Ocean Water: A GPU Compute Pipeline for Entropy</div>
+          <p style="margin: 8px 0 0 0; max-width: 640px; font-size: 14px; line-height: 1.6; color: #93b3d1;">Tessendorf's ocean model, a GPU-side Cooley–Tukey FFT, and a Jacobian-derived foam mask — 21 dispatches per frame, measured live on integrated graphics.</p>
+          <div style="margin-top: 12px; display: flex; gap: 8px;">
+            <span style="border: 1px solid rgba(219,234,254,0.25); color: #93b3d1; font-size: 10px; letter-spacing: 0.06em; padding: 3px 7px;">WGPU</span>
+            <span style="border: 1px solid rgba(219,234,254,0.25); color: #93b3d1; font-size: 10px; letter-spacing: 0.06em; padding: 3px 7px;">GPU COMPUTE</span>
+            <span style="border: 1px solid rgba(219,234,254,0.25); color: #93b3d1; font-size: 10px; letter-spacing: 0.06em; padding: 3px 7px;">ENTROPY</span>
+          </div>
+        </div>
+        <div style="width: 140px; flex-shrink: 0; text-align: right;">
+          <div style="font-size: 11px; color: #6f93b8;">ENTROPY SERIES</div>
+          <div style="margin-top: 4px; font-size: 11px; color: #6f93b8;">2026.09.08</div>
+          <div style="margin-top: 10px; font-size: 12px; color: {{accent}};">READ →</div>
+        </div>
+      </div>
+
+      <!-- row 02 -->
+      <div style="display: flex; gap: 32px; align-items: flex-start; padding: 32px 0; border-top: 1px dashed rgba(219,234,254,0.22);">
+        <div style="width: 48px; flex-shrink: 0; font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif; font-size: 28px; font-weight: 600; color: {{accent}};">02</div>
+        <div style="width: 40px; flex-shrink: 0; color: rgba(219,234,254,0.7);">
+          <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+            <circle cx="18" cy="18" r="4" stroke="currentColor" stroke-width="1.3"/>
+            <circle cx="18" cy="18" r="10" stroke="currentColor" stroke-width="1.1" opacity="0.7"/>
+            <circle cx="18" cy="18" r="16" stroke="currentColor" stroke-width="1" opacity="0.4"/>
+          </svg>
+        </div>
+        <div style="flex: 1; min-width: 0;">
+          <div style="font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif; font-size: 21px; font-weight: 600; color: #f3f8fc;">Interactive Ripples on Entropy's FFT Ocean</div>
+          <p style="margin: 8px 0 0 0; max-width: 640px; font-size: 14px; line-height: 1.6; color: #93b3d1;">A second, independent leapfrog wave-equation sim layered on the FFT ocean — real mouse raycasts against the water plane, three ring buffers, capped splats.</p>
+          <div style="margin-top: 12px; display: flex; gap: 8px;">
+            <span style="border: 1px solid rgba(219,234,254,0.25); color: #93b3d1; font-size: 10px; letter-spacing: 0.06em; padding: 3px 7px;">WGPU</span>
+            <span style="border: 1px solid rgba(219,234,254,0.25); color: #93b3d1; font-size: 10px; letter-spacing: 0.06em; padding: 3px 7px;">WAVE EQ</span>
+            <span style="border: 1px solid rgba(219,234,254,0.25); color: #93b3d1; font-size: 10px; letter-spacing: 0.06em; padding: 3px 7px;">ENTROPY</span>
+          </div>
+        </div>
+        <div style="width: 140px; flex-shrink: 0; text-align: right;">
+          <div style="font-size: 11px; color: #6f93b8;">ENTROPY SERIES</div>
+          <div style="margin-top: 4px; font-size: 11px; color: #6f93b8;">2026.09.08</div>
+          <div style="margin-top: 10px; font-size: 12px; color: {{accent}};">READ →</div>
+        </div>
+      </div>
+
+      <!-- row 03 -->
+      <div style="display: flex; gap: 32px; align-items: flex-start; padding: 32px 0; border-top: 1px dashed rgba(219,234,254,0.22); border-bottom: 1px dashed rgba(219,234,254,0.22);">
+        <div style="width: 48px; flex-shrink: 0; font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif; font-size: 28px; font-weight: 600; color: {{accent}};">03</div>
+        <div style="width: 40px; flex-shrink: 0; color: rgba(219,234,254,0.7);">
+          <svg width="36" height="36" viewBox="0 0 36 36" fill="none">
+            <rect x="2" y="4" width="32" height="28" rx="1.5" stroke="currentColor" stroke-width="1.3"/>
+            <line x1="16" y1="4" x2="16" y2="32" stroke="currentColor" stroke-width="1.1"/>
+            <line x1="16" y1="18" x2="34" y2="18" stroke="currentColor" stroke-width="1.1"/>
+          </svg>
+        </div>
+        <div style="flex: 1; min-width: 0;">
+          <div style="font-family: 'Space Grotesk', ui-sans-serif, system-ui, sans-serif; font-size: 21px; font-weight: 600; color: #f3f8fc;">Replacing egui With Our Own Immediate-Mode GUI Kit</div>
+          <p style="margin: 8px 0 0 0; max-width: 640px; font-size: 14px; line-height: 1.6; color: #93b3d1;">Six egui crates removed for entropy_gui — hashed widget ids, a closed WidgetState enum, and a docking tree that copies egui_dock's own arena shape.</p>
+          <div style="margin-top: 12px; display: flex; gap: 8px;">
+            <span style="border: 1px solid rgba(219,234,254,0.25); color: #93b3d1; font-size: 10px; letter-spacing: 0.06em; padding: 3px 7px;">ENTROPY_GUI</span>
+            <span style="border: 1px solid rgba(219,234,254,0.25); color: #93b3d1; font-size: 10px; letter-spacing: 0.06em; padding: 3px 7px;">SLATE THEME</span>
+            <span style="border: 1px solid rgba(219,234,254,0.25); color: #93b3d1; font-size: 10px; letter-spacing: 0.06em; padding: 3px 7px;">ENTROPY</span>
+          </div>
+        </div>
+        <div style="width: 140px; flex-shrink: 0; text-align: right;">
+          <div style="font-size: 11px; color: #6f93b8;">ENTROPY SERIES</div>
+          <div style="margin-top: 4px; font-size: 11px; color: #6f93b8;">2026.09.08</div>
+          <div style="margin-top: 10px; font-size: 12px; color: {{accent}};">READ →</div>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- footer -->
+    <div style="display: flex; align-items: center; justify-content: space-between; padding: 40px 96px 64px 96px; border-top: 1px solid rgba(219,234,254,0.22);">
+      <div>
+        <div style="display: flex; align-items: center; gap: 10px; color: #f3f8fc;">
+          <svg width="14" height="14" viewBox="0 0 20 20" fill="none" style="color: {{accent}}"><circle cx="10" cy="10" r="6" stroke="currentColor" stroke-width="1"/><line x1="10" y1="0" x2="10" y2="20" stroke="currentColor" stroke-width="1"/><line x1="0" y1="10" x2="20" y2="10" stroke="currentColor" stroke-width="1"/></svg>
+          <span style="font-size: 12px; letter-spacing: 0.1em; font-weight: 500;">INDIE MACHINE</span>
+          <span style="font-size: 11px; color: #6f93b8;">© 2026</span>
+        </div>
+        <div style="margin-top: 8px; font-size: 11px; color: #6f93b8; letter-spacing: 0.03em;">A RUST BUILD LOG. NO MOCKUPS, NO ASSUMED NUMBERS.</div>
+      </div>
+      <div style="display: flex; gap: 24px; font-size: 12px; letter-spacing: 0.1em; color: #6f93b8;">
+        <span>RSS</span>
+        <span>ARCHIVE</span>
+        <span>SERIES</span>
+        <span>ABOUT</span>
+      </div>
+    </div>
+
+  </div>
+</div>
+
+</x-dc>
+<script data-dc-script data-props='{"accent":{"editor":"color","default":"#4fd8ff","options":["#4fd8ff","#7dd3fc","#facc15","#fb923c"]},"showGrid":{"editor":"boolean","default":true}}'>
+class Component extends DCLogic {
+  renderVals() {
+    return {
+      accent: this.props.accent ?? '#4fd8ff',
+      showGrid: this.props.showGrid ?? true,
+    };
+  }
+}
+</script>
+</body>
+</html>
