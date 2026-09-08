@@ -13,6 +13,7 @@ import { ChevronLeft, ChevronRight } from "@/components/icons";
 import { mdxComponents } from "@/components/mdx-components";
 import { getAllPosts, getPostBySlug } from "@/lib/posts";
 import { rehypeFixImagePaths } from "@/lib/rehype-fix-image-paths";
+import { SITE_NAME, SITE_URL } from "@/lib/site";
 
 export function generateStaticParams() {
   return getAllPosts().map((post) => ({ slug: post.slug }));
@@ -26,9 +27,26 @@ export async function generateMetadata({
   const { slug } = await params;
   const post = getPostBySlug(slug);
   if (!post) return {};
+  const url = `/posts/${post.slug}`;
+  const title = `${post.title} — Indie Machine`;
   return {
-    title: `${post.title} — Indie Machine`,
+    title,
     description: post.excerpt,
+    alternates: { canonical: url },
+    openGraph: {
+      title: post.title,
+      description: post.excerpt,
+      url,
+      siteName: SITE_NAME,
+      type: "article",
+      publishedTime: new Date(post.date).toISOString(),
+      tags: post.series ? [post.series] : undefined,
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: post.title,
+      description: post.excerpt,
+    },
   };
 }
 
@@ -54,8 +72,23 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
     },
   });
 
+  const jsonLd = {
+    "@context": "https://schema.org",
+    "@type": "BlogPosting",
+    headline: post.title,
+    datePublished: new Date(post.date).toISOString(),
+    description: post.excerpt,
+    url: `${SITE_URL}/posts/${post.slug}`,
+    publisher: { "@type": "Organization", name: SITE_NAME },
+    ...(post.series ? { about: post.series } : {}),
+  };
+
   return (
     <div className="relative z-10">
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+      />
       <SiteHeader />
 
       <div className="px-6 pt-10 pb-8 md:px-24 md:pt-14">
