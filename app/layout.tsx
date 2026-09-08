@@ -4,6 +4,8 @@ import { SheetChrome } from "@/components/SheetChrome";
 import { SITE_NAME, SITE_DESCRIPTION, SITE_URL } from "@/lib/site";
 import "./globals.css";
 
+import { Analytics } from "@vercel/analytics/next";
+
 const spaceGrotesk = Space_Grotesk({
   variable: "--font-space-grotesk",
   subsets: ["latin"],
@@ -46,6 +48,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       <body className="relative min-h-full flex flex-col bg-ink font-mono text-ink-300">
         <SheetChrome />
         {children}
+        <Analytics />
       </body>
     </html>
   );
