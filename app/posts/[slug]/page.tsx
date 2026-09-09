@@ -132,7 +132,7 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
         )}
       </div>
 
-      <article className="mx-auto max-w-3xl px-6 pb-16 md:px-24">{content}</article>
+      <article className="mx-auto max-w-4xl px-6 pb-16 md:px-24">{content}</article>
 
       <div className="flex flex-col gap-4 border-t border-dashed border-line/25 px-6 py-10 sm:flex-row sm:justify-between md:px-24">
         {prev ? (
