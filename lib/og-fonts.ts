@@ -1,27 +1,24 @@
-// Loads the site's Google Fonts as raw font data for next/og's ImageResponse
-// (satori) - it can't consume next/font's build-time CSS vars, so OG routes
-// fetch the same two families directly and pass them in via the `fonts`
-// option.
-async function fetchFont(family: string, weight: number): Promise<ArrayBuffer> {
-  const cssUrl = `https://fonts.googleapis.com/css2?family=${encodeURIComponent(family)}:wght@${weight}`;
-  const css = await (await fetch(cssUrl)).text();
-  const match = css.match(/src: url\(([^)]+)\)/);
-  if (!match) throw new Error(`no font src found for ${family}:${weight}`);
-  const res = await fetch(match[1]);
-  if (!res.ok) throw new Error(`failed to fetch font file for ${family}:${weight}`);
-  return res.arrayBuffer();
+import fs from "fs";
+import path from "path";
+
+// Fonts for next/og's ImageResponse (satori) are bundled in the repo and
+// read from disk rather than fetched from Google Fonts at build/render time.
+// Fetching them per-request/per-prerender used to work in local `next dev`
+// but failed intermittently during deploy prerendering - Google Fonts'
+// CSS API serves a format based on the request's User-Agent (woff2 to
+// modern clients, which satori can't parse), and build sandboxes can also
+// rate-limit or restrict outbound requests across the several post pages
+// prerendered at once. Reading local files sidesteps both failure modes.
+const FONTS_DIR = path.join(process.cwd(), "assets/fonts");
+
+function readFont(filename: string): Buffer {
+  return fs.readFileSync(path.join(FONTS_DIR, filename));
 }
 
 export async function loadOgFonts() {
-  const [displayBold, displayMedium, mono] = await Promise.all([
-    fetchFont("Space Grotesk", 700),
-    fetchFont("Space Grotesk", 500),
-    fetchFont("IBM Plex Mono", 500),
-  ]);
-
   return [
-    { name: "Space Grotesk", data: displayBold, weight: 700 as const, style: "normal" as const },
-    { name: "Space Grotesk", data: displayMedium, weight: 500 as const, style: "normal" as const },
-    { name: "IBM Plex Mono", data: mono, weight: 500 as const, style: "normal" as const },
+    { name: "Space Grotesk", data: readFont("SpaceGrotesk-Bold.woff"), weight: 700 as const, style: "normal" as const },
+    { name: "Space Grotesk", data: readFont("SpaceGrotesk-Medium.woff"), weight: 500 as const, style: "normal" as const },
+    { name: "IBM Plex Mono", data: readFont("IBMPlexMono-Medium.woff"), weight: 500 as const, style: "normal" as const },
   ];
 }
