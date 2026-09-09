@@ -12,7 +12,7 @@ crate_versions:
   backend: "wgpu default instance backend selection (not explicitly pinned to Vulkan/DX12)"
   tooling:
     - "deno 2.6.7 CLI (bundling the addon's TypeScript to JS; not a Cargo dependency)"
-repo_link: entropy-engine @ ee5cc12 (this post's changes are addon-only, on top of that commit)
+repo_link: https://github.com/alexthegoodman/entropy-engine
 ---
 
 The [last post on the FFT ocean addon](2026-09-08-fft-ocean-water.md) ended by scoping interactivity out on purpose: nothing in that pipeline read from or wrote to the world, it was a closed loop from spectrum to displacement. This post closes that gap - mouse clicks and drags now leave real, propagating ripples on the surface, plus three convenience buttons for triggering them without a mouse at all. No Rust changed. `src/bin/example_fft_water.rs` is still the same 11 lines it was in the last post - every bit of this is addon-side TypeScript plus engine APIs that already existed.

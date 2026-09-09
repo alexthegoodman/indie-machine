@@ -19,7 +19,7 @@ crate_versions:
   edition: "2024"
   os: "Windows 11 (only platform currently tested)"
   backend: "wgpu default instance backend selection (not explicitly pinned to Vulkan/DX12)"
-repo_link: entropy-engine @ 885bb6a 
+repo_link: https://github.com/alexthegoodman/entropy-engine
 ---
 
 Entropy Engine's entire editor chrome - app shell, docking, panels, every widget, a hand-rolled video timeline, the JS-addon UI system - ran on `egui` + `egui-wgpu` + `egui-winit` + `egui_dock`, plus `egui-snarl` for a node-graph editor and `egui_code_editor` for script editing. All six of those crates are gone now, replaced by `entropy_gui`, an in-house immediate-mode kit living at `src/entropy_gui/`. This post covers what that migration actually involved, what it cost, and what still doesn't work.

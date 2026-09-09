@@ -11,7 +11,7 @@ crate_versions:
   os: "Windows 11 Pro 10.0.26200 (only platform currently tested)"
   tooling:
     - "deno 2.6.7 CLI (bundles the addon's TypeScript to JS; not a Cargo dependency)"
-repo_link: entropy-engine @ 13d2868 (this post's diff is uncommitted at time of writing)
+repo_link: https://github.com/alexthegoodman/entropy-engine
 ---
 
 `entropy_gui`, the in-house immediate-mode kit that replaced the whole `egui` family a couple posts back, already had a real `Style`/`Visuals` system (`src/entropy_gui/style.rs`) and a `Context::set_style` that swaps it at runtime. What it didn't have was any way for an addon - the TypeScript side, which is where every example in this series actually builds its scene and UI - to reach that system. The only themes that existed lived as hardcoded Rust: `Style::default()`'s plain gray, and a second, unused-by-default "Ember" theme in `src/core/egui_theme.rs` that nothing outside that one file ever called.

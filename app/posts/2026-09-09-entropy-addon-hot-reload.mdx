@@ -11,7 +11,7 @@ crate_versions:
   os: "Windows 11 Pro 10.0.26200 (only platform currently tested)"
   tooling:
     - "deno 2.6.7 CLI (bundles the addon's TypeScript to JS; not a Cargo dependency)"
-repo_link: entropy-engine @ 995730c (uncommitted at time of writing - see note at the end)
+repo_link: https://github.com/alexthegoodman/entropy-engine
 ---
 
 Addons run inside a single embedded `deno_core::JsRuntime` (`src/deno/addon_engine.rs:390`) - one V8 isolate, created once at startup, alive for the process's whole life. Every existing way to get code into it either only runs once (`load_addon`, used at startup) or is meant for a full addon swap (`load_bundle_sync`, used for Entropy Studio's compiled-in bundle). Neither one is "edit a shader, save, see it change without losing whatever the simulation was doing" - the actual ask.

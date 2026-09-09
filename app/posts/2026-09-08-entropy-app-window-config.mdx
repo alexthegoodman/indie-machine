@@ -10,7 +10,7 @@ crate_versions:
   edition: "2024"
   os: "Windows 11 (only platform currently tested)"
   backend: "wgpu default instance backend selection (not explicitly pinned to Vulkan/DX12)"
-repo_link: entropy-engine @ f3de8ec (this post's changes are on top of that commit)
+repo_link: https://github.com/alexthegoodman/entropy-engine
 ---
 
 Entropy is moving from "a game engine you fork and hack on" toward "a framework you depend on and ship your own app with" - that's the whole point of `EntropyApp`, the embedding entrypoint added a few posts back. But a dependency you can `cargo add` and a dependency you can actually ship a product with are different bars, and Entropy hasn't cleared the second one yet. This post starts a track that's going to keep coming back: find the places where "it works when I run it" and "it's fine for someone else's customer to run it" diverge, and close the gap.

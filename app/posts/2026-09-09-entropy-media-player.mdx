@@ -14,7 +14,7 @@ crate_versions:
   backend: "Media Foundation for decode (Windows-only); wgpu default instance backend selection (not explicitly pinned to Vulkan/DX12)"
   tooling:
     - "deno 2.6.7 CLI (bundles the addon's TypeScript to JS; not a Cargo dependency)"
-repo_link: entropy-engine @ 995730c
+repo_link: https://github.com/alexthegoodman/entropy-engine
 ---
 
 Entropy already had a Media Foundation video decoder - `src/renderer_videos/st_video.rs`, built for the editor's own timeline. What it didn't have was audio decode of any kind, or any way for a standalone `EntropyApp` (as opposed to Entropy Studio) to use either. A small media player example was a good forcing function for both: reuse the video decode technique outside the editor, write Media Foundation audio decode from scratch, and wire it all into the addon system through `Entropy.Video`, a new op surface next to the existing `Entropy.Texture`/`Entropy.Model`.

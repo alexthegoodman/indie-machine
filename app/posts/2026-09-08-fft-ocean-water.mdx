@@ -12,7 +12,7 @@ crate_versions:
   backend: "wgpu default instance backend selection (not explicitly pinned to Vulkan/DX12)"
   tooling:
     - "deno 2.6.7 CLI (bundling the addon's TypeScript to JS; not a Cargo dependency)"
-repo_link: entropy-engine @ 2e23e6d
+repo_link: https://github.com/alexthegoodman/entropy-engine
 ---
 
 Entropy Studio's example bundle has an FFT ocean addon: a Phillips-spectrum height field, evolved in the frequency domain and brought back to real space with a GPU-side Cooley-Tukey FFT, textured onto a displaced mesh with foam and capillary glints. All of it lives in one file, `examples/studio-bundle/src/fft_water_addon.ts`, 1,909 lines of TypeScript holding both the addon logic and seven embedded WGSL shaders. This post covers how that pipeline is built, and measures it running standalone through `src/bin/example_fft_water.rs` - the reference example for running one of these addons outside Entropy Studio entirely.
