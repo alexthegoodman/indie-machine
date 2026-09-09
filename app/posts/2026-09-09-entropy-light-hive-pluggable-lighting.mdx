@@ -1,0 +1,200 @@
+---
+title: "Light Hive: Pluggable Point-Light Shaders and Live Shadow Settings"
+date: 2026-09-09
+series: Entropy
+crate_versions:
+  unchanged:
+    - wgpu = "27.0.1"
+    - winit = "0.30.12"
+    - deno_core = "0.332.0"
+  edition: "2024"
+  os: "Windows 11 Pro 10.0.26200 (only platform currently tested)"
+  tooling:
+    - "deno 2.6.7 CLI (bundles the addon's TypeScript to JS; not a Cargo dependency)"
+repo_link: https://github.com/alexthegoodman/entropy-engine
+---
+
+Light Hive is Entropy's point-light addon. Before this session it did exactly two things: color and intensity. No standalone example existed for it - it only ever ran embedded inside Studio's Game Composer. This post takes it apart and puts back something bigger: real per-light shading controls, a WGSL function an addon can hand to the deferred lighting pass at runtime, live-adjustable shadow map settings, and a new `example_light_hive.rs` that exercises all of it outside Studio entirely.
+
+The interesting part isn't the feature list. It's that building it surfaced three real, load-bearing bugs already living in the engine - one of which quietly broke the entire feature for most of this session and took a debug-logging pass to actually find.
+
+## What we're building
+
+- Two new per-light shading parameters (`falloffExponent`, `specularStrength`) that actually reach the shader, on top of color/intensity/maxDistance.
+- `Entropy.Lighting.setPointLightShader(wgslSource)` - an addon can replace the point-light shading function inside the engine's deferred lighting pass with its own WGSL, recompiled and hot-swapped at runtime behind a wgpu validation error scope, so a broken shader can't take the app down.
+- `Entropy.Lighting.configureShadows({mapSize, bias, slopeScale, halfExtent})` - live directional shadow map settings, also hot-swapped.
+- A lit demo scene - ground plane, pedestal, and a real `.glb` character model - spawned standalone, so there's actually enough surface curvature to see the shading differences on.
+- `EntropyApp::with_art_assets_project(id)` and a "Global"-tagged `Entropy.Model.load` - a bare `EntropyApp` couldn't load `.glb` models at all before this; flat hand-authored boxes read the shader differences far more weakly than a textured character does.
+- `Window::default_pos(x, y)` in `entropy_gui` - addon floating windows always centered on screen with no way to move them; now `Entropy.UI.createWindow({x, y, ...})` can pin one out of the way of whatever it's meant to be showing.
+- `src/bin/example_light_hive.rs` - the first time Light Hive has run outside Studio.
+
+## The shading pipeline: extracting a swap point
+
+Entropy's deferred lighting pass (`src/core/shaders/lighting.wgsl`) was one `fs_main` doing a full Cook-Torrance BRDF for a directional sun plus a loop over up to 10 point lights, all inline. There was nowhere to plug anything in.
+
+I pulled the point-light math out into a standalone function:
+
+```wgsl
+// ENTROPY_CUSTOM_POINT_LIGHT_BEGIN
+fn point_light_contribution(
+    p_light: PointLight,
+    frag_pos: vec3<f32>,
+    N: vec3<f32>,
+    view_dir: vec3<f32>,
+    albedo: vec3<f32>,
+    metallic: f32,
+    ao: f32,
+    F0: vec3<f32>,
+    a2: f32,
+    k: f32,
+    NdotV: f32
+) -> vec3<f32> {
+    // ...the original per-light BRDF, unchanged...
+}
+// ENTROPY_CUSTOM_POINT_LIGHT_END
+```
+
+`fs_main`'s loop now just calls it. On the Rust side, `build_lighting_shader_source()` (`src/core/pipeline.rs`) takes an optional addon-supplied string and, if present, splices it in between those two marker comments before compiling:
+
+```rust
+fn build_lighting_shader_source(custom_point_light_fn: Option<&str>) -> String {
+    let Some(custom_fn) = custom_point_light_fn else {
+        return LIGHTING_SHADER_SOURCE.to_string();
+    };
+    let (Some(begin), Some(end_marker_pos)) = (
+        LIGHTING_SHADER_SOURCE.find(CUSTOM_POINT_LIGHT_BEGIN_MARKER),
+        LIGHTING_SHADER_SOURCE.find(CUSTOM_POINT_LIGHT_END_MARKER),
+    ) else {
+        return LIGHTING_SHADER_SOURCE.to_string();
+    };
+    let end = end_marker_pos + CUSTOM_POINT_LIGHT_END_MARKER.len();
+    format!("{}{}\n{}", &LIGHTING_SHADER_SOURCE[..begin], custom_fn, &LIGHTING_SHADER_SOURCE[end..])
+}
+```
+
+An addon supplying WGSL must keep the exact function name and signature; everything else in the file (struct defs, the directional light + shadow math, the vertex shader) stays untouched. This is a narrower contract than "replace the whole fragment shader," and that was deliberate - see the decision log.
+
+`build_lighting_pipeline()` then does the actual GPU work: rebuild the lighting bind group layout, bind group, pipeline layout, and finally the pipeline itself, wrapped in a wgpu validation error scope:
+
+```rust
+device.push_error_scope(wgpu::ErrorFilter::Validation);
+let shader_module = device.create_shader_module(wgpu::ShaderModuleDescriptor {
+    label: Some("Lighting Shader (rebuilt)"),
+    source: wgpu::ShaderSource::Wgsl(wgsl_source.into()),
+});
+let new_pipeline = device.create_render_pipeline(&wgpu::RenderPipelineDescriptor { /* ... */ });
+
+device.poll(wgpu::PollType::Wait { submission_index: None, timeout: None });
+if let Some(err) = pollster::block_on(device.pop_error_scope()) {
+    return Err(err.to_string());
+}
+```
+
+If naga rejects the WGSL, the function returns `Err(String)` instead of touching `pipeline.lighting_pipeline`, and the caller just logs it. The app keeps rendering with whatever pipeline was already running. Nothing else in the addon system had this kind of safety net before - `op_pipeline_create` (used by every other custom-pipeline addon) has none; a bad shader there is untested territory.
+
+Shadow settings work the same way, one level down: `ShadowPipelineData::new_with_settings()` now takes a `ShadowSettings { map_size, bias, slope_scale, half_extent }` instead of four hardcoded constants, and `Entropy.Lighting.configureShadows(...)` merges only the fields an addon actually passes with whatever's already active.
+
+## Real geometry needed two more standalone-app gaps closed
+
+The first pass at this demo scene used hand-authored boxes - flat faces barely show a shading model swap, since each face only samples one normal. A real model, especially one with a rounded head and folded robe, is a much better test surface. Loading one from a bare `EntropyApp` needed two more things that didn't exist yet.
+
+**`Entropy.Model.load` wasn't reachable outside Studio at all.** It only existed on the per-addon-scoped API (`this.Model.load`, tagged by `getAddonName()`) - and Light Hive registers as an `AddonAtom`, where `getAddonName()` returns `"__VOID__"` absent an active Composer override, which `is_render_allowed()` rejects. The Composer-embedded path always wraps calls in `withAddonContext(...)` to set that override; the standalone tab never did. Fixed the same way the FFT water addon's mesh loading was fixed earlier this session: added `load` to the top-level, "Global"-tagged `Entropy.Model` object in `addon_setup.js`, alongside the existing `createMesh`/`clearMesh`.
+
+**Even correctly tagged, model loading was silently gated behind a Studio project id.** `read_model(project_id, path)` (`src/art_assets/Model.rs`) resolves every asset path as `<CommonOS sync dir>/midpoint/projects/<project_id>/models/<file>` - the MidPoint asset-project convention, not anything Entropy-specific. The whole model-loading block in `addon_engine.rs` is wrapped in `if let Some(project_id) = self.project_id.clone()`, and `EntropyApp` hardcoded `project_id: None` with no way to change it - so a loaded model would sit in `pending_models` and just never get processed, no error, same silent-drop shape as issue #2 below. Added `EntropyApp::with_art_assets_project(id)`, threaded through the same `RunConfig.project_id` field Studio already used, so a standalone app can point at a MidPoint asset folder without adopting anything else about Studio's project system.
+
+```rust
+entropy_engine::EntropyApp::new()
+    .with_bundle("examples/studio-bundle/dist/light_hive.js")
+    .with_art_assets_project("cmk7vjg1n000004jrh8ajdbyb")
+    .run()
+```
+
+One more, smaller trap on the way: passing a human-readable mesh id (`"light_hive_demo_model"`) to `Entropy.Model.load` panics - `Model.rs:710` unconditionally parses the id as a UUID for the rigid-body's `user_data`, even when no physics config was requested. `Entropy.generateUUID()` instead of a string literal fixed it; worth knowing before you hit it as a crash instead of a lint.
+
+Last piece: the addon's own floating window (`Entropy.UI.createWindow`) always centers itself, and at 360x720 over a 1600x900 viewport, that's most of the frame - it was sitting directly on top of the model the whole time I was trying to figure out why lighting on it looked wrong. `entropy_gui`'s `Window` builder (`src/entropy_gui/containers/window.rs`) had `default_size` but no way to set a starting position, only ever computing a screen-centered `default_min`. Added `Window::default_pos(x, y)`, threaded up through `UiWindowConfig.default_pos` and `Entropy.UI.createWindow({x, y, ...})`. Like `default_size`, it only sets the *first*-frame position - after that, `entropy_gui` remembers wherever the user dragged it (keyed by window id in `ctx.memory`), same as before.
+
+## Failure notes
+
+### 1. Point lights had no identity - a live editor was leaking a new light every frame
+
+`Entropy.Lighting.createPointLight(...)` took a position/color/intensity/maxDistance and pushed a `PointLight` onto `renderer_state.addon_point_lights[addon_name]`. Every call. No id, no upsert, no cap. Light Hive's own UI calls `refreshPreview()` on every slider `onChange` to re-render the preview light - which means every drag of the Intensity slider was quietly appending a brand-new light to a `Vec` that never shrank. The render loop clamps to `MAX_POINT_LIGHTS` (10) before writing the GPU buffer, so it never crashed or visibly broke; it just meant dragging a slider more than 10 times made the preview light stop responding, silently, while memory grew forever underneath.
+
+Fixed by giving `PointLightConfig` a required `id: String` and changing `addon_point_lights` from `HashMap<String, Vec<PointLight>>` to `HashMap<String, Vec<(String, PointLight)>>`, upserting by id instead of pushing. Added `Entropy.Lighting.removePointLight(id)` to go with it. Light Hive already had stable ids sitting right there (`"preview_light"`, `Entropy.generateUUID()` for spawned ones) - they just weren't being passed through.
+
+### 2. `pipelineId: "default"` meshes with no custom pipeline of your own silently never render
+
+`Entropy.Model.createMesh({..., pipelineId: "default"})` draws through the engine's built-in `geometry_pipeline` at render time, not through the `Arc<RenderPipeline>` stored on the mesh - that handle is only there to satisfy `CustomMesh::new`'s constructor. The existing fallback for it was `ctx.pipelines.values().next().cloned()` - grab literally any pipeline an addon happens to have registered. Light Hive's demo scene never registers a custom pipeline (it only ever wants `"default"` meshes), so `ctx.pipelines` was empty and `any_pipeline` was `None` - and the whole mesh silently never got created. No error, no log past `Create mesh "Global" "default" false` (that trailing `false` is `custom_pipeline.is_some()`). The window was just black.
+
+Fixed by lazily building one throwaway pipeline (`create_placeholder_render_pipeline` in `src/deno/addon_engine.rs` - a fullscreen-triangle no-op vertex/fragment shader, `layout: None`) the first time this happens, and caching it in `ctx.pipelines` under a fixed key so it's built once, not once per mesh.
+
+### 3. Addon-spawned geometry never cast shadows
+
+`ShadowPipelineData::render_shadow_pass` only ever drew `renderer_state.cubes` / `models` / `landscapes` - the built-in, editor-owned collections. Anything an addon spawns lives in the parallel `addon_cubes` / `addon_meshes` maps, which the shadow pass never touched. With no built-in geometry in a standalone `EntropyApp` scene, the shadow map would have been empty regardless of `bias`/`slopeScale`/`mapSize` - those settings would have had literally nothing to demonstrate. Added two more loops to the shadow pass over `addon_cubes.values()` / `addon_meshes.values()`, reusing each mesh's existing `model_bind_group` (already built against the same `model_bind_group_layout` the built-in types use, so no new binding work was needed).
+
+### 4. The real one: a permanently-false readiness check silently ate every custom shader and shadow-config request, forever
+
+This is the one that actually cost the session. `setPointLightShader`/`configureShadows` land in `AddonContext` as pending state and get applied in `render_addon_frame.rs` on the next frame - except an addon can call them from `onInit()`, which runs before `EntropyPipeline` finishes standing up its render resources on the first few frames. So the apply path checks readiness first and re-queues instead of dropping the request if the pipeline isn't ready yet:
+
+```rust
+let lighting_pipeline_ready = editor.model_bind_group_layout.is_some()
+    && pipeline.g_buffer_bind_group_layout.is_some()
+    && pipeline.camera_binding.is_some()   // <- the bug
+    && pipeline.shadow_pipeline_data.is_some()
+    && pipeline.directional_light_buffer.is_some()
+    && pipeline.point_lights_buffer.is_some();
+```
+
+`pipeline.camera_binding` is a real field on `EntropyPipeline` - it's just a different one from the camera actually driving the render, `editor.camera_binding`, which is what `render_addon_frame.rs` has already pulled out and used a few lines above (`let camera_binding = editor.camera_binding.as_mut().expect(...)`). For a bare `EntropyApp`, `pipeline.camera_binding` is never populated - it looks like a Studio multi-viewport thing. So `lighting_pipeline_ready` was `false` on literally every frame, for the entire life of the app, and the re-queue branch just took the pending value back out of `AddonContext` and wrote the identical value straight back in, every frame, forever.
+
+Nothing crashed. Nothing errored. Clicking "Toon" in the UI updated the button's own highlighted state and printed a JS-side log line (`[Light Hive] Point light shader preset: toon`) - so from the addon's side, the call looked like it worked. The actual GPU pipeline never moved. I only found this because the toon and default screenshots looked pixel-identical and I didn't believe it - added temporary per-condition debug logging (`ready_parts model_bgl=true g_buf=true cam=false shadow=true dlb=true plb=true`), and there it was.
+
+The same wrong field was also the reason `[Lighting] Failed to rebuild lighting pipeline after resize: lighting pipeline resources not initialized` was logging on every single window resize from the very first test run - a second call site (`EntropyPipeline::resize`) had the identical mistake. Fixed both: the frame-apply path now checks `camera_binding` (the local, already-`.expect()`'d one), and the resize path now reads `self.export_editor.as_ref().and_then(|e| e.camera_binding.as_ref())` instead of `self.camera_binding`.
+
+Screenshots below are from *after* this fix. Before it, "Toon" and "Rim Highlight" changed a button's outline color and nothing else.
+
+## Evidence
+
+Default PBR shading - a robed `.glb` character (`Enemy1.glb`) on the pedestal, lit by a warm and a cool point light, unmodified `point_light_contribution`. The window is pinned to the top-left corner via `default_pos` instead of covering the model:
+
+![Light Hive's demo scene under the default PBR point-light shader - a robed character model lit by a warm key light and a cool fill light, smooth Cook-Torrance falloff visible in the robe's folds and the head's curvature](/images/entropy-light-hive-default-pbr.png)
+
+Same camera, same lights, after clicking "Toon" - `Entropy.Lighting.setPointLightShader(...)` recompiled the lighting pipeline with a quantized-band shading function instead. This is the comparison the flat-box version of this scene couldn't make: hard lit/shadow facets are now visible across the head and robe, not just a uniform tint shift:
+
+![The same character after switching to the Toon point-light shader - hard-edged lighting bands are clearly visible across the curved head and the robe's folds, replacing the smooth gradient from the default shader](/images/entropy-light-hive-toon.png)
+
+"Rim Highlight" - a different function again, favoring a fresnel-driven glow at grazing angles over the diffuse term. The ground plane blows out toward white and the robe picks up a bright edge glow, a distinctly different read from both Default and Toon:
+
+![The Rim Highlight preset on the same character - a bright glow along silhouette edges and grazing surfaces, the face lit warm orange, clearly distinct from both the default and toon results](/images/entropy-light-hive-rim.png)
+
+Clicking "Broken shader (test rejection)" submits WGSL that references an identifier that doesn't exist. The button's own highlight state updates, but the rendered character stays exactly as it was under Default PBR - the compile failed and got rejected before it ever touched the live pipeline:
+
+![After requesting a deliberately invalid shader - the button shows it was selected, but the character is rendered identically to the Default PBR screenshot, confirming the previous pipeline kept running](/images/entropy-light-hive-broken-rejected.png)
+
+The actual naga error, captured from the running process's log output:
+
+```
+Shader 'Lighting Shader (rebuilt)' parsing error: no definition in scope for identifier: `this_identifier_does_not_exist`
+   ┌─ wgsl:62:12
+   │
+62 │     return this_identifier_does_not_exist * 2.0;
+   │            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^ unknown identifier
+```
+
+## Decision log
+
+**Splice a function, not the whole shader.** An addon could in principle hand the engine a complete replacement `fs_main`. I didn't build it that way. Keeping the G-buffer sampling, directional light, and shadow lookup fixed and only letting addons replace the point-light contribution keeps the bind group layout (four fixed groups: lighting uniforms, G-buffer, camera, shadow map) untouched no matter what an addon submits, which is most of why the error-scope safety net is enough on its own - a bad function body can fail to compile, but it can't smuggle in a bind group mismatch, because it can't touch bind groups at all.
+
+**A placeholder pipeline over a broader `CustomMesh` refactor.** The actual clean fix for issue #2 above is probably `CustomMesh.pipeline: Option<Arc<RenderPipeline>>` so a `"default"` mesh doesn't need a dummy handle at all. That's a signature change touching every `CustomMesh::new` call site across the addon system. A cached, lazily-built, never-executed placeholder pipeline gets the same practical result (an addon that only ever spawns `"default"` meshes now works) for a few dozen lines with zero blast radius elsewhere.
+
+**Shadow settings on the directional light only.** Point lights still cast no shadows at all - that's cubemap or multi-pass work, a genuinely separate feature, not a settings panel. Scoped out on purpose rather than half-built.
+
+**No hot reload for this example.** `example_theme_gallery` and `example_fft_water` both run with `.with_hot_reload(true)`. This one doesn't, deliberately - `op_mesh_create` has no id-based reuse the way `op_buffer_create`/`op_texture_create_ex` do (see the hot-reload post from earlier this session), so re-running `onInit` on a hot reload would spawn a second ground plane and five more boxes on top of the first set. Fixing that is the same shape of work as issue #2's placeholder pipeline, just not one I did this session - noted below instead.
+
+## What's next
+
+- `CustomMesh.pipeline` as `Option<Arc<RenderPipeline>>`, removing the placeholder pipeline hack at the source instead of working around it.
+- Id-based reuse for `op_mesh_create`, the same pattern buffers and textures already got, so this example (and anything else that spawns meshes in `onInit`) can safely take `.with_hot_reload(true)`.
+- Point-light shadows - real cubemap work, not a settings tweak.
+- A light gizmo / visible marker at each point light's position - right now a light with `intensity: 0` or one placed outside the camera frustum is invisible and easy to lose track of.
+- More shader presets worth trying now that the plug-in point exists: a subsurface-scattering approximation, or a stylized outline pass driven by the same per-light data.
+- `Model.rs`'s glTF material import is thinner than it looks: `pbr_metallic_roughness.base_color_factor()` is never read (only the base color *texture*, falling back to plain white with no texture), and the metallic-roughness texture is detected but not actually sampled - real values are hardcoded (`metallic ≈ 0.06`, `roughness ≈ 0.25`) regardless of what the texture contains. Didn't chase this down this session (the demo model reads fine with the hardcoded values), but a model authored to rely on `base_color_factor` for its color instead of a texture would render plain white instead of its actual color.
