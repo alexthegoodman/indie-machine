@@ -1,0 +1,201 @@
+---
+title: "Making Entropy Production-Ready, Part 1: Your App Was Wearing Our Name"
+date: 2026-09-08
+series: Entropy
+crate_versions:
+  unchanged:
+    - winit = "0.30.12"
+    - image = "0.25.5"
+    - wgpu = "27.0.1"
+  edition: "2024"
+  os: "Windows 11 (only platform currently tested)"
+  backend: "wgpu default instance backend selection (not explicitly pinned to Vulkan/DX12)"
+repo_link: entropy-engine @ f3de8ec (this post's changes are on top of that commit)
+---
+
+Entropy is moving from "a game engine you fork and hack on" toward "a framework you depend on and ship your own app with" - that's the whole point of `EntropyApp`, the embedding entrypoint added a few posts back. But a dependency you can `cargo add` and a dependency you can actually ship a product with are different bars, and Entropy hasn't cleared the second one yet. This post starts a track that's going to keep coming back: find the places where "it works when I run it" and "it's fine for someone else's customer to run it" diverge, and close the gap.
+
+First one's almost embarrassing once you see it: **every app built on Entropy shipped wearing Entropy's own identity.** Until this session, `EntropyApp`'s entire configuration surface was `with_bundle`, `with_data_dir`, `with_start_addon`, and `capture_cursor` - none of which touch the actual OS window. Build a DAW on Entropy, ship it, and your user's taskbar says "Entropy Engine." Fixed window size, no icon, no way to change either from the embedding side. That's fine for Entropy Studio, which owns that identity. It's a non-starter for anyone else's app.
+
+The fix itself is small - four new builder methods, no new crates, no architecture - and that's kind of the point of a "production-readiness" post: most of the gap between a framework and a product isn't hard problems, it's a checklist of things nobody finished. This one turned out to be exactly that: the icon-loading code already existed, decoded RGBA correctly, and had literally never been called from anywhere.
+
+## What was actually hardcoded
+
+`src/startup.rs`'s `create_window` built its `WindowAttributes` from three literals:
+
+```rust
+// src/startup.rs, before this session
+let mut window_attributes = Window::default_attributes()
+    .with_title("Entropy Engine")
+    .with_transparent(false)
+    .with_inner_size(PhysicalSize::new(1200.0, 768.0));
+    // .with_window_icon(Some(self.icon.clone()));
+```
+
+That commented-out last line is the interesting bit. There's a `load_icon(bytes: &[u8]) -> Icon` helper further down the same file, decoding via the `image` crate and building a winit `Icon` from the raw RGBA - fully correct, never called. Whoever wrote it got as far as proving the icon-loading code worked, then never wired a way for a caller to actually supply a path. That's the shape a lot of "needs polish before production" work takes: not missing capability, but a capability nobody finished connecting end to end.
+
+## The fix
+
+Four new fields on `EntropyApp`, bundled into a single `WindowConfig` struct rather than added as more positional parameters:
+
+```rust
+// src/startup.rs
+#[derive(Default, Clone)]
+pub struct WindowConfig {
+    pub title: Option<String>,
+    pub size: Option<(f64, f64)>,
+    pub icon_path: Option<PathBuf>,
+    pub resizable: Option<bool>,
+}
+```
+
+`RunConfig` (the struct `EntropyApp::run` and Studio's own `run`/`run_game` both build) gets one new field, `window: WindowConfig`. `Application::new` takes it as a single extra parameter instead of four, and stores it as `self.window_config` for `create_window` to read:
+
+```rust
+// src/startup.rs, create_window
+let title = self.window_config.title.as_deref().unwrap_or("Entropy Engine");
+let (width, height) = self.window_config.size.unwrap_or((1200.0, 768.0));
+let resizable = self.window_config.resizable.unwrap_or(true);
+
+let mut window_attributes = Window::default_attributes()
+    .with_title(title)
+    .with_transparent(false)
+    .with_inner_size(PhysicalSize::new(width, height))
+    .with_resizable(resizable);
+
+if let Some(icon_path) = &self.window_config.icon_path {
+    match load_icon_from_path(icon_path) {
+        Ok(icon) => window_attributes = window_attributes.with_window_icon(Some(icon)),
+        Err(err) => error!("Failed to load window icon from {icon_path:?}: {err}"),
+    }
+}
+```
+
+`with_window_icon` on winit's `WindowAttributes` [is documented on docs.rs](https://docs.rs/winit/0.30.12/winit/window/struct.WindowAttributes.html) to take an `Option<Icon>` set at window-creation time, not applied after the fact - confirmed against the winit 0.30.12 source in the local registry cache (`window.rs:380`) since it's easy to assume this is a post-creation `Window::set_window_icon` call instead.
+
+`load_icon_from_path` is new, and deliberately not built the same way as the existing `load_icon`:
+
+```rust
+// src/startup.rs
+fn load_icon_from_path(path: &std::path::Path) -> Result<Icon, Box<dyn Error>> {
+    const ICON_SIZE: u32 = 64;
+    let image = image::open(path)?
+        .resize_exact(ICON_SIZE, ICON_SIZE, image::imageops::FilterType::Lanczos3)
+        .into_rgba8();
+    let (width, height) = image.dimensions();
+    Ok(Icon::from_rgba(image.into_raw(), width, height)?)
+}
+```
+
+Two differences from `load_icon`: it returns a `Result` instead of `.unwrap()`/`.expect()`-ing through decode failures, and it downscales to 64x64 before building the `Icon`. Neither is incidental.
+
+Finally, `EntropyApp` gets the builder methods themselves:
+
+```rust
+// src/app.rs
+pub fn with_title(mut self, title: impl Into<String>) -> Self {
+    self.window_title = Some(title.into());
+    self
+}
+
+pub fn with_window_size(mut self, width: f64, height: f64) -> Self {
+    self.window_size = Some((width, height));
+    self
+}
+
+pub fn with_window_icon(mut self, path: impl Into<PathBuf>) -> Self {
+    self.window_icon = Some(path.into());
+    self
+}
+
+pub fn with_resizable(mut self, resizable: bool) -> Self {
+    self.resizable = Some(resizable);
+    self
+}
+```
+
+An embedder's `main.rs` now looks like this - taken directly from `src/bin/example_fft_water.rs`, updated this session to actually exercise the new API instead of standing as the bare 11-line stub it was before:
+
+```rust
+entropy_engine::EntropyApp::new()
+    .with_bundle("examples/studio-bundle/dist/fft_water.js")
+    .with_title("FFT Water")
+    .with_window_size(1600.0, 900.0)
+    .with_window_icon("public/water1.png")
+    .run()
+    .expect("Couldn't run app");
+```
+
+`public/water1.png` is an existing texture asset in this repo, not a pre-made icon - a normal-sized image an embedder would actually have lying around, not something hand-cropped to square for this demo.
+
+## Evidence
+
+Built and ran on the same machine as the last two posts: Intel UHD Graphics 770 (integrated), i5-12500, 32GB RAM, Windows 11 Pro 10.0.26200.
+
+```
+cargo build --release --bin example_fft_water
+```
+
+Finished in 1m 9s (cold, after touching `startup.rs`/`app.rs`) with zero warnings. A full workspace build (`cargo build --release`, all six binaries) also came back clean, confirming the `Application::new`/`RunConfig` signature changes didn't break `editor.rs`, `game.rs`, `game_addon.rs`, or `example_daw.rs` - none of which pass a custom `WindowConfig`, so they all still need to fall through to the old defaults correctly.
+
+Ran the built binary and queried the live window, rather than trusting the code:
+
+```
+> Get-Process example_fft_water | Select Id, MainWindowTitle
+Id     MainWindowTitle
+23512  FFT Water
+```
+
+Custom title confirmed live, not just compiled. `GetWindowRect` on the same process:
+
+```
+Window size: 1616x939
+```
+
+Requested inner size was 1600x900. The 16x39 delta is Windows' own title bar and border chrome - `with_inner_size` sets the client area only, and `GetWindowRect` measures the whole window including chrome. Worth stating plainly since it's an easy thing to misread as the size call not taking effect.
+
+Screenshot of the live window, custom title and icon both visible in the title bar:
+
+![FFT Water example app running with a custom "FFT Water" title and a downscaled water-texture icon in the title bar, instead of the previous hardcoded "Entropy Engine" title](images/entropy-embedder-window-config.png)
+
+Then ran `editor.exe` (Entropy Studio itself, which never sets a custom `WindowConfig`) to confirm the default path is untouched:
+
+```
+> Get-Process editor | Select Id, MainWindowTitle
+Id    MainWindowTitle
+4284  Entropy Engine
+```
+
+Still "Entropy Engine," still the old default - no regression for the one real caller that depends on the hardcoded values staying hardcoded.
+
+First-party diff, from `git diff --stat` this session:
+
+```
+src/app.rs                   | 41 +++++++++++++++++++++++++++++++++++
+src/bin/example_fft_water.rs |  6 +++---
+src/startup.rs               | 51 +++++++++++++++++++++++++++++++++++++++++---
+3 files changed, 92 insertions(+), 6 deletions(-)
+```
+
+## Decision log
+
+- **A `WindowConfig` struct, not four more positional parameters.** `Application::new` was already at seven positional arguments before this session. Four more `Option<T>` params of similar shapes is exactly the kind of call site where two arguments get silently transposed and the compiler can't catch it. One struct field costs one line at every call site instead.
+- **Icon loading is fallible, `load_icon` (the pre-existing bytes-based helper) is not.** New code shouldn't copy an existing crash-on-bad-input pattern just because it was already in the file. A bad icon path is a cosmetic problem; `with_window_icon` logs and the app starts anyway.
+- **Downscale to 64x64 with Lanczos3 instead of requiring a pre-sized icon.** The realistic input to `with_window_icon` is a logo or a texture someone already has, not a hand-cropped 64x64 square. Forcing embedders to pre-process their own icon before Entropy will accept it defeats the point of the feature.
+- **One `WindowConfig` shared across every window an `Application` creates, not per-window overrides.** `Action::CreateNewWindow`/`CreateNewTab` (Studio's multi-tab support) would apply the same title/icon/size to additional windows too. Every current embedder is single-window; per-window customization is real added API surface with no caller asking for it yet.
+
+## Failure notes
+
+Nothing broke. The build was clean on the first attempt, both the customized path (`example_fft_water`) and the untouched default path (`editor.exe`) worked exactly as expected, and there were no version conflicts or API mismatches - `winit::window::WindowAttributes::with_window_icon`/`with_resizable` are already public methods on the pinned 0.30.12, just never called from this codebase.
+
+The one genuine surprise was the window-rect delta above (1616x939 for a requested 1600x900): not a bug, but confirmed empirically rather than assumed, since `with_inner_size`'s docs don't make the client-area-only scope obvious at the call site.
+
+## What's next in this track
+
+"Your app doesn't have to look like ours anymore" was the easy item on the list - a checklist gap, not a hard problem. The harder ones are already scoped from this session's audit and queued for the next posts in this track, not silently dropped:
+
+- **A crash a user could actually hit.** Swapchain frame acquisition in `src/core/pipeline.rs` is a bare `.expect()` with no handling for `wgpu::SurfaceError::Lost`/`Outdated`/`Timeout` - and minimizing the window is the textbook way to trigger exactly that on Windows. Right now that's a hard crash of the whole app, not a caught error. Not reproduced or fixed yet, but next.
+- **The rest of the crash surface.** A codebase-wide scan turned up 719 `.unwrap()`/`.expect()`/`panic!()` call sites, heaviest in the addon-execution boundary (`src/deno/addon_engine.rs`, 62) - meaning a bad TS addon can currently take the whole native host down with it, not just itself.
+- **The paperwork.** No LICENSE file, no CI. Boring, but "can I legally depend on this" is a production-readiness question same as any crash.
+
+Smaller and not urgent: per-window `WindowConfig` overrides, if a future embedder ever needs multiple differently-branded windows from one `Application`. No current caller does, so it stays a note, not a task.
