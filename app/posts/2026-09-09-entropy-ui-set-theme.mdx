@@ -1,0 +1,224 @@
+---
+title: "Entropy.UI.setTheme(): A TypeScript Theme API for entropy_gui"
+date: 2026-09-09
+series: Entropy
+crate_versions:
+  unchanged:
+    - wgpu = "27.0.1"
+    - winit = "0.30.12"
+    - deno_core = "0.332.0"
+  edition: "2024"
+  os: "Windows 11 Pro 10.0.26200 (only platform currently tested)"
+  tooling:
+    - "deno 2.6.7 CLI (bundles the addon's TypeScript to JS; not a Cargo dependency)"
+repo_link: entropy-engine @ 13d2868 (this post's diff is uncommitted at time of writing)
+---
+
+`entropy_gui`, the in-house immediate-mode kit that replaced the whole `egui` family a couple posts back, already had a real `Style`/`Visuals` system (`src/entropy_gui/style.rs`) and a `Context::set_style` that swaps it at runtime. What it didn't have was any way for an addon - the TypeScript side, which is where every example in this series actually builds its scene and UI - to reach that system. The only themes that existed lived as hardcoded Rust: `Style::default()`'s plain gray, and a second, unused-by-default "Ember" theme in `src/core/egui_theme.rs` that nothing outside that one file ever called.
+
+This post adds `Entropy.UI.setTheme(...)`, an addon-facing op that describes a theme as data instead of Rust, and a small standalone example - a live theme gallery - that switches between presets (and tweaks individual colors/spacing) while the app is running, with every widget in the window, including the picker itself, restyling live.
+
+## What's out of scope here
+
+No light-mode palette. `Visuals` hardcodes `dark_mode: true` throughout `style_from_theme` (inherited from the pre-existing `slate_style()` this replaces) - a light theme would need real light-mode contrast tuning per widget state, not just inverted colors, and nothing in this pass touches that. Also out of scope: persisting a chosen theme to disk. `Entropy.UI.setTheme` is a pure runtime call; an addon that wants a theme to survive a restart already has `Entropy.Addon.saveData` for that (used elsewhere in this series, e.g. the FFT ocean's `currentParams`) and can call `setTheme` again from its own saved state at `onInit` - no new persistence mechanism was needed or added.
+
+## Describing a theme as data
+
+`style_from_theme` (`src/entropy_gui/style.rs`) takes a `ThemeDescriptor` - every field `Option`, so an addon only names what it wants to change - and fills in whatever's missing with the same values the old hardcoded `slate_style()` used:
+
+```rust
+#[derive(Debug, Clone, Default, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ThemeDescriptor {
+    pub background: Option<[f32; 4]>,
+    pub surface: Option<[f32; 4]>,
+    pub surface_hover: Option<[f32; 4]>,
+    pub border: Option<[f32; 4]>,
+    pub text: Option<[f32; 4]>,
+    pub accent: Option<[f32; 4]>,
+    pub corner_radius: Option<u8>,
+    pub window_corner_radius: Option<u8>,
+    pub item_spacing: Option<f32>,
+    pub button_padding: Option<[f32; 2]>,
+}
+
+pub fn style_from_theme(theme: &ThemeDescriptor) -> Style {
+    let bg = theme.background.map(Color32::from_rgba_f32).unwrap_or(Color32::from_rgb(0x14, 0x14, 0x14));
+    let accent = theme.accent.map(Color32::from_rgba_f32).unwrap_or(Color32::from_rgb(0x3F, 0xD1, 0xC4));
+    // ... same pattern for surface/border/text/corner_radius/item_spacing/button_padding
+    // ... then the same Style{ visuals: Visuals{ widgets: Widgets{ ... } } } construction
+    // slate_style() previously built inline, now built from these locals instead of literals
+}
+
+pub fn slate_style() -> Style {
+    style_from_theme(&ThemeDescriptor::default())
+}
+```
+
+`slate_style()` used to be the only place this color palette lived, and - a small surprise while reading the code - it turned out to already be dead code: `Style::default()` builds `Visuals::dark()` directly, so nothing was actually calling `slate_style()` before this change either. Rather than leave that as a second unused function, it's now `style_from_theme` fed an all-`None` descriptor - one palette, one place it's written down, whether an addon overrides anything or not.
+
+Colors are `[f32; 4]` in 0..1, matching the convention `Widget.colorInput` already used - no separate hex-string format to support on the Rust side. (The example addon below adds a small `hex()` helper on the *JS* side for readability, but that's a convenience in TypeScript, not a second format the engine has to parse.)
+
+## Wiring it through the op layer
+
+Addon ops don't touch `entropy_gui::Context` directly - every existing UI op (`op_ui_create_window`, `op_ui_widget_slider`, etc.) writes into `AddonContext`, a `deno_core::OpState`-resident struct that `AddonEngine::render_ui`/`render_tabs` reads back each frame. Theming follows the same shape:
+
+```rust
+// src/deno/addon_ops.rs
+#[op2]
+pub fn op_ui_set_theme(state: &mut OpState, #[serde] theme: crate::entropy_gui::style::ThemeDescriptor) {
+    if let Some(ctx) = state.try_borrow_mut::<AddonContext>() {
+        ctx.pending_theme = Some(theme);
+    }
+}
+```
+
+```rust
+// src/deno/addon_engine.rs
+fn apply_pending_theme(&mut self, ctx: &egui::Context) {
+    let theme = {
+        let mut op_state = self.runtime.op_state();
+        let op_state = op_state.borrow();
+        op_state.try_borrow::<AddonContext>().and_then(|c| c.pending_theme.clone())
+    };
+    if let Some(theme) = theme {
+        ctx.set_style(egui::style_from_theme(&theme));
+    }
+}
+```
+
+`apply_pending_theme` is called at the top of both `render_ui` (Studio's per-viewport docking path) and `render_tabs` (the generic full-window tab bar a standalone `EntropyApp` uses - every example bin in this series, including the new one below, goes through this path only). It re-applies every frame instead of draining `pending_theme` with `.take()`, because the normal call pattern is "call `setTheme` once, from a dropdown's `onChange`" - the style has to keep holding on every subsequent frame, not just the one right after the call. The cost is trivial: building a `Style` from a handful of `Option<[f32; 4]>`s every frame, not an allocation-heavy operation.
+
+On the JS side, the wrapper is close to a pass-through:
+
+```javascript
+// src/deno/addon_setup.js
+setTheme: (theme) => {
+    ops.op_ui_set_theme(theme || {});
+},
+```
+
+## The theme gallery example
+
+`examples/studio-bundle/src/theme_gallery_addon.ts` + `src/bin/example_theme_gallery.rs`, following the same minimal-bin pattern as the [media player example](/posts/2026-09-09-entropy-media-player) - all the logic lives in the addon, the bin is three lines:
+
+```rust
+// src/bin/example_theme_gallery.rs
+entropy_engine::EntropyApp::new()
+    .with_bundle("examples/studio-bundle/dist/theme_gallery.js")
+    .with_hot_reload(true)
+    .with_title("Theme Gallery")
+    .with_window_size(1000.0, 700.0)
+    .run()
+    .expect("Couldn't run app");
+```
+
+Four presets, one of which is a straight port of `egui_theme.rs`'s old "Ember" theme (previously ~90 lines of hardcoded `WidgetVisuals` structs, now nine lines of data) and one of which is "Nocturne" - that same file's docstring named it as a mocked-up-but-never-built third direction, so this is the first time it actually exists as a running theme:
+
+```typescript
+function hex(h: string, a = 1): [number, number, number, number] {
+    const v = parseInt(h.replace("#", ""), 16);
+    return [((v >> 16) & 255) / 255, ((v >> 8) & 255) / 255, (v & 255) / 255, a];
+}
+
+const PRESETS: { name: string; theme: ThemeConfig }[] = [
+    { name: "Slate", theme: {} }, // {} = every field falls back to setTheme's own default
+    { name: "Ember", theme: {
+        background: hex("#0F0E0D"), surface: hex("#181512"), surfaceHover: hex("#241F19"),
+        border: hex("#302A22"), text: hex("#F2EEE7"), accent: hex("#DDA33D"),
+        cornerRadius: 10, windowCornerRadius: 12, itemSpacing: 10,
+    }},
+    { name: "Nocturne", theme: {
+        background: hex("#0B0D14"), surface: hex("#121621"), surfaceHover: hex("#1A2030"),
+        border: hex("#242C3E"), text: hex("#E8ECF4"), accent: hex("#6C8EEF"),
+        cornerRadius: 4, windowCornerRadius: 6, itemSpacing: 8,
+    }},
+    { name: "Verdant", theme: {
+        background: hex("#0D120E"), surface: hex("#151D17"), surfaceHover: hex("#1E2921"),
+        border: hex("#28362C"), text: hex("#E9F1EA"), accent: hex("#5CC87A"),
+        cornerRadius: 8, windowCornerRadius: 10, itemSpacing: 9,
+    }},
+];
+```
+
+The window itself is built entirely from existing `Entropy.UI.Widget` calls - a preset dropdown, a live accent-color picker, two sliders, and a couple of sample widgets purely so more than one widget type is visibly reacting to the theme at once:
+
+```typescript
+let selectedPreset = 0;
+let currentTheme: ThemeConfig = { ...PRESETS[0].theme };
+
+function applyTheme() {
+    Entropy.UI.setTheme(currentTheme);
+}
+
+Entropy.UI.Widget.dropdown(win, {
+    label: "Preset",
+    options: PRESETS.map(p => p.name),
+    selectedIndex: selectedPreset,
+    onChange: (v) => {
+        selectedPreset = parseInt(v as unknown as string, 10);
+        currentTheme = { ...PRESETS[selectedPreset].theme };
+        applyTheme();
+    }
+});
+
+Entropy.UI.Widget.colorInput(win, {
+    label: "Accent",
+    color: currentTheme.accent || hex("#3FD1C4"),
+    onChange: (c) => {
+        currentTheme = { ...currentTheme, accent: c as [number, number, number, number] };
+        applyTheme();
+    }
+});
+```
+
+Picking a preset resets `currentTheme` to that preset's fields; the accent picker and the two sliders then merge their own change on top of whatever preset is active, so "start from Ember, nudge the accent" works without extra plumbing.
+
+## Evidence
+
+Same machine as the last few posts: Intel UHD Graphics 770 (integrated), i5-12500, 32GB RAM, Windows 11 Pro 10.0.26200.
+
+```
+cargo build --bin example_theme_gallery
+cd examples/studio-bundle && deno bundle src/theme_gallery_addon.ts > dist/theme_gallery.js
+./target/debug/example_theme_gallery.exe
+```
+
+Clean build (`cargo check --lib` and the full `cargo build --bin example_theme_gallery` both finished with no warnings on this diff), clean `deno bundle` run, clean startup log with no errors. Launched, screenshotted at the default "Slate" theme, then clicked the preset dropdown and selected "Ember" - live, no restart - and screenshotted again:
+
+![Theme Gallery running the default Slate theme - teal accent, tight 6px corners](/images/entropy-theme-gallery-slate.png)
+
+![The same window, same process, after selecting Ember from the dropdown - warm palette, 10px corners, wider spacing, and the dropdown/slider/button/checkbox chrome all restyled with it](/images/entropy-theme-gallery-ember.png)
+
+First-party diff, `git diff --stat` plus the two new files:
+
+```
+examples/studio-bundle/src/addon.d.ts | 18 ++++++++++
+src/deno/addon_engine.rs              | 24 ++++++++++++-
+src/deno/addon_ops.rs                 | 14 ++++++++
+src/deno/addon_setup.js               |  7 ++++
+src/entropy_gui/mod.rs                |  2 +-
+src/entropy_gui/style.rs              | 66 ++++++++++++++++++++++++++---------
+6 files changed, 112 insertions(+), 19 deletions(-)
+ + examples/studio-bundle/src/theme_gallery_addon.ts (new)
+ + src/bin/example_theme_gallery.rs (new)
+```
+
+## Decision log
+
+- **Every `ThemeDescriptor` field is `Option`, filled from the existing default palette.** An addon that only wants a different accent color shouldn't have to restate the whole theme to get it - and there's exactly one place (`style_from_theme`'s `unwrap_or` chain) where "what does an unset field mean" is decided, not one per call site.
+- **Applied every frame, not drained with `.take()`.** `Entropy.UI.setTheme` is normally called once, from a widget's `onChange`. If `apply_pending_theme` consumed the value, the style would revert to default the very next frame after the call that set it.
+- **Colors stay `[f32; 4]` in 0..1 on the Rust/op boundary**, matching `Widget.colorInput`'s existing convention, rather than adding hex-string parsing to the engine. Hex convenience lives in the example addon's own `hex()` helper, in TypeScript, where it costs nothing to add and doesn't grow the op's surface.
+- **`slate_style()` became a wrapper around `style_from_theme(&ThemeDescriptor::default())`** instead of staying a separate hardcoded function next to the new parametrized one. It was already unused dead code before this change (`Style::default()` calls `Visuals::dark()` directly) - collapsing it removed a second copy of the same palette rather than adding a third.
+- **No new addon-facing lifecycle hook.** Unlike the hot-reload work a few posts back, this didn't need any callback-registry bookkeeping - `render_ui`/`render_tabs` already run every frame, so a plain `OpState` field plus a per-frame check was the whole mechanism.
+
+## Failure notes
+
+- **`Widget.dropdown`'s `onChange` hands back the selected index as a string, not a number** (`(index: string) => void` in `addon.d.ts`, unrelated to this change - the event bus that carries widget interactions back into JS passes every payload as a string, and dropdown never special-cased it). Nothing broke, but the preset picker needed `parseInt(v as unknown as string, 10)` where a plain number would have been the more obvious API - worth knowing before wiring another dropdown.
+- **Only "Slate" and "Ember" were exercised against a running window this session.** Both are what the two screenshots above show, confirmed live. "Nocturne" and "Verdant" go through the identical `style_from_theme` code path with no special-casing per preset, but weren't independently screenshotted - said plainly rather than implied as equally verified.
+
+## What's next
+
+- A light-mode palette, if a future embedder actually wants one - deliberately scoped out here since it needs real per-widget-state contrast tuning, not a color inversion.
+- Screenshot "Nocturne" and "Verdant" directly, closing the gap in the failure notes above.
+- Wire `setTheme` into `EntropyApp` itself (a `.with_theme(ThemeDescriptor)` builder method, mirroring `.with_title()`/`.with_window_icon()` from the [window-config post](/posts/2026-09-08-entropy-app-window-config)), so an embedder can set a starting theme before any addon code runs, instead of every addon having to call `setTheme` from its own `onInit`.
