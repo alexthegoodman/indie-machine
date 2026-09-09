@@ -9,10 +9,11 @@ import { SiteHeader } from "@/components/SiteHeader";
 import { SiteFooter } from "@/components/SiteFooter";
 import { TitleBlock } from "@/components/TitleBlock";
 import { SpecSheet } from "@/components/SpecSheet";
-import { ChevronLeft, ChevronRight } from "@/components/icons";
+import { ChevronLeft, ChevronRight, GithubIcon } from "@/components/icons";
 import { mdxComponents } from "@/components/mdx-components";
 import { getAllPosts, getPostBySlug } from "@/lib/posts";
 import { rehypeFixImagePaths } from "@/lib/rehype-fix-image-paths";
+import { resolveRepoLink } from "@/lib/repoLink";
 import { SITE_NAME, SITE_URL } from "@/lib/site";
 
 export function generateStaticParams() {
@@ -60,6 +61,7 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
 
   const prev = index > 0 ? posts[index - 1] : undefined;
   const next = index < posts.length - 1 ? posts[index + 1] : undefined;
+  const repo = resolveRepoLink(post.repo_link);
 
   const { content } = await compileMDX({
     source: post.content,
@@ -115,14 +117,24 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
           {post.title}
         </h1>
 
-        <div className="mt-8">
+        <div className="mt-8 flex flex-wrap items-center gap-3">
           <TitleBlock
             cells={[
               { label: "DATE", value: post.date },
               { label: "SERIES", value: post.series ?? "—" },
-              ...(post.repo_link ? [{ label: "REPO", value: post.repo_link }] : []),
+              // ...(post.repo_link ? [{ label: "REPO", value: post.repo_link }] : []),
             ]}
           />
+          {repo && (
+            <a
+              href={repo.href}
+              target="_blank"
+              rel="noreferrer"
+              className="inline-flex items-center gap-2 self-stretch border border-line/28 px-4 py-3 text-[11px] tracking-[0.08em] text-ink-300 hover:border-accent/60 hover:text-accent"
+            >
+              <GithubIcon /> <span>View on GitHub <br />{repo.label}</span>
+            </a>
+          )}
         </div>
 
         {post.crate_versions && (
