@@ -1,0 +1,177 @@
+---
+title: "A Media Player for Entropy: Video Decoder, New Audio Path, One Latent Bind-Group Bug"
+date: 2026-09-09
+series: Entropy
+crate_versions:
+  unchanged:
+    - windows = "0.58"
+    - wgpu = "27.0.1"
+    - winit = "0.30.12"
+    - deno_core = "0.332.0"
+    - rodio = "0.21.1"
+  edition: "2024"
+  os: "Windows 11 Pro 10.0.26200 (only platform currently tested)"
+  backend: "Media Foundation for decode (Windows-only); wgpu default instance backend selection (not explicitly pinned to Vulkan/DX12)"
+  tooling:
+    - "deno 2.6.7 CLI (bundles the addon's TypeScript to JS; not a Cargo dependency)"
+repo_link: entropy-engine @ 995730c
+---
+
+Entropy already had a Media Foundation video decoder - `src/renderer_videos/st_video.rs`, built for the editor's own timeline. What it didn't have was audio decode of any kind, or any way for a standalone `EntropyApp` (as opposed to Entropy Studio) to use either. A small media player example was a good forcing function for both: reuse the video decode technique outside the editor, write Media Foundation audio decode from scratch, and wire it all into the addon system through `Entropy.Video`, a new op surface next to the existing `Entropy.Texture`/`Entropy.Model`.
+
+It also surfaced a real, previously-unexercised bug in the addon renderer - not something this session introduced, something that had just never been hit before. More on that below.
+
+Windows-only, same as the video decode it builds on. A Mac/AVFoundation backend is out of scope here, and Mac isn't relevant to this project's timeline yet anyway.
+
+## What's actually reused vs. new
+
+`st_video.rs`'s `create_source_reader`/`draw_video_frame` establish the pattern: `MFCreateSourceReaderFromURL`, force the output type to `MFVideoFormat_RGB32` via `SetCurrentMediaType`, then `ReadSample` + `ConvertToContiguousBuffer` + `Lock`/`Unlock` per frame. That pipeline is real and already proven, but it's not reusable as a dependency - it owns an editor-specific `wgpu::Texture`/bind group/vertex buffer, a `Transform` tied into the timeline's uniform system, and a `current_sequence_id: Uuid` that only means something inside a Studio project. The new `src/media_player/mod.rs` copies the *technique*, not the code, into a `MediaPlayer` struct that owns nothing but a decoder.
+
+Audio is genuinely new. Before writing any of this, I grepped the whole repo for `MF_SOURCE_READER_FIRST_AUDIO_STREAM`, `MFAudioFormat_PCM`, `WAVEFORMATEX`, and `MF_MT_AUDIO_*` - zero hits, anywhere. `st_video.rs` only ever selects `MF_SOURCE_READER_FIRST_VIDEO_STREAM`; if a source file has audio, that reader still holds it internally but never touches it. Nothing here needed a new `windows` crate feature, though - `MFAudioFormat_PCM` and the `MF_MT_AUDIO_*` attributes all live inside `Win32_Media_MediaFoundation`, already enabled.
+
+## Getting frames onto the screen
+
+Every addon-facing texture in this engine already supports exactly the primitive a video player needs: `Entropy.Texture.createEx()` makes a `COPY_DST` texture, and `Entropy.Texture.update(id, bytes)` - `op_texture_update` in `src/deno/addon_ops.rs:1368` - calls `queue.write_texture` again on that same `wgpu::Texture`. The FFT water addon leans on this same mechanism implicitly through its compute-shader ping-pong buffers. I didn't add a new "push bytes into a texture" op; `op_video_poll` just calls the same `queue.write_texture` directly, from inside Rust, once per addon tick, keyed off a texture id the addon hands over via a new `op_video_bind_texture`. The alternative - decode in Rust, hand a full RGBA frame buffer back to JS, have JS call `Entropy.Texture.update` itself - would mean marshaling a multi-megabyte buffer through the JS/Rust boundary every frame for no reason. I considered it and dropped it before writing any of it, once I saw what `op_texture_update` already does.
+
+The addon side (`examples/studio-bundle/src/media_player_addon.ts`) is small: open the clip, create a texture sized to its native resolution, bind it, put a textured quad on a custom pipeline, add transport widgets.
+
+```typescript
+pipelineId = Entropy.Pipeline.create({
+    name: "MediaPlayerQuad",
+    layout: "mesh",
+    pbr: false,
+    vertexShader: VIDEO_QUAD_SHADER,
+    fragmentShader: VIDEO_QUAD_SHADER,
+    extraBindGroups: [{
+        entries: [
+            { binding: 0, visibility: ["Fragment"], resourceType: "Texture" },
+            { binding: 1, visibility: ["Fragment"], resourceType: "Sampler" },
+        ]
+    }]
+});
+```
+
+That `layout: "mesh"` isn't decorative. I left it out on the first attempt, and got this from `Device::create_render_pipeline`:
+
+```
+wgpu error: Validation Error
+Caused by:
+  In Device::create_render_pipeline, label = 'MediaPlayerQuad'
+    Error matching ShaderStages(FRAGMENT) shader requirements against the pipeline
+      Shader global ResourceBinding { group: 2, binding: 0 } is not available in the pipeline layout
+        Binding is missing from the pipeline layout
+```
+
+`op_pipeline_create` (`addon_ops.rs:2416`) branches on `config.layout` to decide the base bind groups before appending `extraBindGroups`. With `layout: "mesh"`, the base is `[camera, model transform]` and extras start at group 2 - which is what my shader assumed. With `layout` unset, the base collapses to `[camera]` only, and extras start at group 1 instead. Every existing custom pipeline in this repo that declares `extraBindGroups` (the FFT/river water pipelines) already sets `layout: "mesh"`, so this gap was never visible before - I just hadn't copied that one field along with the pattern.
+
+## The bind group bug nobody had hit
+
+Fixing the above surfaced a second, unrelated failure one step later:
+
+```
+wgpu error: Validation Error
+Caused by:
+  In Device::create_bind_group, label = 'Mesh Transform Bind Group'
+    Number of bindings in bind group descriptor (1) does not match the number of bindings defined in the bind group layout (6)
+```
+
+This one isn't mine. `render_addon_frame.rs`'s `non_pbr_meshes` draw loop - the path any `pbr: false` custom-pipeline mesh created via `Entropy.Model.createMesh` goes through - built its per-mesh transform bind group with exactly one entry (the transform uniform buffer), against `renderer_state.model_bind_group_layout`, which actually declares six: transform, albedo texture, sampler, render-mode uniform, normal texture, PBR-params texture (`src/core/pipeline.rs:578`). That's the same shared layout the *textured* model path uses for real materials, and other call sites (`RendererState::initialize_npc_visual`, `initialize_player_visual`) build all six bindings correctly, using `create_fallback_material_resources` for objects with no real texture. The one-entry version in `render_addon_frame.rs` looks like an early stub that was never filled in - and every existing `pbr: false` custom pipeline in this codebase either skipped `layout: "mesh"` entirely or never reached this loop through `Entropy.Model.createMesh` at all, so a 1-entry bind group against a 6-entry layout had never actually been constructed until this one did.
+
+The fix fills in the other five with the same 1x1 placeholder textures (white albedo, flat normal, cyan PBR params) and shared render-mode buffer the NPC/player path already uses for untextured objects - reimplemented as a free function at the call site rather than called as a method, because the surrounding loop holds an outer `&mut renderer_state.addon_grasses` borrow for something later in the same function that a `&self` method taking all of `renderer_state` would conflict with.
+
+With both fixed, the pipeline and mesh built - and the window stayed solid black anyway, with no errors of any kind. `addon_pipeline.rs` defaults every render pipeline to `front_face: Ccw, cull_mode: Some(Face::Back)`. My quad's first vertex ordering (`[0,1,2,0,2,3]`, top-left/top-right/bottom-right/bottom-left) traces clockwise as seen from a camera sitting on +Z looking toward -Z - a backface, silently culled every frame. A culled quad and a missing one produce an identical result on screen, which is worth knowing before spending time suspecting the decoder or the texture upload instead. Reversing to `[0,2,1,0,3,2]` fixed it.
+
+## Audio: a dedicated decode thread, not rodio's callback thread
+
+`rodio::Sink`/`Source` already had exactly the shape a live decoder needs - `src/audio/mod.rs`'s `FundspSource` (used for the synth engine) implements `Iterator<Item = f32>` plus `channels()`/`sample_rate()`/`current_span_len() -> None`/`total_duration() -> None`, the same "unbounded live source" contract a streaming audio decoder wants. `AudioEngine` got one new method, `new_sink()`, returning an un-detached `Sink` the caller keeps and drives directly (`.play()`/`.pause()`/`.set_volume()` are all native `Sink` methods - no hand-rolled play-state needed there).
+
+The decode itself runs on its own `std::thread`, not on whatever thread rodio schedules its mixer callback on. Media Foundation requires COM initialized (`CoInitializeEx`) on whatever thread calls into it, and I didn't want to find out the hard way what happens calling `IMFSourceReader::ReadSample` from a thread I don't control the apartment state of. The decode thread calls `CoInitializeEx(COINIT_MULTITHREADED)` once, opens its own `IMFSourceReader` (audio-only, `SetStreamSelection` deselects video on it), and pushes decoded PCM chunks into a bounded `sync_channel`. A thin `ChunkAudioSource` drains that channel from whatever thread rodio actually calls `next()` on, returning silence on underrun rather than ending the stream.
+
+Seeking tears the whole audio side down and respawns it at the new position, rather than trying to flush in-flight chunks out of a channel a background thread is still writing into:
+
+```rust
+// src/media_player/mod.rs
+self.audio = None; // old sink+thread torn down here
+if self.playing {
+    if let Some((channels, sample_rate)) = self.audio_format {
+        self.audio = AudioChannel::spawn(&self.path, ms, channels, sample_rate, self.volume, &self.audio_engine).ok();
+    }
+}
+```
+
+Video frame selection is wall-clock-driven, not audio-clock-driven: `poll_video_frame` compares elapsed real time against each frame's presentation timestamp, decoding (and discarding, if behind) up to 30 frames per call so a stall catches up instead of continuing in slow motion. That's a real, stated limitation, not an oversight - see What's Next.
+
+## Evidence
+
+Same machine as the last few posts: Intel UHD Graphics 770 (integrated), i5-12500, 32GB RAM, Windows 11 Pro 10.0.26200.
+
+```
+cd examples/studio-bundle
+deno bundle src/media_player_addon.ts > dist/media_player.js
+cargo build --bin example_media_player
+```
+
+Clean build, 18.47s (debug profile, incremental against already-built dependencies - not a from-scratch timing). Ran it against a real screen-recording clip, probed with `ffmpeg` beforehand to know exactly what it is rather than assume:
+
+```
+Video: h264 (Main), yuv420p, 200x200, 37 kb/s, 30 fps
+Duration: 00:00:26.47
+```
+
+(One stream only - no audio track in this particular clip. More on what that does and doesn't prove below.)
+
+Actual runtime log, this session:
+
+```
+Creating pipeline: "MediaPlayerQuad" Some("mesh") Some(false) None
+[media_player] no usable audio stream in "public/yumondesktop.mp4" - playing video-only
+[ADDON] Media Player: opened public/yumondesktop.mp4 (200x200, 26.5s, 30.0fps)
+Create mesh "Global" "pipeline_e6c370c3-9a98-46d9-8395-0b9a395886d3" true
+```
+
+Screenshot of the running app mid-playback, decoded frames rendering with correct color and orientation (no red/blue channel swap, despite Media Foundation's RGB32 output technically being documented as BGRA byte order - checked by looking at the actual output, not assumed either way):
+
+![Entropy Media Player window showing a decoded video frame from a real screen recording, with play/pause, seek, and volume controls overlaid](/images/entropy-media-player-decode.png)
+
+Let it run past the clip's actual 26.47s duration to confirm end-of-stream doesn't crash or hang - it doesn't; `poll_video_frame` returns `None` on `MF_SOURCE_READERF_ENDOFSTREAM`, `playing` flips to `false`, and the app keeps running normally. Play, pause, seek, and volume all worked interactively during this session's testing.
+
+First-party diff, `git show --stat 995730c`:
+
+```
+examples/studio-bundle/src/media_player_addon.ts | 224 ++++++++++
+src/audio/mod.rs                                 |   7 +
+src/bin/example_media_player.rs                  |  10 +
+src/core/render_addon_frame.rs                   | 103 ++++-
+src/deno/addon_engine.rs                         |  14 +-
+src/deno/addon_ops.rs                            | 156 +++++++
+src/deno/addon_setup.js                          |  16 +
+src/lib.rs                                       |   2 +
+src/media_player/mod.rs                          | 501 +++++++++++++++++++++++
+10 files changed, 1029 insertions(+), 8 deletions(-)
+```
+
+What I did **not** verify: actual audio playback, or audio/video sync drift over time. The clip I had on hand for this session has no audio stream, so the PCM decode thread, the rodio `Sink` wiring, and the wall-clock/frame-catch-up logic all compile, run, and degrade gracefully to video-only - but the thing they were actually built for never got exercised end to end against real audio this session. I'm not publishing a drift number I didn't measure. See What's Next.
+
+## Decision log
+
+- **A standalone `MediaPlayer`, not an extension of `StVideo`.** `StVideo` is load-bearing for the editor's timeline (transform, bind groups, sequence id) and none of that generalizes to a standalone addon. Copying the Media Foundation *technique* into an unencumbered struct was less work than trying to make the editor's version addon-compatible.
+- **`op_video_poll` writes the texture directly from Rust**, reusing `op_texture_update`'s `queue.write_texture` call inline rather than handing frame bytes back to JS for it to call `Entropy.Texture.update` itself. A full RGBA frame through the JS/Rust boundary every tick has no upside once the same write is one function call away in Rust already.
+- **Two separate `IMFSourceReader` instances** (video on the calling thread, audio on its own dedicated thread), not one reader shared across threads with stream selection toggled back and forth. Media Foundation's threading/apartment rules make "one reader, two threads" a real hazard; opening the file twice costs nothing that matters here.
+- **Audio decode on a thread I own, not rodio's mixer callback.** COM state (`CoInitializeEx`) is per-thread. Calling into Media Foundation from whatever thread rodio happens to schedule its callback on is an invitation to debug an apartment-threading issue with no logs; a thread this code spawns and controls isn't.
+- **Seek respawns the audio pipeline instead of draining the live channel.** A background thread is still pushing into that channel while a seek would need to flush it; tearing down and restarting fresh at the new position is simpler to get right than partially-draining a channel out from under its producer.
+- **Bounded channel as the pause mechanism for audio, not a manual flag.** `rodio::Sink::pause()` already stops the mixer from pulling; the decode thread's `sync_channel::send` then blocks naturally once the buffer fills, so pause needs no cooperation from the decode loop at all.
+- **Drop-frame catch-up (bounded to 30 iterations/poll), not one-frame-per-poll.** A naive "decode the next frame if due" falls permanently behind after any stall, since it can never catch up faster than the video's own frame rate. Discarding stale frames when several are due at once keeps playback locked to wall-clock time instead of drifting into slow motion.
+
+## Failure notes
+
+- **Missing `layout: "mesh"`** on the pipeline config - real, reproducible, exact wgpu validation text above. Every existing custom pipeline with `extraBindGroups` in this codebase already set this field; I hadn't internalized *why* until tracing `op_pipeline_create`'s branching.
+- **The 1-entry vs. 6-entry bind group mismatch was a genuine pre-existing engine bug**, not something this session's code introduced - `non_pbr_meshes` in `render_addon_frame.rs` had simply never been exercised by a `pbr: false` + `layout: "mesh"` + `Entropy.Model.createMesh` combination before. Worth stating plainly rather than folding into "my bugs," since it's now fixed for whatever addon hits this path next.
+- **Backface culling produced a silent, error-free black screen.** No panic, no validation error, nothing in the log - just nothing on screen. This is the kind of failure worth explicitly checking for before assuming the decoder or GPU upload is broken.
+- **No audio-bearing test clip was available this session.** The audio decode thread, PCM conversion, and rodio wiring all compile and run, and the graceful video-only fallback path (`[media_player] no usable audio stream...`) is real and tested - but actual audio playback and AV sync are unverified. Flagged rather than assumed working.
+
+## What's next
+
+- **Verify audio playback and measure real AV sync drift** against a clip that actually has an audio track - the one concrete gap this post couldn't close, and the most valuable thing to check next given the wall-clock-driven design.
+- **Sample-accurate sync**, if drift turns out to matter in practice: drive video frame selection off the audio decode thread's own consumed-sample count instead of `Instant::now()`.
+- **A Mac/AVFoundation backend.** Genuinely out of scope for now - not because it's uninteresting, but because Mac isn't a near-term priority for this project.
+- **Arbitrary file loading.** There's no file-open dialog in `Entropy.UI` yet; the sample clip's path is hardcoded in the addon. A real "Open..." flow needs that widget to exist first.
