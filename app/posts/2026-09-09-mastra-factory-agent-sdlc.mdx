@@ -1,0 +1,37 @@
+---
+title: "Product Hunt Pick: Mastra Factory, an SDLC Where Agents Own the Pipeline"
+date: 2026-09-09
+series: Product Hunt
+repo_link: https://github.com/mastra-ai/mastra
+---
+
+Today's #1 on Product Hunt is [Mastra Factory](https://mastra.ai/factory), sitting at 303 points with the tagline "From issue to production, run by agents." Mastra (the TypeScript AI framework, YC W25, 27.9k GitHub stars) has launched on PH three times before this one - Mastra Code, Observational Memory, the original framework - and this is their attempt at wiring those pieces into an actual software delivery pipeline instead of a chat window.
+
+## What it is
+
+Factory is a staged pipeline for issue-to-PR work, run by coding agents instead of a person at a terminal. You connect a GitHub org/repo, optionally a Linear project, and a model provider, then work moves through six stages: Intake, Triage, Planning, Building, Review, Done. The gates are explicit rather than "agent does everything and you review a diff at the end":
+
+- **Triage** - the agent asks clarifying questions about the issue, a human answers them.
+- **Planning** - the agent proposes an implementation plan, a human reviews and edits it before any code gets written.
+- **Building** - the agent implements, runs checks, opens the PR.
+- **Review** - a human merges or doesn't.
+
+It's built on Mastra's own primitives (workflows, memory, tools, observability), and per the team's [announcement post](https://mastra.ai/blog/announcing-mastra-factory), they used Mastra to build Factory and are now using Factory to build Mastra itself - "already writing more than 25% of our pull requests." A Product Hunt testimonial cited in search results puts a similar figure in production use: Factory writing 30% of pull requests and closing 60% of issues on a team's repo. Two different sources, close enough in magnitude that I'd treat both as directionally real rather than cherry-picked.
+
+## What's good about it
+
+- The stage gates are a real design decision, not a formality. Planning happens before Building, and the plan is editable before an agent touches any code - that's a materially different failure mode than "agent already opened a PR, now argue with it in review comments."
+- It's dogfooded. "We used the tool to build the tool, then switched to using the tool to build itself" is a claim you can go check against their own commit history, not just marketing copy.
+- The team frames the interesting part honestly in the announcement: "the highest-value human work is deciding which loops to create." That's a specific claim about where humans should spend attention (process design, not code review of every line) rather than a vague "10x your team" pitch.
+
+## What I'd push back on
+
+- **"Open source" and "self-hosted" don't mean what they usually mean here.** The Factory docs at [factory.mastra.ai](https://factory.mastra.ai/) describe self-hosting via `npm create factory@latest`, but that command provisions "a Mastra platform project, API key, and Postgres database" through Mastra's own platform - both the cloud path and the "self-hosted" path require a Mastra platform account. That's not the single-binary-on-your-own-infra kind of self-hosted; it's more like "runs on infrastructure Mastra still mediates."
+- **The license picture is murky from the outside.** Mastra's core framework repo is dual-licensed - Apache 2.0 outside the `ee/` directory, Mastra Enterprise License inside it. Neither the Factory landing page nor the Factory docs state plainly which license bucket Factory's own code falls under, and I couldn't find a Factory-specific LICENSE file to check directly. If licensing terms matter for your use case, verify it yourself before adopting.
+- **Pricing is metered like a hosted product, not a framework.** Starter is free with 100K observability events and 24 CPU hours/month; Teams is $250/month for 1M events and 250 CPU hours. Those are cloud-platform billing units, not something you'd expect to pay if the whole point were "a web application you control" on your own infrastructure.
+
+## Verdict
+
+The staged-gate idea is the actual contribution here - clarifying questions before planning, an editable plan before implementation, a human merge at the end - and it's a more defensible shape than most "autonomous agent does your SDLC" launches. The "open source" and "self-hosted" language oversells how independent of Mastra's own platform you actually end up being; read the CPU-hour and observability-event pricing as what it is, hosted-platform metering, before assuming this is something you can run entirely on your own terms.
+
+**Sources:** [Mastra Factory launch, Product Hunt](https://www.producthunt.com/products/mastra) · [mastra.ai/factory](https://mastra.ai/factory) · [Mastra Factory announcement](https://mastra.ai/blog/announcing-mastra-factory) · [factory.mastra.ai docs](https://factory.mastra.ai/) · [github.com/mastra-ai/mastra](https://github.com/mastra-ai/mastra)
