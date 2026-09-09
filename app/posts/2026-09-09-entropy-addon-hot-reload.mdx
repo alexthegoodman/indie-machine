@@ -1,0 +1,178 @@
+---
+title: "Hot Reload for Entropy's TS Addon Engine, Without Resetting GPU State"
+date: 2026-09-09
+series: Entropy
+crate_versions:
+  unchanged:
+    - deno_core = "0.332.0"
+    - wgpu = "27.0.1"
+    - winit = "0.30.12"
+  edition: "2024"
+  os: "Windows 11 Pro 10.0.26200 (only platform currently tested)"
+  tooling:
+    - "deno 2.6.7 CLI (bundles the addon's TypeScript to JS; not a Cargo dependency)"
+repo_link: entropy-engine @ 995730c (uncommitted at time of writing - see note at the end)
+---
+
+Addons run inside a single embedded `deno_core::JsRuntime` (`src/deno/addon_engine.rs:390`) - one V8 isolate, created once at startup, alive for the process's whole life. Every existing way to get code into it either only runs once (`load_addon`, used at startup) or is meant for a full addon swap (`load_bundle_sync`, used for Entropy Studio's compiled-in bundle). Neither one is "edit a shader, save, see it change without losing whatever the simulation was doing" - the actual ask.
+
+The question going in was whether that's even possible without dylib-style hot-reload pain. It turns out to be easier than that: there's no ABI or memory-layout problem here, because the addon side is just JS re-executed in a live isolate, and every piece of engine-side state an addon touches (GPU buffers, pipelines, meshes) is already referenced from JS by an opaque string id returned from an op, not a raw pointer. The real work wasn't "make V8 reload a module" - it's picking, for each resource type, whether reloading should *rebuild* it (pipelines - shader code is exactly what changed) or *hand back the existing one* (buffers and storage textures - GPU-resident simulation state that a naive reload would otherwise zero out).
+
+## What's out of scope here
+
+Bundling stays a manual step - `cd examples/studio-bundle && deno bundle src/fft_water_addon.ts > dist/fft_water.js`, same command from the [FFT ocean water post](/posts/2026-09-08-fft-ocean-water). The engine doesn't invoke `deno bundle` itself; it only watches the *output* file. That's a deliberate scope cut, not a missing feature - re-bundling doesn't need to live inside the render loop's process to solve the actual problem, which was state loss on reload, not the extra terminal command.
+
+## Reusing the running JsRuntime instead of replacing it
+
+`AddonEngine` gained three fields (`src/deno/addon_engine.rs`) and a small state machine:
+
+```rust
+hot_reload_path: Option<PathBuf>,
+hot_reload_last_mtime: Option<std::time::SystemTime>,
+hot_reload_pending: Option<(std::time::SystemTime, std::time::Instant)>,
+```
+
+`enable_hot_reload(path)` is called once, right after the initial `load_addon(path)` succeeds (wired from `EntropyApp::with_hot_reload(true)` down through `RunConfig` and `EntropyPipeline::initialize` - four files just to thread one bool to where the bundle actually gets loaded, `src/core/pipeline.rs:1436`). `check_hot_reload()` runs at the top of `AddonEngine::update()`, which already runs every frame (`src/core/render_addon_frame.rs:193`) - so no new thread, no filesystem watcher crate. The `JsRuntime` isn't `Send`, so anything that wants to reload it has to already be on the render thread; polling `fs::metadata` from the same place that's already ticking every frame is simpler than standing up a `notify` watcher and a channel back to the one thread allowed to touch V8.
+
+On an actual change, `reload_bundle_from_disk` does three things:
+
+```rust
+// src/deno/addon_engine.rs
+ctx.registered_addons.clear();
+ctx.on_cleanup_callbacks.clear();
+ctx.on_update_callbacks.clear();
+ctx.on_action_callbacks.clear();
+ctx.on_project_changed_callbacks.clear();
+ctx.op_addon_on_all_projects_loaded_callbacks.clear();
+ctx.tab_order.clear();
+
+let script_name: &'static str =
+    Box::leak(format!("hot_reload_{}", self.hot_reload_gen).into_boxed_str());
+self.runtime.execute_script(script_name, source)?;
+
+self.run_on_init();
+self.run_on_all_addons_initialized();
+```
+
+The clears matter more than they look. `on_update_callbacks` is iterated every frame and never drained on its own - skip clearing it and the *old* script's `onUpdate` closure keeps firing forever alongside the new one, running the addon's game logic twice a frame with no error to point at. `on_init_callbacks` and `on_all_addons_initialized_callbacks` don't need clearing here because `run_on_init`/`run_on_all_addons_initialized` already `mem::take` them every call - they're self-draining. Everything else in `AddonContext` (buffers, pipelines, compute_pipelines, textures, `RendererState::addon_meshes`) is deliberately untouched. That's the entire point: this reload re-executes the script, it doesn't tear down what the script built.
+
+`execute_script` runs the bundle as a plain script, not an ES module - the same call `load_bundle_sync` already uses for Studio's default bundle. I'd assumed the `.with_bundle()` path (which uses `load_main_es_module` at startup, not `execute_script`) meant a `deno bundle` output needed real ES module semantics to load. It doesn't: a script with no top-level `import`/`export` is trivially valid either way, and `deno bundle`'s output here has neither, so both loading paths already worked on the same file before this change - `load_bundle_sync`'s existing use of `execute_script` for the *default* bundle was the proof that reusing it for reload would work at all.
+
+## Rebuild vs. reuse: the actual design decision
+
+Everything an addon creates through an op falls into one of two buckets on reload, and treating them the same way would break one half of "hot reload" or the other.
+
+**Pipelines rebuild and replace in place.** `op_pipeline_create`/`op_compute_pipeline_create` used to mint a fresh `pipeline_{uuid}` on every call - correct for "always new," wrong for reload, where every `onInit` re-run would leak another compiled pipeline into `ctx.pipelines` forever. The id is now deterministic from the addon-supplied `name`:
+
+```rust
+// src/deno/addon_ops.rs, op_compute_pipeline_create
+let id = format!("cpipeline_{}", config.name);
+```
+
+`HashMap::insert` on an existing key replaces the value, so a reload correctly recompiles the pipeline from whatever the shader source now says - that's the whole reason to have a shader-editing hot reload story - without accumulating one dead pipeline object per save. The cost: two addons that happen to pick the same pipeline `name` now collide, sharing one GPU pipeline instead of getting two. `ctx.pipelines` was already a single global (not per-addon) map before this change, so that's a pre-existing property of the naming scheme, not something hot reload introduces - worth knowing if two addons are ever loaded side by side.
+
+**Buffers and storage textures reuse instead of rebuilding.** These are where an addon's actual runtime state lives - the FFT ocean's ripple simulation keeps its accumulated wave height in three ring-buffered `Rgba16Float` storage textures (`textures.rippleRing[0..3]`, from the [interactive ripples post](/posts/2026-09-08-fft-water-interactive-ripples)), not in any JS variable. Giving those a stable id and checking for it before allocating is what keeps that GPU-resident state alive across a reload:
+
+```rust
+// src/deno/addon_ops.rs, op_texture_create_ex
+if let Some(id) = &config.id {
+    if ctx.textures.contains_key(id) {
+        return Ok(id.clone());
+    }
+}
+```
+
+`BufferConfig` got the identical treatment, plus a size check `op_texture_create_ex` doesn't do (`wgpu::Texture` doesn't expose its size/format cheaply post-creation, `wgpu::Buffer` does):
+
+```rust
+// src/deno/addon_ops.rs, op_buffer_create
+if let Some(id) = &config.id {
+    if let Some(existing) = ctx.buffers.get(id) {
+        if existing.size() == config.size {
+            return Ok(id.clone());
+        }
+    }
+}
+```
+
+A size mismatch falls through and reallocates - the old contents wouldn't have meant anything at a different size anyway. Meshes needed no change: `op_mesh_create`'s consumer already upserts by `config.id` (`renderer_state.addon_meshes`, `src/deno/addon_engine.rs:2405`), replacing an existing entry in place rather than appending - that pattern existed before this session, for an unrelated reason, and turned out to already be exactly the right shape for hot reload.
+
+On the addon side, giving the ripple textures ids was one line each (`examples/studio-bundle/src/fft_water_addon.ts`):
+
+```typescript
+for (let i = 0; i < 3; i++) {
+    textures.rippleRing[i] = Entropy.Texture.createStorage(
+        RIPPLE_RESOLUTION, RIPPLE_RESOLUTION, "Rgba16Float", `ripple_ring_${i}`
+    );
+}
+```
+
+No addon author has to opt into any new lifecycle hook to get this. `onInit` re-runs on every reload exactly as it always did at startup; it's just that `Buffer.create`/`Texture.createStorage` calls with a stable `id` now no-op into "here's the one you already had" instead of allocating fresh.
+
+## Evidence
+
+Same machine as the last few posts: Intel UHD Graphics 770 (integrated), i5-12500, 32GB RAM, Windows 11 Pro 10.0.26200.
+
+```
+cargo build --bin example_fft_water
+cd examples/studio-bundle && deno bundle src/fft_water_addon.ts > dist/fft_water.js
+./target/debug/example_fft_water.exe
+```
+
+Clean build, ~20s (debug profile, incremental). Launched once, then edited `shallowColor` in the TS source and re-bundled twice in a row without restarting the process. Actual runtime log, unedited except for trimming the repeated point-light lines:
+
+```
+[AddonEngine] Hot reload watching "examples/studio-bundle/dist/fft_water.js"
+Create mesh "Global" "pipeline_FFT_Water_Render" true
+[AddonEngine] 🔥 Hot reloaded bundle from "examples/studio-bundle/dist/fft_water.js"
+[ADDON] 🌊 FFT Ocean: onInit started
+Creating pipeline: "FFT_Water_Render" Some("mesh") Some(true) None
+[ADDON] 🌊 FFT Ocean: Init resources
+[ADDON] 🌊 FFT Ocean: gen spectrum
+...
+[ADDON] 🌊 FFT Ocean: Setup UI{"currentParams":{...,"shallowColor":[0.11,0.22,0.33,1],...}}
+[ADDON] Created water mesh: fft_ocean_preview at 0,0,0
+[ADDON] ✅ FFT Ocean initialized!
+```
+
+The edited color (`[0.11, 0.22, 0.33]`, not the default `[0.2, 0.85, 0.95]`) shows up in the addon's own re-run `onInit` output with no process restart between the edit and this log line - that's the code-reload half working. For the state-preservation half, I temporarily added a debug print to the texture-reuse branch and diffed the two loads: the first (process startup) logs `creating new texture id=ripple_ring_0` through `ripple_render` for all six ripple textures; every reload after that logs `reusing existing texture id=...` for the same six ids instead - the GPU objects backing the ripple simulation are never reallocated after the first load, confirmed by log, not assumed from reading the code. That debug print isn't in the shipped diff; it was pulled once the behavior was confirmed.
+
+![The FFT ocean addon window mid-run after several hot reloads - waves and foam rendering normally, addon UI panel responsive](/images/fft-water-hot-reload.png)
+
+The screenshot is a normal render after multiple reloads in the same session - included to show the process stayed alive and rendering, not as color evidence (this addon persists `currentParams` to disk across runs via `Entropy.Addon.saveData`, keyed by a saved-component id, which is a pre-existing feature unrelated to hot reload and independently overrides the hardcoded default on load - not something this session touched, and not what the log excerpt above is demonstrating).
+
+First-party diff (uncommitted at time of writing - see the note at the end), `git diff --stat`:
+
+```
+examples/studio-bundle/src/fft_water_addon.ts |  12 ++-
+src/app.rs                                    |  14 +++
+src/bin/example_fft_water.rs                  |   1 +
+src/core/pipeline.rs                          |   3 +
+src/deno/addon_engine.rs                      | 126 +++++++++++++++++++++++++-
+src/deno/addon_ops.rs                         |  62 +++++++++++--
+src/deno/addon_setup.js                       |  17 +++-
+src/startup.rs                                |   9 ++
+src/video_export/exporter.rs                  |   1 +
+9 files changed, 229 insertions(+), 16 deletions(-)
+```
+
+`src/video_export/exporter.rs` shows up only because `EntropyPipeline::initialize` grew a `hot_reload: bool` parameter and every caller needed updating - a one-line, unrelated-in-spirit fixup, not a hot-reload feature in its own right.
+
+## Decision log
+
+- **Poll `fs::metadata` every frame instead of a filesystem watcher.** The engine's `JsRuntime` isn't `Send`; whatever detects the change still has to hand off to the same single thread that owns V8 to actually reload. That thread is already ticking every frame. A `notify` watcher plus a channel back to that thread is more moving parts for the same outcome, on a feature where "up to one frame of latency" is irrelevant.
+- **Deterministic pipeline ids from `name`, not addon-namespaced.** Namespacing by addon would mean threading `addon_name` through `op_pipeline_create`'s signature and every call site of it, for a collision that only matters once two addons are loaded together and happen to pick the same pipeline name - not a case this engine has today. Flagged as a real limitation of the naming scheme rather than fixed as new scope.
+- **Buffers/textures reuse-by-id, pipelines rebuild-by-id.** These look like the same problem (avoid leaking a map entry every reload) but need opposite behavior: a buffer's *contents* are simulation state worth keeping, a pipeline's *contents* are compiled shader code that's supposed to change when the source does. Treating them identically would either freeze shader edits out of hot reload or wipe simulation state on every save.
+- **A wall-clock debounce on the reload trigger, not a poll-count one.** See failure notes - this wasn't the first design, and the first one wasn't good enough.
+- **No new addon-facing lifecycle hook** (no `onHotReload`). `onInit` already runs again on every reload; the reuse-by-id behavior in `Buffer.create`/`Texture.createStorage` is what makes re-running it safe, so no addon has to be rewritten to opt in. FFT water's *only* addon-side change was adding four id strings.
+
+## Failure notes
+
+- **`deno bundle src.ts > out.js` isn't an atomic write, and a poll can catch the empty file.** The shell truncates `out.js` to redirect into it before `deno` has written a single byte, and (confirmed by logging every observed mtime) that empty file's timestamp can hold steady for well over one frame before real content lands - a "same mtime on two consecutive polls" debounce fired a reload against the truncated file, executing it as a harmless no-op script, immediately followed by a second reload once the real content showed up. Two back-to-back "🔥 Hot reloaded" log lines from a single `deno bundle` run was the first sign something was off. Fixed by switching the debounce from poll-count to wall-clock (`HOT_RELOAD_DEBOUNCE = Duration::from_millis(300)`, `src/deno/addon_engine.rs`) - a newly observed mtime has to hold for 300ms before it's treated as settled, regardless of how many frames that spans.
+- **`wgpu::Texture` doesn't expose width/height/format cheaply after creation.** `op_buffer_create`'s reuse check verifies `existing.size() == config.size` before handing back an old buffer; `op_texture_create_ex` can't do the equivalent for a texture without threading the original dimensions through a side map. Documented as a known gap in the code comment rather than solved: same id with a since-changed size/format needs a new id (or a restart) to actually pick up the change, and will otherwise silently keep the old texture.
+
+## What's next
+
+- **Namespace pipeline ids by addon**, if this engine ever runs two addons that pick the same pipeline `name` side by side - not exercised yet, since the standalone `EntropyApp` examples run one addon at a time.
+- **Track width/height/format alongside reused textures**, closing the gap in the second failure note above, so a texture reuse can validate shape the same way buffer reuse already validates size.
+- **A per-target debounce**, if a future addon's bundle output is written in more than two stages - the current 300ms constant is tuned against what `deno bundle`'s shell redirection actually does on this machine, not derived from anything more principled.
