@@ -1,0 +1,111 @@
+---
+title: "An FFT River: JONSWAP Instead of Phillips, Carved Into Noise Terrain"
+date: 2026-09-09
+series: Entropy
+crate_versions:
+  unchanged:
+    - wgpu = "27.0.1"
+    - winit = "0.30.12"
+    - deno_core = "0.332.0"
+  addon_deps:
+    - simplex-noise = "^4.0.3"
+    - alea = "^1.0.1"
+  edition: "2024"
+  os: "Windows 11 Pro 10.0.26200 (only platform currently tested)"
+  tooling:
+    - "deno 2.6.7 CLI (bundles the addon's TypeScript to JS; not a Cargo dependency)"
+repo_link: https://github.com/alexthegoodman/entropy-engine
+---
+
+The [FFT ocean addon](/posts/2026-09-08-fft-ocean-water) generates its wave spectrum with Phillips - open-water physics, tuned for wind blowing across a large fetch. A river channel isn't that: the wind can only act on the water across the width of the channel, not for kilometers, so the spectrum should have a sharp, narrow peak around one dominant wavelength instead of Phillips' broad open-ocean spread. JONSWAP is the standard fetch-limited alternative, and `fft_water_addon.ts` already had it written - as dead code, commented out at the call site, left for "maybe for rivers" in a code comment.
+
+This post is that maybe. `fft_river_water_addon.ts` is a new, standalone addon: JONSWAP-driven FFT water confined to a meandering channel carved into procedurally-generated terrain, with a texture-space scroll hack layered on top so the wave pattern visibly moves downstream. It's not a modification of the ocean addon - it's a fresh file that reuses the ocean's compute pipeline structure (spectrum init, time-evolution, FFT butterfly passes, displacement/derivatives) and replaces everything specific to "this is open water."
+
+## What we're building
+
+- `examples/studio-bundle/src/fft_river_water_addon.ts` (1,058 lines) - JONSWAP spectrum instead of Phillips, a sine-meandering channel carved into fbm-noise terrain via distance-to-centerline, a UV-scroll advection trick for downstream flow, and a procedural ground texture.
+- `src/bin/example_fft_river.rs` - an 11-line standalone binary, same pattern as every other Entropy example app this series has built.
+- Terrain heightfield generated with the same noise stack (`simplex-noise`'s `createNoise2D`, seeded through `alea`) the `flexnoise_v2.ts` FlexNoise terrain addon already uses elsewhere in the repo - not a new terrain system, a reuse of an existing one.
+
+## JONSWAP vs. Phillips
+
+The spectrum swap is the physical premise of the post, so it's worth being precise about what changed. Phillips (`phillips_spectrum` in the shader, kept in the file for reference but unused) models a fully-developed open sea: broad frequency spread, driven by wind speed and a damping term at high wavenumbers. JONSWAP adds a peak-enhancement factor (`gamma = 5.3`, per the standard fetch-limited formulation) on top of a Pierson-Moskowitz base shape, which narrows the spectrum around a dominant wave number tied to wind speed and gravity:
+
+```wgsl
+fn jonswap_spectrum(wave_vector: vec2<f32>) -> f32 {
+    let wave_number = length(wave_vector);
+    if (wave_number < 0.0001) {
+        return 0.0;
+    }
+
+    let omega_p = 0.87 * params.gravity / params.wind_speed;
+    let peak_wave_number = (omega_p * omega_p) / params.gravity;
+
+    let alpha = 0.0081;
+    let beta  = 1.25;
+    let pm_shape = (alpha / (wave_number * wave_number * wave_number * wave_number))
+                 * exp(-beta * pow(peak_wave_number / wave_number, 2.0));
+
+    let gamma         = 5.3;
+    let sigma         = select(0.09, 0.07, wave_number <= peak_wave_number);
+    let peak_enhancement = pow(gamma, peak_exponent);
+    // ... directional spreading + capillary damping, then combined below
+}
+```
+
+Practically, this makes the river's wave field visually tighter and more ripple-like than the ocean's broad swell - which is the point: a channel a few dozen world-units wide shouldn't be generating ocean-scale wave trains.
+
+## Carving a channel into noise terrain
+
+The channel center follows a sine wave in world-Z:
+
+```typescript
+function channelCenterX(worldZ: number): number {
+    return MEANDER_AMPLITUDE * Math.sin((2 * Math.PI * (worldZ + FIELD_SIZE / 2)) / MEANDER_WAVELENGTH);
+}
+```
+
+The heightfield builder walks the landscape grid, computes each point's distance to the channel centerline at that row's world-Z, and picks one of two paths: inside `CHANNEL_HALF_WIDTH` it's a flat floor (height 0, so the FFT water ribbon sits in a clean flat bed); outside it, an fbm noise value (5 octaves, persistence 0.5, lacunarity 2.0, via `simplex-noise` seeded through `alea`) is blended in over `BANK_WIDTH` so the banks ramp smoothly from flat channel floor into rolling terrain instead of a hard plateau edge:
+
+```typescript
+if (d <= CHANNEL_HALF_WIDTH) {
+    h = 0.0;
+} else {
+    const terrainHeight = (fbm2D(noise2D, worldX, worldZ, TERRAIN_OCTAVES, TERRAIN_FREQUENCY, TERRAIN_PERSISTENCE, TERRAIN_LACUNARITY) + 1) / 2;
+    const bankT = Math.min(1.0, (d - CHANNEL_HALF_WIDTH) / BANK_WIDTH);
+    h = bankT * terrainHeight;
+}
+```
+
+The water ribbon mesh uses the same `channelCenterX` function to place its own geometry, so the two never drift apart even though they're built independently.
+
+## The flow illusion
+
+Rivers flow; a stationary FFT wave field doesn't. The fix here is a UV-scroll on the displacement/derivative textures in the render shader, driven by a `flow_params` uniform - and it works cleanly with zero seams specifically because an FFT-generated height field is periodic by construction. `fract()` on a scrolled UV just wraps into the next tile of the same seamless field; scrolling a normal photographed texture the same way would show a visible seam every wrap. But it's worth being direct about what this is not, because the file's own comment already says so and I'm not going to smooth it over: it's not a real flow or advection solve. No momentum, no interaction with the channel banks, no speedup through narrow sections. It's a texture-space trick on top of a stationary wave spectrum, and it reads correctly at a glance but wouldn't survive, say, a floating object actually needing to feel current.
+
+## Evidence
+
+Built clean in release: `cargo build --release --bin example_fft_river` (86s, this session, this machine). Bundled via `deno bundle src/fft_river_water_addon.ts > dist/fft_river.js`, then ran `example_fft_river.exe` and screenshotted the live window:
+
+![FFT river carving through noise terrain - a meandering water channel with visible wave/ripple detail cutting through fbm-noise banks, mountains in the background, a second channel segment entering frame bottom-right](/images/entropy-fft-river-channel.png)
+
+*(Screenshot captured this session against the actual running binary, after fixing the bundling issue described below.)*
+
+Runtime log came up clean - no panics, no shader-compile errors, landscape collider and bind groups built successfully on the first real run after fixing the bundling issue below.
+
+## Decision log
+
+- **JONSWAP over Phillips for the spectrum, not a new spectrum model.** The physical justification (fetch-limited vs. open-water) is real and the shader math was already sitting unused in the ocean addon - reusing it was strictly less work and more correct than inventing something channel-specific.
+- **UV-scroll advection over a real flow solve.** A real flow field (velocity-driven advection, bank interaction, speedup in narrow sections) is a much larger problem - closer to the ripple simulation's leapfrog wave-equation work than a texture trick. The scroll hack was chosen because it's visually convincing for a screenshot/flythrough and because the FFT field's periodicity makes it seamless for free. It's flagged as a known simplification, not shipped as if it were physically accurate.
+- **Reuse `flexnoise_v2.ts`'s noise stack instead of a new terrain generator.** `simplex-noise` + `alea` was already proven elsewhere in the repo for exactly this kind of fbm terrain; there was no reason to pull in a different noise library or hand-roll one for a one-off channel carve.
+- **A fresh standalone file, not a modification of the ocean addon.** `fft_water_addon.ts` stayed untouched. The river addon copies and adapts the compute-shader structure rather than parameterizing the ocean file to branch between "ocean mode" and "river mode" - simpler to reason about, and it means the still-actively-developed ocean addon (rivers, buoyancy, wakes all queued against it) doesn't carry river-specific branches it doesn't need.
+
+## Failure notes
+
+**The terrain rendered solid black on the first real attempt** - not a lighting bug, a pipeline-bucketing bug already known from earlier sessions in this series. `render_addon_frame.rs` buckets every landscape into `pbr_landscapes` or `non_pbr_landscapes` before drawing (confirmed directly in the engine source, `src/core/render_addon_frame.rs:404-476`) based on whether `pipelineId` is set to `"default"` or omitted; only the PBR bucket goes through the geometry pipeline that samples the landscape's texture bind group and receives deferred lighting. Omitting `pipelineId` (or leaving it `None`) silently renders unlit and untextured - solid black, no error. The fix is one line (`pipelineId: "default"`), but it's a real footgun this series has now hit more than once with different symptoms.
+
+## What's next
+
+This addon is now the base for two items already queued against the FFT water work: buoyancy (sampling the combined height field on the CPU/JS side for a floating object - the ripple session's displacement math already does the hard part) and object-driven wakes (reusing the mouse-ripple splat/step/render-copy plumbing with a non-mouse caller). Neither is river-specific, but the river's narrower, more turbulent-looking wave field is arguably a better test bed for both than the open ocean.
+
+Not done here, and worth saying plainly rather than leaving implicit: the flow scroll is cosmetic only, there's no real current a floating object could feel yet.
