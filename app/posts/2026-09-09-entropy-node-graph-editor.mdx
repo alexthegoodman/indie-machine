@@ -1,0 +1,196 @@
+---
+title: "A Real Node Graph Editor for entropy_gui"
+date: 2026-09-09
+series: Entropy
+crate_versions:
+  unchanged:
+    - wgpu = "27.0.1"
+    - winit = "0.30.12"
+    - deno_core = "0.332.0"
+  edition: "2024"
+  os: "Windows 11 Pro 10.0.26200 (only platform currently tested)"
+  tooling:
+    - "deno 2.6.7 CLI (bundles the addon's TypeScript to JS; not a Cargo dependency)"
+repo_link: https://github.com/alexthegoodman/entropy-engine
+---
+
+When `entropy_gui` replaced `egui`/`egui-snarl` as the editor UI's foundation, one widget didn't survive the move: the node graph editor. `egui-snarl`'s `SnarlViewer` needs a real `&mut egui::Ui` to draw pin-dragging, bezier-curve connections, and there was no way to hand it one once panels and docking moved onto `entropy_gui::Ui` instead. What shipped in its place was `widgets_node_graph.rs`'s honest placeholder: a scrollable list of node names and `from -> to` connection strings, with a comment on it saying plainly that drawing new connections wasn't possible and that a real editor was follow-up work.
+
+This post is that follow-up. `entropy_gui` now has a real node graph editor - pan, zoom, drag nodes, drag a link out of a pin and drop it on another, click a wire to delete it, embed actual interactive widgets inside a node's body - built generically enough that Studio's existing behavior-graph editor and a from-scratch nocode app can both use it. To prove it's not just box-drawing, the second half of this post is a small but genuine visual-scripting calculator built on it: drag a number, watch every downstream node recompute live.
+
+## What we're building
+
+- `entropy_gui::NodeGraphEditor` (`src/entropy_gui/widgets_node_graph.rs`, full rewrite) - a self-contained immediate-mode widget: `GraphNode`/`GraphPin`/`GraphLink` are plain, domain-agnostic structs, `show()` returns a `Vec<NodeGraphEvent>` instead of mutating anything, and a node can host real widgets in its body via a callback.
+- Two new `Memory` fields (`node_drag`, `link_drag`) plus a `NodeGraphView` pan/zoom slot, so drags stay perfectly smooth even when the caller's node data isn't something the widget can hold a `&mut` into (see below - this is the load-bearing design decision in the whole file).
+- `src/deno/addon_engine.rs`'s `UiWidget::Snarl` arm rewired onto the new editor - and, while wiring it up, a real bug found and fixed in `src/deno/addon_setup.js`'s event router that had made `SnarlConfig.onNodeMoved` silently unreachable since the day it was declared.
+- `example_node_graph.rs` + `node_graph_addon.ts` - "Nocode Calculator," a small visual-scripting demo (Number / Add / Multiply / Output nodes) proving the editor end to end: drag, connect, disconnect, zoom, and edit a value, and watch the whole downstream graph recompute.
+
+## The core design problem: who owns a node's position
+
+Every other widget in this kit that drags something (`Window`'s title bar, a timeline clip) works the same way: the caller hands over a `&mut` to its own data, the widget mutates it directly, and there's zero lag because paint and interaction read the same live value. That doesn't work here, because the Studio call site - `UiWidget::Snarl { graph: BehaviorGraph, .. }` - rebuilds its entire node list from JS-owned state fresh, every single frame. There's no persistent `&mut Vec<Node>` for the widget to hold onto between frames; by the time `show()` is called again, the caller has thrown away whatever it had before and handed over a brand new `BehaviorGraph`.
+
+So `NodeGraphEditor::show()` takes `nodes: &[GraphNode]` - read-only - and returns events instead:
+
+```rust
+pub enum NodeGraphEvent {
+    NodeMoved { node: String, pos: Pos2 },
+    NodeClicked(String),
+    BackgroundClicked,
+    LinkCreated(GraphLink),
+    LinkRemoved(usize),
+    DeleteRequested(String),
+}
+```
+
+The caller applies whichever ones it wants after the call. That alone would mean every drag frame lags one frame behind the mouse - a `NodeMoved` this frame only reaches the caller's own state on the *next* `show()` call, and if the caller never applies it at all (which, it turns out, was true for the pre-existing Studio call site until this session - more below), the node would appear to not move at all.
+
+The fix is the same trick a lot of immediate-mode widgets use for exactly this problem: keep a transient, self-owned override during the drag, keyed by the dragging node's own interact id, and prefer it over the caller's `node.pos` for rendering:
+
+```rust
+pub struct Memory {
+    // ...
+    pub node_drag: Option<(Id, Pos2)>,
+    pub link_drag: Option<LinkDrag>,
+}
+```
+
+```rust
+let title_id = editor_id.with(("node_title", &node.id));
+let live_override = ctx.memory(|m| m.node_drag.clone()).filter(|(id, _)| *id == title_id).map(|(_, p)| p);
+let effective_pos = live_override.unwrap_or(node.pos);
+// ...
+if title_resp.drag_started() {
+    ctx.memory_mut(|m| m.node_drag = Some((title_id, node.pos)));
+} else if title_resp.dragged() {
+    let d = title_resp.drag_delta();
+    let new_pos = pos2(effective_pos.x + d.x / zoom, effective_pos.y + d.y / zoom);
+    ctx.memory_mut(|m| m.node_drag = Some((title_id, new_pos)));
+    events.push(NodeGraphEvent::NodeMoved { node: node.id.clone(), pos: new_pos });
+}
+if title_resp.drag_stopped() {
+    ctx.memory_mut(|m| m.node_drag = None);
+}
+```
+
+The override is cleared the instant the drag stops, so a cooperative caller that applies `NodeMoved` every frame sees zero snap-back (`node.pos` has already caught up by the time the override disappears), and an uncooperative one just gets a smooth drag that resets on release - correct-by-construction either way, instead of correct only if the caller behaves. Link-dragging uses the same shape of trick (`Memory::link_drag`, keyed by the source pin, holding just enough state to draw the live preview curve and check the drop target), for the same reason: creating a link mutates a `Vec<GraphLink>` the widget doesn't own either.
+
+Connections are cubic beziers, sampled into a 20-segment polyline (this kit has no dedicated bezier-stroke primitive, just `Painter::line_segment`), and a click within 7px of any segment marks that link for removal:
+
+```rust
+fn bezier_points(p0: Pos2, p1: Pos2) -> Vec<Pos2> {
+    let dx = (p1.x - p0.x).abs().max(40.0) * 0.5;
+    let c0 = pos2(p0.x + dx, p0.y);
+    let c1 = pos2(p1.x - dx, p1.y);
+    const SEGMENTS: usize = 20;
+    (0..=SEGMENTS).map(|i| {
+        let t = i as f32 / SEGMENTS as f32;
+        let mt = 1.0 - t;
+        pos2(
+            mt*mt*mt*p0.x + 3.0*mt*mt*t*c0.x + 3.0*mt*t*t*c1.x + t*t*t*p1.x,
+            mt*mt*mt*p0.y + 3.0*mt*mt*t*c0.y + 3.0*mt*t*t*c1.y + t*t*t*p1.y,
+        )
+    }).collect()
+}
+```
+
+Because the whole canvas is just pan/zoom-transformed screen coordinates - `to_screen(p) = canvas_rect.min + pan + p * zoom` - a node's optional body content is drawn by handing the caller's closure a completely ordinary `Ui` rooted at the node's already-transformed screen rect (`Ui::child_ui_at`). No special-casing was needed for that to work: a real `DragValue` or `ComboBox` dropped into a node body just works, hit-testing and all, because by the time any widget code runs, "where is this on screen" has already been resolved to real pixels. That's what lets the demo below put an actual editable number field inside a node instead of a static label.
+
+## The bug the demo found: a dead JS event handler that had never been reachable
+
+`examples/studio-bundle/src/addon.d.ts`'s `SnarlConfig` already declared `onConnect`, `onDisconnect`, and `onNodeMoved` callbacks, and `addon_setup.js`'s `snarl()` binding already had the parsing logic to call them:
+
+```js
+snarl: (windowId, config) => {
+    // ...
+    bindListener('_entropy_event_listeners', id, (eventData) => {
+        const parts = eventData.split('|');
+        const type = parts[0];
+        if (type === "SNARL_CONNECT" && config.onConnect) { config.onConnect(parts.slice(2)); }
+        else if (type === "SNARL_DISCONNECT" && config.onDisconnect) { config.onDisconnect(parts.slice(2)); }
+        else if (type === "SNARL_NODE_MOVED" && config.onNodeMoved) {
+            config.onNodeMoved(parts[2], [parseFloat(parts[3].split(',')[0]), parseFloat(parts[3].split(',')[1])]);
+        }
+    });
+},
+```
+
+All of that was already there before this session, presumably written at the same time the read-only placeholder was - an API contract for a feature that didn't exist yet. None of it could ever run, because Rust never pushed a `SNARL_*` event for the read-only widget to have fired one.
+
+Once I made the editor actually push these events, dragging a node in the demo app did... nothing. The window's own title bar dragged fine (proving the underlying `active_drag` mechanism and the mouse-simulation harness I was testing with both worked), but a graph node's title bar wouldn't move even after confirming (via a separate isolated test) that the click really was landing inside its rect. The `node_drag` preview override was working - I could tell because *other* interactions elsewhere in the same graph were unaffected - so the actual position update, `onNodeMoved`, wasn't reaching my addon's callback at all.
+
+The cause was in the generic event router, `addon_setup.js`'s `_process_events`, one level up from `snarl()`:
+
+```js
+} else if (event.startsWith("SNARL_CONNECT|") || event.startsWith("SNARL_DISCONNECT|")) {
+    const parts = event.split("|");
+    id = parts[1]; // snarl_id
+    payload = event;
+    isRaw = true;
+} else if (event.startsWith("PIANOROLL_")) {
+    // ...
+} else if (event.includes("|")) {
+    const parts = event.split("|");
+    id = parts[0];
+    payload = parts[1];
+}
+```
+
+`SNARL_CONNECT|` and `SNARL_DISCONNECT|` get their own branch, routing on `parts[1]` (the actual snarl widget id). `SNARL_NODE_MOVED|` has no branch, so it falls through to the generic `event.includes("|")` case, which reads `id = parts[0]` - the literal string `"SNARL_NODE_MOVED"`, not any widget's real id. No listener is ever registered under that key, so the event is dropped on the floor, silently, every time. `onNodeMoved` had been dead code since it was written, waiting for the one caller that would actually exercise it. Fixed by adding `SNARL_NODE_MOVED|` to the same branch as the other two.
+
+This is the kind of bug that's structurally impossible to catch by reading the code carefully - both halves of it (the parser inside `snarl()`, the router in `_process_events`) look individually correct, and the mismatch only surfaces when something actually drives the whole path end to end. It's also exactly why the compile/run gate in this pipeline says "you have actually executed it," not "you've read it and it looks right."
+
+## Evidence
+
+The demo - "Nocode Calculator" - wires three `Number` nodes through an `Add`, a `Multiply`, and an `Output` node. Node titles show live-computed values (`node.name` is just a plain string the addon controls, no special "value" field needed on the Rust side), and three `numericInput` widgets above the canvas edit the `Number` nodes directly.
+
+Initial state, `(3 + 4) * 2 = 14`:
+
+![Nocode Calculator's initial graph: three Number nodes feeding an Add node, which feeds a Multiply node with a third Number, which feeds an Output node reading 14.00](/images/entropy-node-graph-initial.png)
+
+Dragging a node's title bar - the bottom `Number = 3.00` node moved from the top of the column to the bottom, its wire following it, values unchanged:
+
+![The same graph after dragging the "Number = 3.00" node down below the other two Number nodes - its wire to the Add node's "a" pin bends to follow, values still correct](/images/entropy-node-graph-drag.png)
+
+Clicking the `Add -> Multiply` wire deletes it - `Multiply` and `Output` both drop to `0.00` since `Multiply.a` lost its input:
+
+![After clicking the wire between Add and Multiply to delete it - both Multiply and Output now read 0.00, since Multiply's "a" input has nothing feeding it](/images/entropy-node-graph-disconnect.png)
+
+Dragging from `Add`'s `sum` output pin back onto `Multiply`'s `a` input pin reconnects it - the pin under the cursor is highlighted, and the graph recomputes back to `14.00`:
+
+![Dragging a new connection from Add's sum output to Multiply's a input - the target pin is highlighted in the accent color, and the recomputed values (Multiply 14.00, Output 14.00) confirm the link landed correctly](/images/entropy-node-graph-reconnect.png)
+
+Scrolling to zoom out, anchored under the cursor - nodes, pins, wires, and the background grid all scale together, text included:
+
+![The same graph zoomed out via the mouse wheel - every node, pin, and wire has scaled down together, still centered under where the cursor was when scrolling started](/images/entropy-node-graph-zoom.png)
+
+And dragging the `Number` node's own numeric input field (a real `DragValue`-style widget embedded in the toolbar, editing the same node data the graph reads) from `4.00` to `204.00` - `Add`, `Multiply`, and `Output` all recompute to `207.00` / `414.00` / `414.00`:
+
+![After dragging the second Number node's value from 4.00 to 204.00 via its numeric input - Add now reads 207.00, Multiply 414.00, and Output 414.00, confirming live recomputation through the whole graph](/images/entropy-node-graph-value-drag.png)
+
+All six screenshots were captured against the actual running `example_node_graph.exe`, driven by synthetic `SetCursorPos`/`mouse_event` input (not just static renders) - each one is the real result of an actual click, drag, or scroll.
+
+## Decision log
+
+**Events out, not a `&mut`, even though it costs a frame of raw mutation.** Covered above - the Studio call site genuinely can't hand over persistent ownership, so this was the only design that works for both callers. The `node_drag`/`link_drag` self-correcting overrides are what make the cost of that decision (a frame of lag on raw position) invisible in practice.
+
+**Array-order hit-testing, not draw-order (topmost-wins).** Overlapping node rects resolve interaction in the order they appear in the `nodes` slice, not by which one is visually on top - a real gap if two nodes are ever dragged into overlap, but not one worth a second interaction pass for a v1. Documented in the widget's own module docs, not silently left as a surprise.
+
+**Left-drag pans the canvas; no middle-mouse.** `entropy_gui`'s `PointerState` only tracks primary/secondary buttons at all (`context.rs`), so middle-mouse pan wasn't an option without extending the input backend - out of scope for this session, and left-drag-to-pan on empty canvas is a normal convention anyway.
+
+**Node body content isn't zoom-scaled, only repositioned/resized.** A `DragValue` inside a node at 0.5x zoom gets a smaller hit rect but full-size text - this kit doesn't do sub-pixel font scaling anywhere else either, so this isn't a new gap, just an existing one inherited into a new widget.
+
+**Fix the dead router branch, don't route around it.** Once `SNARL_NODE_MOVED|` turned out to be silently unreachable, the tempting quick fix was to just format the Rust-side event differently so it happened to match the generic `id|payload` fallback. Fixing the actual router instead means the `onConnect`/`onDisconnect` pattern this file already established stays the one true way `Snarl`-family raw events get routed, instead of growing a second, inconsistent convention next to it.
+
+## Failure notes
+
+**The generic-drag branch swallowing background-pan wasn't the first bug I suspected - but it also wasn't a real bug.** My first hypothesis for why dragging didn't work was that resolving the canvas's own pan-drag *before* iterating nodes would let an empty-canvas drag claim `active_drag` ahead of whatever node the mouse happened to be over, since a node's rect is a subset of the canvas rect. That would have been a real bug, so I structured `show()` to resolve node/pin interactions first and the canvas's own pan-drag last, deliberately relying on this kit's single-active-drag arbitration (first interact() call each frame wins) to make nodes take priority. Verified this ordering is in fact what's implemented before moving on - it turned out not to be the cause of the drag failure I was chasing (that was the router bug above), but it's a real correctness property regardless and worth having gotten right on the way.
+
+**Synthetic input debugging needed an isolation step before the real bug was findable.** The first two drag attempts against the demo app produced literally zero visible change - not even the window shifting - which made "is my synthetic input even reaching the app" a live question before "is my widget logic correct" was. Testing against the *floating overlay window's own title bar* (a completely different, already-working piece of code using the same underlying `active_drag` mechanism) and watching it move exactly as expected ruled out the input harness and the general drag mechanism in one step, narrowing the search to the node-specific path - which is what led to finding the router bug above rather than chasing a phantom problem in `interact()` itself.
+
+## What's next
+
+- Wire the new `NodeGraphEditor` into Studio's actual Game Composer behavior-graph UI (this session only proved the addon-facing `Snarl` API works via the standalone demo's own `onConnect`/`onDisconnect`/`onNodeMoved` handlers - the in-Studio behavior-graph editing flow that originally motivated `BehaviorGraph` hasn't been touched).
+- A second interaction pass so overlapping nodes hit-test by paint order, not array order.
+- Selection state: `NodeClicked`/`BackgroundClicked`/`DeleteRequested` are all emitted (and `Delete`/`Backspace` while a node is selected fires `DeleteRequested`), but nothing consumes them yet in either call site - no `SnarlConfig` callback exists for selection or deletion the way `onConnect`/`onDisconnect`/`onNodeMoved` do.
+- A minimap and marquee (drag-select multiple nodes) - reasonable next asks for a graph with more than a handful of nodes, not attempted this session.
+- Cycle detection in a caller's own evaluator isn't the editor's job, but is worth calling out: the demo's `evaluate()` would recurse forever on a cycle the editor happily lets you draw. Fine for a five-node demo graph, not fine for anything meant to be robust against user error.
