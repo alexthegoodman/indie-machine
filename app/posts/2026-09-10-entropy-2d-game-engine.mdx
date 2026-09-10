@@ -1,0 +1,171 @@
+---
+title: "A Real 2D Level Editor for Entropy: Levels, Logic, and a Bug in the GUI's Click-Through"
+date: 2026-09-10
+series: Entropy
+crate_versions:
+  unchanged:
+    - wgpu = "27.0.1"
+    - winit = "0.30.12"
+    - deno_core = "0.332.0"
+  edition: "2024"
+  os: "Windows 11 Pro 10.0.26200 (only platform currently tested)"
+  tooling:
+    - "deno 2.6.7 CLI (bundles the addon's TypeScript to JS; not a Cargo dependency)"
+repo_link: https://github.com/alexthegoodman/entropy-engine
+---
+
+Earlier the same day, "build a 2D game engine" turned into a top-down arena shooter - real sprites, a real orthographic camera, a real game loop, all built out of Entropy's 3D addon API. It was a fine proof the primitives worked. It also wasn't what was asked for. The correction was direct: not another game - a tool for designing 2D levels and wiring up their logic, with making an actual game out of it explicitly *not* the point yet. Entropy already has several hardcoded games. It didn't have anything for *authoring* one.
+
+This post is that correction: a real level editor. Place entities, drag them around, edit their properties, attach behavior with the same node-graph widget Entropy already uses for 3D behavior graphs, save the level to disk, load it back, and preview it running - all without writing a line of game code. The arena shooter's engine-level fixes (a real orthographic camera, working sprite movement, real mouse tracking outside Studio) are the foundation this sits on and are summarized below rather than re-derived. This post's own engine fix is different in kind: not "a feature was dead," but "the GUI and the game world were fighting over the same click."
+
+## What we're building
+
+- `examples/studio-bundle/src/level_editor_2d/` - place rect/circle entities on a plane, select and drag them, edit tag/position/size/color in an Inspector panel, save/load the level as JSON.
+- A real per-entity logic graph, edited with `Entropy.UI.Widget.snarl` - the same interactive node-graph widget from an earlier session's "Nocode Calculator," now doing event/action wiring instead of arithmetic: `OnStart`/`OnCollide`/`OnKeyDown` events, `SetVelocity`/`Destroy`/`SetColor`/`Log` actions.
+- A Play/Edit toggle that actually runs the graphs - press Play, hold a key, watch a `SetVelocity` node move the entity, live.
+- `Entropy.Input.isPointerOverUI()` - a new, real engine feature. Before this, nothing in Entropy tracked whether the pointer was over a GUI element at all, so a click on a toolbar button also fired as a click on the game world underneath it. This is what broke first, and closing it took an actual engine change, not a workaround.
+- `src/bin/example_level_editor_2d.rs`, the standalone binary.
+
+## The foundation: what last session already fixed
+
+Three engine gaps got closed building the arena shooter, and this editor depends on all three:
+
+- **A real orthographic camera.** `SimpleCamera` always rendered perspective; the orthographic projection existed in source but nothing ever called it. Now `Entropy.Camera.setOrthographic(enabled, viewHeight?)` is a real, working op.
+- **`Entropy.Mesh.updateVertices` went from completely dead to actually functional.** It was declared in `addon.d.ts` and wired in the JS layer, but the op was never registered on the Rust side at all (`TypeError: ops.op_mesh_update_vertices is not a function`), and once registered, its queue was never drained. This is the only way to move a plain (non-NPC) mesh after creation - `Entropy.Model.createMesh`'s `position`/`rotation` have no update path - so it's what every dragged or `SetVelocity`-driven entity in this editor moves through.
+- **Real mouse position outside Studio.** `WindowEvent::CursorMoved`'s addon-facing handler was gated on `!game_mode`, and every `EntropyApp` defaults to `game_mode: true` - so `Entropy.Input.onMouseMove` and `mousePosition` simply never updated unless the cursor was grabbed (an FPS-mouselook-only case). Fixed by checking `cursor_grab` instead of `game_mode`. Without this, click-to-select in this editor wouldn't know where the click was.
+
+Full detail on all three is in the earlier post in this series. What follows assumes they're already in place.
+
+## The editor
+
+`level_editor_2d/entity.ts` defines what a level actually is - plain, serializable data, no engine types baked in:
+
+```ts
+interface EntityData {
+    id: string;
+    tag: "player" | "enemy" | "platform" | "trigger" | "decoration";
+    shape: "rect" | "circle";
+    x: number; y: number; w: number; h: number;
+    color: [number, number, number, number];
+    graph: { nodes: LogicNode[]; connections: LogicConn[] };
+}
+```
+
+`EditorEntity` wraps one of these with a `Sprite` (the arena shooter's sprite primitive) and keeps them in sync - `syncTransform()` pushes `x`/`y`/`w`/`h` to the sprite whenever a drag or a `SetVelocity` node changes them. Three `Entropy.UI` windows drive everything: a Toolbox (add/delete, save/load, the Play/Edit toggle), an Inspector (tag dropdown, x/y/w/h as `numericInput`, a `colorInput`), and a Logic panel that only appears once something is selected.
+
+Edit-mode interaction is a plain hit test - `Camera2D.screenToWorld` turns the click into a world point, `physics2d.ts`'s `pointInRect`/`pointInCircle` finds what's under it, and a press-then-hold either starts a drag (offset-preserving, so the entity doesn't jump to be centered under the cursor) or, on empty space, deselects.
+
+## The logic graph
+
+`level_editor_2d/graph.ts` reuses the exact ownership pattern the Nocode Calculator addon proved for `entropy_gui`'s node-graph widget: nodes and connections are plain JS-owned arrays, `Entropy.UI.Widget.snarl(win, { graph: { nodes, connections }, onConnect, onDisconnect, onNodeMoved })` renders and edits them, and the callbacks mutate the arrays directly:
+
+```ts
+onConnect: (params) => {
+    const [fromNode, fromPin, toNode, toPin] = params;
+    graph.connections = graph.connections.filter(c => !(c.toNode === toNode && c.toPin === toPin));
+    graph.connections.push({ fromNode, fromPin, toNode, toPin });
+}
+```
+
+The node set is small on purpose - three events, four actions, chosen to be the minimum that's still genuinely testable:
+
+```ts
+type LogicNodeType = "OnStart" | "OnCollide" | "OnKeyDown" | "SetVelocity" | "Destroy" | "SetColor" | "Log";
+```
+
+The calculator's interpreter pulls values backward from an output node, memoized, safe against cycles by construction. Logic nodes have side effects instead of values, so this interpreter walks forward from an event node instead, with an explicit `visited` set standing in for the memoization a pure pull-based walk gets for free:
+
+```ts
+export function runFrom(startNodeId: string, entity: EditorEntity, graph: EntityGraph, onDestroyed: (e: EditorEntity) => void): void {
+    const visited = new Set<string>([startNodeId]);
+    const queue = graph.connections.filter(c => c.fromNode === startNodeId).map(c => c.toNode);
+    while (queue.length > 0) {
+        const nodeId = queue.shift()!;
+        if (visited.has(nodeId)) continue;
+        visited.add(nodeId);
+        const node = graph.nodes.find(n => n.id === nodeId);
+        if (!node) continue;
+        // ...switch on node.nodeType, applying to `entity`...
+    }
+}
+```
+
+`OnKeyDown` and `OnCollide` are edge-triggered in the Play-mode update loop - a `Set` of already-fired node ids (for keys) and already-overlapping node/entity pairs (for collisions) means a node fires once per press or once per contact, not every frame the condition holds.
+
+## The bug: clicking a button also clicked the world
+
+The first real test - select an entity, click "+ OnKeyDown" in the Logic panel - deselected the entity instead of adding a node. Every UI click was also being hit-tested against the game world underneath it, because nothing in the engine tracked whether the pointer was over a GUI element at all. This is the same class of problem an earlier session's FFT Water addon hit and explicitly left alone ("addon Input listeners and the addon's own UI widgets both receive mouse events for the same click... no addon-facing 'mouse captured by UI' query") - genuinely broken, not previously worth fixing until a whole editor's worth of buttons made it impossible to ignore.
+
+Real egui exposes this as `ctx.wants_pointer_input()`. `entropy_gui` (Entropy's in-house replacement, added a couple sessions ago) had nothing equivalent - confirmed by grepping the whole module for `pointer_over`/`wants_pointer` and finding zero hits. Every widget's hover/click test happens through one shared function, though, which is the whole fix:
+
+```rust
+// src/entropy_gui/ui.rs
+pub(crate) fn interact(ctx: &Context, rect: Rect, id: Id, sense: Sense) -> Response {
+    let input = ctx.input(|i| i.clone());
+    let hovered = input.pointer.pos.map_or(false, |p| rect.contains(p));
+    if hovered {
+        ctx.mark_pointer_over_ui();
+    }
+    // ...
+}
+```
+
+`Context` gained a `pointer_over_ui: bool`, reset at the top of every frame and set from that one call site. That's sufficient for the *entire* GUI, not just individual widgets, because `Window::show()` already does a final whole-window hover check after drawing its contents:
+
+```rust
+// src/entropy_gui/containers/window.rs
+Some(InnerResponse { inner: Some(inner), response: interact(ctx, new_rect, id, Sense::hover()) })
+```
+
+Any click inside any `Entropy.UI.createWindow` - including the Logic panel's node-graph canvas - sets the flag, with no changes needed to the node-graph widget itself. Snapshotted into the addon-visible state after every window for the frame has been drawn:
+
+```rust
+// addon_engine.rs, end of render_ui
+context.pointer_over_ui = ctx.pointer_over_ui();
+```
+
+...and surfaced as one more field on the existing input-state op rather than a new one - `Entropy.Input.isPointerOverUI()`. The editor's click handler now checks it before treating a press as a world interaction:
+
+```ts
+if (justPressed && !input.pointerOverUI()) {
+    const hit = findEntityAt(worldX, worldY);
+    // ...
+}
+```
+
+## Evidence
+
+Placed two entities, selected the player, wired `OnKeyDown(key: "d")` → `SetVelocity(vx: 5, vy: 0)` by dragging between the two pins on the actual rendered graph:
+
+![The Logic panel showing a wired graph: an "On Key Down" node connected to a "Set Velocity" node via a drawn orange wire, with the key and vx/vy properties visible above the canvas](/images/entropy-2d-level-editor-graph.png)
+
+Saved, then pressed Play and held D. The Inspector's X field is live during Play mode - it climbed from -3.20 past 43 as the entity actually integrated velocity frame over frame, moving it off the visible arena entirely (nothing to see in the render, which is itself part of the point - the Inspector is reading real, current state, not a static value):
+
+![The editor in Play mode: the mode label reads PLAY, the button reads "Stop (back to Edit)", and the Inspector shows the selected entity's X coordinate at 43.41, far from its starting position of -3.20](/images/entropy-2d-level-editor-play.png)
+
+Killed the process entirely and relaunched fresh - a new PID, nothing in memory. Clicked Load:
+
+![After a full process restart, the Load button restores the exact saved state: the same entity id, X and Y back at -3.20 (not the in-play 43.41), and the full logic graph - both nodes, their properties, and the connection - intact](/images/entropy-2d-level-editor-loaded.png)
+
+Same entity id, position restored to -3.20 (the value at save time, not the in-play 43.41 - confirming Save captured a snapshot, not a live reference), and the graph - both nodes, their properties, the connection between them - came back exactly. That round-trip through a real process restart is the actual claim of this post: not "the buttons don't crash," but "what you build here is still there tomorrow."
+
+Regression check: every pre-existing binary plus both new ones (`example_game2d`, `example_level_editor_2d`) built clean individually. A bare `cargo build` across every binary in one invocation hit the same transient stale-interleaved-target-dir errors documented in an earlier session and confirmed unrelated the same way - clean when built one at a time.
+
+## Decision log
+
+**One `pointer_over_ui` flag, not per-widget consumption.** Real egui's input-consumption model is more granular (a widget can consume a click without every other widget seeing it "hovered"). A single frame-level "was the pointer over *anything*" flag is a coarser signal, but it's exactly what a world-click guard needs, and it came from one `if hovered` check in one already-shared function instead of threading consumption state through every widget type.
+
+**List every node's properties, not just the selected one.** `SnarlConfig` has `onConnect`/`onDisconnect`/`onNodeMoved` but no `onNodeClicked` - the widget doesn't tell the addon which node (if any) is selected. Rather than add that (a real, reasonable follow-up), the Logic panel lists a property editor for every node in the graph, filtered by type - the same approach the Nocode Calculator uses for its Number nodes. Fine for the handful of nodes a level entity actually needs; would get cluttered well before "dozens."
+
+**Dropdowns instead of text fields, everywhere a name would go.** `Entropy.UI` has no free-text input widget - confirmed by reading the full widget catalog, not assumed. `OnKeyDown`'s key and `Log`'s message are dropdowns over a small fixed set; levels save to one fixed `level.json` instead of a typed name. All three are real, reasonable limitations of a v1, not design choices made because dropdowns are nicer - a text-input widget removes all three at once and is the actual next step, not a differently-shaped one.
+
+**Recreate the mesh for `SetColor`, don't extend `Mesh.updateVertices`.** The fixed op from the earlier session only ever writes position floats. `SetColor` could have extended it to also cover color - instead `Sprite.retint()` destroys and recreates the mesh with the new tint baked in. Color changes here are event-driven and infrequent; the recreate cost is trivial at that rate, and it kept this whole session's Rust surface to exactly the one `pointer_over_ui` fix.
+
+## What's next
+
+- A `NodeClicked` event from the Snarl widget (already emitted internally per an earlier session's notes, just not wired to JS) so the Logic panel can show one node's properties instead of listing all of them.
+- Multi-level save slots or an actual file name, blocked on the same missing text-input widget noted above - once that exists, this is a small change, not a redesign.
+- Z-ordering by selection instead of the current fixed by-tag order, so a selected entity reliably renders on top regardless of what it's tagged.
+- Pan/zoom for the level canvas - fixed at the origin right now, fine for the handful of entities this session tested with, not for an actual level.
+- More logic nodes once the current seven feel limiting - branches, a wait/delay node, the calculator's math nodes ported over for anything that needs a computed value rather than a fixed property.
+- Extending `Mesh.updateVertices` to cover color as well as position, so `SetColor` stops needing a mesh recreate - deliberately deferred this session, not forgotten.
