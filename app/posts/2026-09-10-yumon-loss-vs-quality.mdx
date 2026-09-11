@@ -1,0 +1,157 @@
+---
+title: "Yumon Pet: The Lowest-Loss Checkpoint Wasn't the Best One"
+date: 2026-09-10
+series: Yumon
+crate_versions:
+  unchanged:
+    - burn = "0.20.1" (features: autodiff, wgpu, cuda)
+    - cubecl = "0.9.0" (features: wgpu, cuda)
+    - wgpu = "26.0.1" (pulled in by cubecl)
+  edition: "2024"
+  os: "Windows 11 Pro (64-bit), build 10.0.26200"
+  backend: "burn Wgpu backend, default instance/backend selection (not explicitly pinned to Vulkan/DX12)"
+repo_link: https://github.com/alexthegoodman/yumon-pet
+---
+
+Yumon Pet trains a small decoder-only transformer from scratch in Rust, using [burn](https://docs.rs/burn/0.20.1/burn/) for the model and [cubecl](https://docs.rs/cubecl/0.9.0/cubecl/)'s Wgpu runtime for the flash-attention kernel. The repo has been through a dozen training runs at different capacities, sequence lengths, and data mixes, and every run leaves behind a `metadata.json` with a final training loss. The obvious move is to pick the checkpoint with the lowest number and call it the best model. I ran three of those checkpoints - small, medium, large, same data recipe, same prompt - to check whether that's actually true.
+
+It isn't. The checkpoint with the lowest loss in the entire `checkpoints/` tree produced the worst prose of the three.
+
+## The three checkpoints
+
+All three are `DecoderOnly` architecture (`src/brain/decoder_model.rs`, single causal stack, prompt and reply concatenated into one sequence - as opposed to the older `EncoderDecoder` architecture in `src/brain/model.rs`, cross-attention over a separate encoder stack), trained on the `Structured` stage, where the model learns to emit JSON (`{"action": ..., "emotion": ..., "reply": ...}`) rather than free text.
+
+| Checkpoint | embed/hidden | layers | heads | ff_dim | max_seq_len | batch_size | epochs trained | final loss | model.bin |
+|---|---|---|---|---|---|---|---|---|---|
+| `brain-all-dec-only/128h_2l_2a_220len_6e` | 128 | 2 | 2 | 512 | 220 | 32 | 4 | 0.578 | 6.02 MiB |
+| `brain/256h_3l_4a_512len_b2_DecoderOnly_Structured` | 256 | 3 | 4 | 1024 | 512 | 2 | 3 | 0.622 | 20.02 MiB |
+| `brain/512h_6l_4a_512len_b2_DecoderOnly_Structured` | 512 | 6 | 4 | 2048 | 512 | 2 | 1 | **0.165** | 112.05 MiB |
+
+That last row is the one to notice before reading any generated text: it has less than half the loss of the other two, and it got there in a single epoch. The `run` config for it in `src/brain/train.rs` asks for 15 epochs at that batch size; it stopped at 1.
+
+## Getting real output out of them
+
+`cargo run -- chat` in `src/main.rs` looks like the headless inference path - it loads the vision model, loads the brain checkpoint, prints the detected emote - and then does nothing with the model. The actual generation call is commented out:
+
+```rust
+// src/main.rs, run_chat()
+// let result = brain_model.generate(
+//     &tokenizer,
+//     &class_probs,
+//     &emote_probs,
+//     user_emote_idx,
+//     prompt,
+//     80,   // max tokens
+//     &device,
+// );
+
+// println!("\n┌─ Yumon says ──────────────────────────────────────────┐");
+// println!("│ {}", result.reply);
+// println!("└───────────────────────────────────────────────────────┘");
+
+Ok(())
+```
+
+The real generation path lives in `chat_ui.rs`, but that binary pulls in the `desktop` feature (`tao`, `wry`, `three-d`) for its terminal UI shell, which is unrelated to running a model. So there's no way to get a checkpoint's actual output from the command line without either building the full desktop stack or writing a thin wrapper. I added `src/bin/headless_compare.rs` - no GUI deps, just `YumonDecBrain::load` + `generate_unmasked_parsed`, with the same prompt-wrapping `chat_ui.rs` uses for the `Structured` stage:
+
+```rust
+// src/bin/headless_compare.rs
+fn wrap_prompt(stage: TrainingStage, prompt: &str) -> String {
+    if stage == TrainingStage::Structured {
+        serde_json::to_string_pretty(&serde_json::json!({
+            "memories": Vec::<serde_json::Value>::new(),
+            "message": prompt,
+        }))
+        .unwrap()
+    } else {
+        prompt.to_string()
+    }
+}
+
+let (model, tokenizer, config) = YumonDecBrain::<Wgpu>::load(checkpoint, &device)?;
+let wrapped = wrap_prompt(config.training_stage, prompt);
+let result = model.generate_unmasked_parsed::<WgpuRuntime>(
+    &tokenizer,
+    &wrapped,
+    config.max_seq_len,
+    &device,
+);
+```
+
+Built headless with `cargo build --no-default-features --bin headless_compare` - `--no-default-features` drops the `desktop` feature, so no GTK/WebKit/udev equivalents are needed on this platform either.
+
+## Evidence
+
+Same prompt against all three, this session, this machine:
+
+```
+cargo run --no-default-features --bin headless_compare -- dec <checkpoint> "how are you feeling today"
+```
+
+**Small (128h/2l/2a, loss 0.578):**
+
+```
+{
+ focusedec"
+}
+ focused estate
+{
+ mix" attack":ec" portfol",
+ mix" ingace":ec" entrepreneurs vide",
+ mix" happeningment":ec" peiter shly br studentated0"
+}
+```
+
+Not valid JSON. No `reply` field the schema parser could even extract - `result.reply` came back empty.
+
+**Medium (256h/3l/4a, loss 0.622):**
+
+```json
+{
+  " action": " get help",
+  " emotion": " happy",
+  " reply": " you're looking for the following command in this case, and it is in the context of the text."
+}
+```
+
+Valid schema, grammatical, but non-responsive - "how are you feeling today" gets an answer that reads like tech-support boilerplate.
+
+**Large (512h/6l/4a, loss 0.165 - the lowest of any checkpoint in the repo):**
+
+```json
+{
+   " action": " follow",
+  " emotion": " fearful",
+  " reply": " that can use and the company's better to work in the future-s of their own ticers as a single."
+}
+```
+
+Valid schema, but worse grammar than the medium checkpoint - "future-s," "ticers" aren't words, and the sentence doesn't parse. This is the checkpoint with the best loss number in the whole repo.
+
+**Test hardware**, this machine, this session:
+
+| | |
+|---|---|
+| GPU | Intel(R) UHD Graphics 770 (integrated, driver 32.0.101.7085) |
+| CPU | 12th Gen Intel(R) Core(TM) i5-12500, 6 cores / 12 threads |
+| RAM | 32 GB |
+| OS | Windows 11 Pro (64-bit), build 10.0.26200 |
+
+Loss-to-quality ranking across the three: by loss, large (0.165) < small (0.578) < medium (0.622). By actual output quality: medium > large > small. The two orderings don't agree at any position. Loss here is a training-stability signal (did the schema's fixed punctuation and keys get learned) more than a content-quality signal, and it's not comparable across runs with different batch sizes and wildly different epoch counts without controlling for those first - which none of these three do.
+
+## Decision log
+
+- **DecoderOnly over EncoderDecoder.** `src/brain/model.rs` (`YumonBrain` - separate encoder/decoder stacks with cross-attention) is still in the repo and still compiles, but every `RunConfig` currently queued in `train.rs`'s `runs` vec uses `Architecture::DecoderOnly` (`src/brain/decoder_model.rs`, `YumonDecBrain` - one causal stack, prompt and reply as a single sequence). I didn't run the encoder-decoder path this session, so I can't compare it directly; what's verifiable is that it's the abandoned branch of an explicit fork in the code (commit `a33e6e4`, "choose decoder only vs enc-dec arch"), not something still being actively trained toward.
+- **Synthetic Q&A over raw Bible CSV.** `load_stage_data` in `train.rs` has `bible_bbe.csv`/`bible_asv.csv` (loaded via `FileKind::BibleCsv`) commented out, replaced by `data/synthetic/bible.txt` loaded as `FileKind::Chats`. The comment directly above the swap: "LLM-generated Q&A pairs... proper message/reply splits instead of BibleCsv's arbitrary mid-sentence cuts." A CSV-row cut that lands mid-verse produces a sample where the "reply" isn't a complete thought, which is a worse training signal than a clean split, regardless of topic.
+- **`creative_stories.txt` is loaded but disabled.** Same function, commented out with `// good but gets split`. The loader's fixed `max_seq_len` chunking doesn't know where a story's natural boundaries are, so long-form narrative gets cut at arbitrary token positions the same way the raw Bible CSV did. It's sitting in `data/` unused for that reason, not because the content is bad.
+- **Wgpu over a CUDA-only path**, even though `cuda` is an enabled feature on both `burn` and `cubecl`. Burn's own docs describe Wgpu as a "cross-platform GPU backend," and the framework is "generic over the `Backend` trait, which allows us to build Burn with swappable backends" - which is the actual reason `headless_compare.rs` above runs unmodified on this machine's integrated Intel graphics with no CUDA installed at all.
+
+## Failure notes
+
+- **Capacity has a hard floor for this schema, and it's above 128h/2l/2a.** The small checkpoint doesn't produce degraded JSON, it produces no JSON - the FSM/schema structure collapses entirely, despite having a lower loss than the medium checkpoint that gets the schema right every time.
+- **Loss isn't comparable across these three runs without more controls than exist today.** Batch size, epoch count, and architecture size all vary simultaneously between checkpoints. The `final_loss` field in `metadata.json` is useful for watching one run converge, not for ranking runs against each other the way I initially reached for it.
+- **The headless `chat` command in `main.rs` doesn't generate anything.** This isn't a runtime bug - it builds and runs cleanly, prints the vision output, then returns `Ok(())` - it's dead code left over from before the vision/brain split, and the only path that actually calls `generate_unmasked_parsed` today is inside the `desktop`-feature terminal UI.
+
+## What's next
+
+None of these three checkpoints is what Yumon Pet should ship with - that's the point of running them side by side rather than picking one. The large checkpoint is one epoch into a fifteen-epoch plan; finishing that run, or the medium one, with loss tracked but not treated as the finish line, is the next concrete step before there's a checkpoint worth writing a "here's what Yumon says" post about.
