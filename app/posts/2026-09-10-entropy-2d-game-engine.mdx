@@ -14,9 +14,7 @@ crate_versions:
 repo_link: https://github.com/alexthegoodman/entropy-engine
 ---
 
-Earlier the same day, "build a 2D game engine" turned into a top-down arena shooter - real sprites, a real orthographic camera, a real game loop, all built out of Entropy's 3D addon API. It was a fine proof the primitives worked. It also wasn't what was asked for. The correction was direct: not another game - a tool for designing 2D levels and wiring up their logic, with making an actual game out of it explicitly *not* the point yet. Entropy already has several hardcoded games. It didn't have anything for *authoring* one.
-
-This post is that correction: a real level editor. Place entities, drag them around, edit their properties, attach behavior with the same node-graph widget Entropy already uses for 3D behavior graphs, save the level to disk, load it back, and preview it running - all without writing a line of game code. The arena shooter's engine-level fixes (a real orthographic camera, working sprite movement, real mouse tracking outside Studio) are the foundation this sits on and are summarized below rather than re-derived. This post's own engine fix is different in kind: not "a feature was dead," but "the GUI and the game world were fighting over the same click."
+A real level editor. Place entities, drag them around, edit their properties, attach behavior with the same node-graph widget Entropy already uses for 3D behavior graphs, save the level to disk, load it back, and preview it running - all without writing a line of game code. The arena shooter's engine-level fixes (a real orthographic camera, working sprite movement, real mouse tracking outside Studio) are the foundation this sits on and are summarized below rather than re-derived. This post's own engine fix is different in kind: not "a feature was dead," but "the GUI and the game world were fighting over the same click."
 
 ## What we're building
 
