@@ -1,0 +1,30 @@
+---
+title: "Product Hunt Pick: OpenObserve's AI Observability, for Debugging Agents That Cross Every Layer of Your Stack"
+date: 2026-09-10
+series: Product Hunt
+repo_link: https://github.com/openobserve/openobserve
+---
+
+Today's #2 on Product Hunt is [OpenObserve's AI Observability](https://www.producthunt.com/products/openobserve), sitting at 272 points with the tagline "AI-native, open-source Datadog alternative." OpenObserve itself is a 21.7k-star, Rust-built observability platform (Parquet storage, queried through Apache Arrow DataFusion instead of an Elasticsearch-style inverted index), and this launch bolts LLM and agent tracing onto the logs/metrics/traces platform it already ships.
+
+## What it is
+
+The pitch is a real, specific gap: APM tools see HTTP calls, LLM tracing tools see prompts and completions, and nothing sees both - so when an agent gives a bad answer or a workflow stalls, you can't tell which hop caused it without stitching together two separate toolchains yourself. OpenObserve's answer is to put agent tracing in the same store as the logs, metrics, and traces from the rest of your stack: every run, tool call, and hop, with latency and cost attached, correlated against the backend and database activity happening around it. On top of that it adds scorers and evaluation jobs that run against live production traffic (not just a test set) to catch quality drift, plus review queues and datasets built from real traces for human grading.
+
+## What's good about it
+
+- The core framing is correct and not something most LLM-observability tools solve: an agent's bad output is often caused by something outside the LLM call entirely (a slow downstream service, a bad DB read), and a tool that only instruments the prompt/completion boundary can't see that.
+- It's genuinely one platform, not two glued together. Because OpenObserve already ingests logs, metrics, and traces, agent sessions get correlated against infrastructure signals that already exist in the same store, instead of requiring a second pipeline plus a manual join.
+- The underlying platform's numbers are real and independently verifiable: Parquet-over-object-storage instead of Elasticsearch's index gives OpenObserve's own benchmark claim of 140x lower storage cost, and it's a single Rust binary that the vendor says over 8,000 organizations already run in production, including Fortune 100 companies processing 2.5+ petabytes/day. That's an unusually substantial base for a feature launch to sit on top of, rather than a brand-new project's first users.
+
+## What I'd push back on
+
+- **It's not clear the feature being launched is actually in the open-source tier.** The AGPL-3.0 licensed edition is described elsewhere as "feature-complete" for logs, metrics, traces, dashboards, alerts, pipelines, and RUM - but SSO, RBAC, audit trails, and several other capabilities are explicitly Enterprise-only, under a separate commercial license. The pricing page lists "AI-Powered Observability" under the Self-Hosted Enterprise and Cloud tiers, but never states whether it's included in the free self-hosted (AGPL) tier at all. The landing page markets this as a feature of "the open-source Datadog alternative"; the pricing page's tier breakdown doesn't back that up cleanly. I'd want a self-hosted AGPL install in front of me before trusting which side of that line agent tracing actually falls on.
+- **AGPL-3.0 is "open source," but it's a much stronger copyleft than most devs assume when they hear the phrase.** The project states this was a deliberate choice, to keep improvements to the platform itself open. Fair position to take, but if you're evaluating this against a permissively-licensed alternative, the license terms are a real difference in obligations, not a footnote.
+- **The AI SRE agent and AI Assistant are explicitly "free during preview"** with a fixed credit allotment ("20 credits to play"), which is normal for a new feature but means the pricing you'll actually pay once preview ends isn't published yet.
+
+## Verdict
+
+The problem statement here is the strongest part of the launch: most LLM-observability tools stop at the prompt boundary, and OpenObserve's pitch of tracing the whole hop, LLM call through backend through database, in the same store as your existing logs and metrics, is a real architectural advantage if it holds up under load. The open-source framing is the part to verify yourself before treating this as "self-hosted, free, and fully yours" - the pricing tiers put AI observability under Enterprise/Cloud without ever saying plainly whether the AGPL self-hosted tier gets it too.
+
+**Sources:** [OpenObserve AI Observability launch, Product Hunt](https://www.producthunt.com/products/openobserve) · [openobserve.ai](https://openobserve.ai/) · [openobserve.ai/pricing](https://openobserve.ai/pricing/) · [github.com/openobserve/openobserve](https://github.com/openobserve/openobserve)
