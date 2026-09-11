@@ -1,0 +1,134 @@
+---
+title: "Letting Claude Code Drive a Running Entropy Engine App Over MCP"
+date: 2026-09-10
+series: Entropy
+crate_versions:
+  unchanged:
+    - wgpu = "27.0.1"
+    - winit = "0.30.12"
+    - deno_core = "0.332.0"
+    - tiny_http = "0.12"
+  edition: "2024"
+  os: "Windows 11 Pro 10.0.26200 (only platform currently tested)"
+  tooling:
+    - "deno 2.6.7 CLI (bundles the addon's TypeScript to JS; not a Cargo dependency)"
+repo_link: https://github.com/alexthegoodman/entropy-engine
+---
+
+`src/mcp/mod.rs` has been sitting in this codebase for a while: a small MCP (Model Context Protocol) server, spawned unconditionally by every `Editor`, that exposes whatever tools an addon registers with `registerTool()` over standard MCP Streamable HTTP. Its own doc comment says exactly what it's for - pointing Claude Code at a running Entropy app with `claude mcp add --transport http entropy-engine http://127.0.0.1:47100/mcp` - and the README has advertised that command for a while too. Nobody had actually connected a client to it and watched a tool call land. This session builds the smallest possible addon to do that, then does it.
+
+## What we're building
+
+- `examples/studio-bundle/src/mcp_tools_demo_addon.ts` - four tools: `spawn_shape`, `list_scene_objects`, `remove_shape`, `clear_scene`. Enough to prove state genuinely changes in the running app in response to a tool call, not just that a JSON-RPC response comes back.
+- `src/bin/example_mcp_tools_demo.rs` - a bare `EntropyApp`, no Studio chrome, no other addons.
+
+Nothing needed to change in `src/mcp/mod.rs` itself. That's the actual point of the module's design: `spawn()` is already called from `Editor::new` (`src/core/editor.rs:803`), and the HTTP thread already drains the same `AddonContext::registered_tools` map the WryChat webview polls. An addon gets MCP exposure for free the moment it calls `registerTool`.
+
+## The tools
+
+`spawn_shape` builds a colored cube from scratch (Cube.rs's own 8-vertex/36-index layout, copied so a spawned cube looks like any other default cube in the engine) and drops it in with `Model.createMesh`, tracking the id it hands out:
+
+```ts
+addon.registerTool({
+    name: "spawn_shape",
+    description: "Spawn a cube in the scene at a given position, with an optional color and scale. Returns the new object's id.",
+    parameters: {
+        type: "object",
+        properties: {
+            position: { type: "array", items: { type: "number" }, description: "[x, y, z] world position" },
+            color: { type: "array", items: { type: "number" }, description: "[r, g, b], each 0-1. Defaults to white." },
+            scale: { type: "number", description: "Uniform edge length. Defaults to 1." }
+        },
+        required: ["position"]
+    }
+}, (args: any) => {
+    const id = Entropy.generateUUID();
+    const { vertexData, indexData } = buildCubeGeometry(args.scale ?? 1, args.color ?? [1, 1, 1]);
+    addon.Model.createMesh({ id, position: args.position, vertexData, indexData, pipelineId: "default" });
+    spawned.push({ id, position: args.position, color: args.color ?? [1, 1, 1] });
+    return { success: true, id, position: args.position, color: args.color ?? [1, 1, 1] };
+});
+```
+
+`remove_shape` and `clear_scene` are the inverse, calling `Model.clearMesh(id)` and dropping the tracked entry. `list_scene_objects` just returns the addon's own bookkeeping array. All four return plain JSON - `src/mcp/mod.rs`'s `call_tool` wraps whatever the callback returns as `{ content: [{ type: "text", text }], isError }`, so a tool's return value is exactly its MCP response body.
+
+`Model.createProcedural` (the one-liner every other addon uses for a quick cube) was the first thing tried and immediately ruled out: it takes no `id` and returns nothing, so there'd be no way to `remove_shape` a specific object afterward. `createMesh` costs a hand-rolled vertex array but makes every spawned object individually addressable, which is the entire point of a *tool*-shaped demo over a fire-and-forget one.
+
+## Driving it over the wire
+
+```bash
+curl -s -X POST http://127.0.0.1:47100/mcp -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":1,"method":"initialize","params":{}}'
+# {"jsonrpc":"2.0","id":1,"result":{"protocolVersion":"2024-11-05","capabilities":{"tools":{"listChanged":true}},"serverInfo":{"name":"entropy-engine","version":"0.1.0"}}}
+
+curl -s -X POST http://127.0.0.1:47100/mcp -H "Content-Type: application/json" \
+  -d '{"jsonrpc":"2.0","id":2,"method":"tools/list","params":{}}'
+# {"jsonrpc":"2.0","id":2,"result":{"tools":[{"name":"list_scene_objects",...},{"name":"remove_shape",...},{"name":"clear_scene",...},{"name":"spawn_shape",...}]}}
+```
+
+Then three real `tools/call` requests:
+
+```bash
+curl -s -X POST http://127.0.0.1:47100/mcp -H "Content-Type: application/json" -d \
+  '{"jsonrpc":"2.0","id":3,"method":"tools/call","params":{"name":"spawn_shape","arguments":{"position":[-2,0,0],"color":[1,0,0]}}}'
+curl -s -X POST http://127.0.0.1:47100/mcp -H "Content-Type: application/json" -d \
+  '{"jsonrpc":"2.0","id":4,"method":"tools/call","params":{"name":"spawn_shape","arguments":{"position":[0,0,0],"color":[0,1,0],"scale":1.5}}}'
+curl -s -X POST http://127.0.0.1:47100/mcp -H "Content-Type: application/json" -d \
+  '{"jsonrpc":"2.0","id":5,"method":"tools/call","params":{"name":"spawn_shape","arguments":{"position":[2,0,0],"color":[0,0,1]}}}'
+```
+
+Each came back `{"success":true,"id":"<uuid>",...}`, and the running app's own stdout confirmed the callback actually fired inside the V8 isolate, not just that the HTTP layer accepted the request:
+
+```
+[TOOL CALL: spawn_shape] Raw arguments: {"position":[-2,0,0],"color":[1,0,0]}
+Create mesh "Global" "default" false
+```
+
+## Evidence
+
+Three separate `tools/call` requests, three cubes, at the exact positions and scale sent - small, large (1.5x, the middle call), small:
+
+![Three cubes in the Entropy window, small-large-small left to right, spawned by three separate MCP tool calls](/images/entropy-mcp-demo-three-cubes.png)
+
+Called `remove_shape` with the middle cube's id. `list_scene_objects` immediately after showed two entries (the left and right cubes' ids), and the render confirms it - the large cube is gone, the other two haven't moved:
+
+![The same window after one remove_shape call - the middle, larger cube is gone, the two side cubes are unaffected](/images/entropy-mcp-demo-after-remove.png)
+
+Then `clear_scene`, which reported `{"removed":2}`:
+
+![The window after clear_scene - empty, both remaining cubes gone](/images/entropy-mcp-demo-after-clear.png)
+
+Spawn, list, remove-by-id, clear - a full round trip through real engine state, driven entirely by an external process speaking MCP, with the app's own log and three screenshots as the record of it actually happening.
+
+## Decision log
+
+**`curl` instead of a live Claude Code MCP connection.** Covered above - this session's own client can't be re-pointed without restarting and losing everything already established. Speaking the raw protocol is strictly more verifiable anyway: the JSON in this post is the literal request and response, not a paraphrase of what an agent claimed it saw.
+
+**Four small tools, not one generic "run arbitrary code" tool.** A single `eval`-shaped tool would have been less code, but it would prove the transport works and nothing about what a *designed* tool surface looks like - which is the actual thing an addon author building on this bridge needs to see modeled.
+
+**`createMesh` over `createProcedural`.** Covered above - addressability was the requirement, and `createProcedural`'s simplicity wasn't compatible with it.
+
+## Failure notes
+
+**Three real cubes, first call, completely black window.** `spawn_shape` returned `success: true` every time, the stdout log showed `Create mesh "MCP Tools Demo" "default" false` for each call, and the window stayed pure black. The op-level success was real but uninformative - `op_mesh_create` (`src/deno/addon_ops.rs`) just enqueues and returns nothing, so "the JS call didn't throw" was never proof of a pixel changing.
+
+The actual cause was in `render_addon_frame.rs`'s per-content-type collection loop (repeated for meshes, models, landscapes, quadscapes, grass alike):
+
+```rust
+if let Workspace::Addon(active_name) = &pipeline.current_workspace {
+    if active_name != "Game Composer" && addon_name != active_name && addon_name != "Global" {
+        continue;
+    }
+} else if addon_name != "Global" {
+    continue;
+}
+```
+
+`pipeline.current_workspace` defaults to `Workspace::GameEngine` (`src/core/pipeline.rs:382`) and the only place that ever changes is a click handler in Entropy Studio's sidebar (`src/core/render_egui.rs:332`, `pipeline.current_workspace = Workspace::Addon(addon.name.clone())`). A bare, Studio-less bin has no sidebar and nothing to click, so `current_workspace` never leaves `GameEngine` - which means the `else` branch runs, and it renders *only* content from an addon literally named `"Global"`. Every one of this engine's addon-authored meshes, models, and landscapes is invisible outside Studio unless its addon happens to be registered under that exact name. Renaming the demo addon from `"MCP Tools Demo"` to `"Global"` was the entire fix - one line, no engine change - but it's a real, easy-to-hit gap for anyone embedding Entropy per the README's own quickstart (`.with_bundle()`, no Studio) and expecting a spawned mesh to just show up.
+
+**Spawned cubes render, but not in the requested color.** `spawn_shape`'s `color` argument is baked into every vertex correctly (confirmed by inspecting `buildCubeGeometry`'s output), and `Cube.rs`'s own vertices carry the same `color: [f32; 4]` field. But `gbuffer_fragment.wgsl` only uses `in.color` when a `renderMode` uniform is explicitly set to "color mode" - otherwise it samples `t_diffuse`, a texture bind group `CustomMesh::new` doesn't populate by default when `createMesh` is called without explicit `bindings`. The three cubes in every screenshot above render as flat dark gray regardless of the red/green/blue sent - correct position and scale, wrong (absent) color. Not fixed this session; the render-mode wiring for bindingless `createMesh` calls is a real gap, not a cosmetic one, and belongs to whoever picks up mesh-tinting next.
+
+## What's next
+
+- Wire `createMesh`'s default (no-`bindings`) path to actually render in vertex-color mode, so `spawn_shape`'s `color` argument does something.
+- A `move_shape` tool - there's currently no in-place transform update for a plain `CustomMesh` (only `Mesh.updateVertices`, which moves individual vertices, not the whole object), so "move" today means remove-and-respawn.
