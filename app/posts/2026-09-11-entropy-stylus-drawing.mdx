@@ -1,0 +1,261 @@
+---
+title: "Entropy Gets a Stylus: Winit Has Pressure, Not Tilt, So We Read the Win32 Packet Ourselves"
+date: 2026-09-11
+series: Entropy
+crate_versions:
+  unchanged:
+    - windows = "0.58"
+    - wgpu = "27.0.1"
+    - winit = "0.30.12"
+    - deno_core = "0.332.0"
+  new:
+    - "windows crate feature added: Win32_UI_Input_Pointer (for GetPointerPenInfo/POINTER_PEN_INFO)"
+  edition: "2024"
+  os: "Windows 11 Pro 10.0.26200 (only platform currently tested)"
+  backend: "Win32 WM_POINTER / Windows Ink for pen input; wgpu default instance backend selection"
+  tooling:
+    - "deno 2.6.7 CLI (bundles the addon's TypeScript to JS; not a Cargo dependency)"
+repo_link: https://github.com/alexthegoodman/entropy-engine
+---
+
+A new example, `stylus-drawing`: a pressure- and tilt-aware drawing app with four brushes, built entirely on Entropy's addon API. `cargo run --release --bin example -- stylus-drawing` gets you a 1280x800 canvas, a Pencil, an Ink Brush, an Airbrush, and an Eraser, all reading real pen pressure, and the Ink Brush additionally stretching into a flat-nib ellipse as the pen tilts.
+
+The brushes weren't the hard part. The hard part is that Entropy's windowing crate, winit, doesn't expose stylus tilt at all - not a stub, not a `None` you can check, no field for it on Windows. Getting tilt into the addon layer meant going around winit's event system, not through it.
+
+## What winit actually gives you
+
+`winit::event::WindowEvent::Touch` carries a `Touch { location, force: Option<Force>, id, phase, .. }`. `Force` is:
+
+```rust
+pub enum Force {
+    Calibrated { force: f64, max_possible_force: f64, altitude_angle: Option<f64> },
+    Normalized(f64),
+}
+```
+
+`altitude_angle` looks promising until you read the doc comment: "Only available on **iOS** 9.0+." On Windows, `Force` only ever comes back as `Normalized`. Here's winit 0.30.12's actual Windows backend, handling `WM_POINTERDOWN | WM_POINTERUPDATE | WM_POINTERUP` (`platform_impl/windows/event_loop.rs`):
+
+```rust
+PT_PEN => {
+    let mut pen_info = mem::MaybeUninit::uninit();
+    util::GET_POINTER_PEN_INFO.and_then(|GetPointerPenInfo| {
+        match unsafe { GetPointerPenInfo(pointer_info.pointerId, pen_info.as_mut_ptr()) } {
+            0 => None,
+            _ => normalize_pointer_pressure(unsafe { pen_info.assume_init().pressure }),
+        }
+    })
+},
+```
+
+That's it. `GetPointerPenInfo` fills in a whole `POINTER_PEN_INFO` struct:
+
+```rust
+pub struct POINTER_PEN_INFO {
+    pub pointerInfo: POINTER_INFO,
+    pub penFlags: u32,
+    pub penMask: u32,
+    pub pressure: u32,
+    pub rotation: u32,
+    pub tiltX: i32,
+    pub tiltY: i32,
+}
+```
+
+winit reads `.pressure` and throws the rest away. `tiltX`/`tiltY` - degrees, 0 = perpendicular to the tablet, ±90 = flat against it - never make it into any winit type you can observe from outside the crate. There's no flag, no feature, no platform extension trait that surfaces them. If you want tilt on a winit window on Windows, winit's public API has nothing for you.
+
+## Reading the packet before winit does
+
+winit does expose one relevant hook: `EventLoopBuilderExtWindows::with_msg_hook`, a callback that runs on every raw Win32 message *before* winit's own `WindowProc` handles it, on the same thread, same call stack:
+
+```rust
+let mut event_loop_builder = EventLoop::<UserEvent>::with_user_event();
+#[cfg(target_os = "windows")]
+event_loop_builder.with_msg_hook(crate::stylus::msg_hook_capture_tilt);
+let event_loop = event_loop_builder.build()?;
+```
+
+`msg_hook_capture_tilt` (new file, `src/stylus.rs`) reinterprets the `*const c_void` as a Win32 `MSG`, and for the same three pointer messages winit itself handles, calls `GetPointerPenInfo` a second time - independently of winit, straight off the pointer ID in `wParam`'s low word:
+
+```rust
+pub fn msg_hook_capture_tilt(msg_ptr: *const c_void) -> bool {
+    let msg = unsafe { &*(msg_ptr as *const MSG) };
+    if !matches!(msg.message, WM_POINTERDOWN | WM_POINTERUPDATE | WM_POINTERUP) {
+        return false;
+    }
+    let pointer_id = (msg.wParam.0 as u32) & 0xFFFF;
+
+    let mut pen_info = POINTER_PEN_INFO::default();
+    if unsafe { GetPointerPenInfo(pointer_id, &mut pen_info) }.is_ok() {
+        let tilt_x = (pen_info.penMask & PEN_MASK_TILT_X != 0).then_some(pen_info.tiltX as f32);
+        let tilt_y = (pen_info.penMask & PEN_MASK_TILT_Y != 0).then_some(pen_info.tiltY as f32);
+        tilt_map().lock().unwrap().insert(pointer_id, PenTilt { tilt_x, tilt_y });
+    }
+    false
+}
+```
+
+Returning `false` matters: it tells winit "I only looked, I didn't handle this," so winit's own dispatch (which still needs this exact message to build its `Touch` event) proceeds normally. By the time that `Touch` event reaches `startup.rs`'s event loop, the matching tilt reading - if any - is already sitting in a process-global `OnceLock<Mutex<HashMap<u32, PenTilt>>>`, correlated by the same pointer ID Win32 handed both call sites.
+
+`PEN_MASK_TILT_X`/`PEN_MASK_TILT_Y` aren't bound as constants anywhere in the `windows` crate's Pointer module (unlike the `POINTER_FLAG_*` family it does export) - those are the literal bit values from `winuser.h`, `0x0004`/`0x0008`. Checking them matters: not every pen reports tilt, and a driver that doesn't should read back as "unknown," not "zero."
+
+## The bug winit's own source caught before I ever ran anything
+
+Before wiring this into the input pipeline, I nearly wrote `handle_stylus_touch` to fire a `StylusDown`/`StylusMove` event for *any* `WindowEvent::Touch`, gated only on whether `touch.force` was `Some`. That would have been wrong, and reading winit's match arms first is what caught it:
+
+```rust
+let force = match pointer_info.pointerType {
+    PT_TOUCH => { /* ... */ }
+    PT_PEN => { /* ... */ }
+    _ => None,
+};
+```
+
+The `Touch` event itself is pushed unconditionally, for every pointer type - including `PT_MOUSE`. Windows 8+ routes ordinary mouse clicks through `WM_POINTERDOWN` alongside the legacy `WM_LBUTTONDOWN` family, by default, whether or not an app cares. `force` staying `None` for a mouse-originated `Touch` looked like a safe discriminator until I noticed a plain touchscreen finger (`PT_TOUCH`) also gets `Some(Force)` - so "force is Some" means "pen or finger," not "pen."
+
+The actual discriminator is simpler and was already sitting in `stylus.rs`: `GetPointerPenInfo` only succeeds for a genuine `PT_PEN` pointer ID. So `tilt_for(pointer_id).is_some()` - the same map built for tilt - doubles as "was this really a pen":
+
+```rust
+#[cfg(target_os = "windows")]
+pub fn handle_stylus_touch(state: &mut Editor, touch: &winit::event::Touch) {
+    let pointer_id = touch.id as u32;
+    // ...
+    match touch.phase {
+        TouchPhase::Started | TouchPhase::Moved => {
+            let pressure = touch.force.map(|f| f.normalized() as f32).unwrap_or(0.0);
+            let tilt = crate::stylus::tilt_for(pointer_id).unwrap_or_default();
+            // ...
+        }
+        TouchPhase::Ended | TouchPhase::Cancelled => {
+            ctx.input_events.push(InputEvent::StylusUp { x, y });
+        }
+    }
+}
+```
+
+Without that fix, every ordinary mouse click on this build would have also fired a synthetic "stylus" event with pressure stuck at `0.0` - a plausible-looking, silently wrong signal for any addon that trusted it.
+
+## Wiring it into the addon layer
+
+From here it's the same shape every other input event in this codebase already uses - `MouseDown`/`MouseMove`/`MouseUp` push an `InputEvent` onto `AddonContext.input_events`, drained once per frame into a JS-side array, dispatched via `fireAll`. Three new variants, `src/deno/addon_ops.rs`:
+
+```rust
+StylusDown { x: f32, y: f32, pressure: f32, tiltX: Option<f32>, tiltY: Option<f32> },
+StylusMove { x: f32, y: f32, pressure: f32, tiltX: Option<f32>, tiltY: Option<f32> },
+StylusUp { x: f32, y: f32 },
+```
+
+and a matching case in `addon_setup.js`'s `_process_input_events`, and three new `Entropy.Input.onStylusDown/Move/Up` registrations next to the existing `onMouseDown/Move/Up`. `null` tilt (not `0`) means "this pen's driver doesn't report that axis" - most cheap styli only ever send pressure.
+
+## The canvas: reusing what already exists, not building a new renderer
+
+The drawing surface is a plain `Uint8Array` RGBA buffer, painted with ordinary per-pixel loops on the CPU, pushed to a GPU texture with the already-existing `Entropy.Texture.create`/`Texture.update`, and displayed on one full-canvas quad using `game2d`'s `Sprite`/`Camera2D`/`createSpritePipeline` - the same "dynamic texture on a full-frame quad" shape `media_player_addon.ts` already proved for video frames. No new rendering path, no render-to-texture pipeline, no new shader beyond the sprite one that already exists.
+
+Each brush is one config object:
+
+```typescript
+interface Brush {
+    baseRadius: number; radiusGain: number;       // px at pressure 0 / added px at pressure 1
+    softness: number;                              // 0 = hard edge, 1 = wide soft falloff
+    opacityBase: number; opacityGain: number;
+    tiltElongation: number;                         // 0 = circular regardless of tilt
+    spacingFactor: number;                          // stamp spacing, as a fraction of radius
+}
+```
+
+and one stamp function that paints an ellipse, elongated along a direction and magnitude derived from tilt:
+
+```typescript
+function tiltVector(tiltX: number, tiltY: number) {
+    const angle = Math.atan2(tiltY, tiltX);
+    const magnitude = Math.min(1, Math.hypot(tiltX, tiltY) / 60);
+    return { angle, magnitude };
+}
+```
+
+This is a real approximation, not a physically accurate one, and it's worth being explicit about that: `tiltX`/`tiltY` are two independent per-axis angles, not an azimuth/altitude pair, and treating their 2D vector as "elongation direction and strength" has no rigorous geometric justification. It's simple, and - see the Evidence section - it's visually convincing enough that the Ink Brush genuinely reads as a flat nib as the pen tilts. Between-point stamps are interpolated along each segment (position, pressure, and tilt all lerped), spaced by a fraction of the brush's current radius, so a stroke reads as continuous ink rather than a dotted line even when pointer events arrive sparsely relative to stroke speed.
+
+## Evidence
+
+Same machine as recent Entropy posts, reverified this session: 12th Gen Intel Core i5-12500, Intel UHD Graphics 770 (integrated), 32GB RAM, Windows 11 Pro 10.0.26200. `rustc 1.94.1`, `cargo 1.94.1`, `deno 2.6.7`.
+
+```
+cd examples/studio-bundle && npm run build-stylus-drawing   # deno bundle -> dist/stylus_drawing.js
+cargo build --release --bin example
+cargo run --release --bin example -- stylus-drawing
+```
+
+Clean release build, no warnings in any touched file, no panics across several relaunches this session.
+
+**All four brushes, drawn with the mouse fallback path** (no tablet involved - `onMouseMove` feeding fixed `pressure: 1.0, tilt: 0`, so no elongation on this pass, just three visibly distinct stroke styles from the same stamp function):
+
+![Three strokes on the canvas: a thick dark Ink Brush wave, a thin gray Pencil line, and a soft orange Airbrush glow, next to the brush-selector sidebar](/images/entropy-stylus-drawing-brushes.png)
+
+**A real stroke, drawn on genuine pressure+tilt tablet hardware**, Ink Brush, no mouse involved:
+
+![The word "hello" written in Ink Brush on a real tablet - the downstrokes and the flourish beneath visibly taper and widen as pressure and tilt change through the stroke, not a fixed-width line](/images/entropy-stylus-drawing-tilt-hello.png)
+
+The taper along the vertical strokes and the diagonal flourish underneath is the tilt/pressure elongation actually doing something, not a fixed-width pen - confirmed live against the sidebar's "Last pen reading" readout, which visibly tracked pressure and tilt changing as the stroke was drawn.
+
+**Real pen packets arrive faster than rendered frames.** Nine real strokes, drawn on the actual tablet across two test sessions, each logged as `<N> pointer events over <M> rendered frames`:
+
+```
+149 events / 86 frames  = 1.73/frame
+72  events / 42 frames  = 1.71/frame
+38  events / 22 frames  = 1.73/frame
+32  events / 19 frames  = 1.68/frame
+56  events / 32 frames  = 1.75/frame
+57  events / 33 frames  = 1.73/frame
+175 events / 102 frames = 1.72/frame
+121 events / 70 frames  = 1.73/frame
+164 events / 95 frames  = 1.73/frame
+```
+
+Every single one lands between 1.68 and 1.75 events per frame - tight enough that it's clearly a real, repeatable property of this pen/driver combination, not noise. A synthetic mouse drag driven by repositioning the OS cursor in a tight loop, by contrast, measured close to parity (0.91-1.82 events/frame, no consistent excess) - Windows coalesces `WM_MOUSEMOVE` in the message queue down to the latest position when an app doesn't pump fast enough, while `WM_POINTERUPDATE`'s `GetPointerFrameInfoHistory` (used by winit's own backend, see `platform_impl/windows/event_loop.rs`) explicitly preserves the *entire* backlog of pointer packets since the last message instead of coalescing - by design, since ink quality depends on not losing samples. That's a real structural difference between the two input paths, not a benchmarking artifact, and it's why canvas texture uploads are throttled to once per rendered frame via a dirty flag rather than once per pointer event.
+
+**Cost of the thing being throttled**, measured directly rather than assumed - 30 consecutive `Entropy.Texture.update` calls at the full 1280x800 canvas resolution, timed with `Date.now()` at addon startup:
+
+```
+30x Texture.update(1280x800) = 4-9ms total, 0.13-0.30ms/call   (varied slightly across relaunches)
+```
+
+Cheaper than expected at this resolution - not the dramatic bottleneck the video-export post's frame-blocking bug was. The throttle is still correct: at ~1.7 events per frame it's free, and at a higher canvas resolution or a faster-reporting tablet the same reasoning holds even if the exact number moves.
+
+**First-party diff**, `git diff --stat` against the working tree plus two new files:
+
+```
+ Cargo.toml                            |  1 +
+ examples/studio-bundle/package.json   |  1 +
+ examples/studio-bundle/src/addon.d.ts | 12 ++++++++++++
+ src/bin/example.rs                    |  5 +++++
+ src/deno/addon_ops.rs                 |  7 +++++++
+ src/deno/addon_setup.js               | 17 +++++++++++++++++
+ src/handlers.rs                       | 34 ++++++++++++++++++++++++++++++++++
+ src/lib.rs                            |  2 ++
+ src/startup.rs                        | 15 +++++++++++++--
+ 9 files changed, 92 insertions(+), 2 deletions(-)
+ src/stylus.rs                          | 98 lines (new)
+ examples/studio-bundle/src/stylus_drawing_addon.ts | 460 lines (new)
+```
+
+## Decision log
+
+- **`with_msg_hook` + a second, independent `GetPointerPenInfo` call, instead of patching winit.** There's no winit API for tilt on any platform except the iOS-only `altitude_angle`. Forking or patching winit for one struct field would be a much larger, harder-to-maintain change than fifteen lines in a callback winit already exposes for exactly this kind of interception.
+- **A process-global `OnceLock<Mutex<HashMap>>`, not state threaded through `Application`.** `with_msg_hook`'s callback is `'static` and gets installed on the `EventLoopBuilder` before the `EventLoop` - let alone `Application` - exists. The lookup happens microseconds later, same thread, once winit's own dispatch reaches `startup.rs`. A global guarded by a mutex is the simplest thing that's actually correct here, not a shortcut around a harder design.
+- **Reused `game2d`'s texture-quad display instead of a GPU render-to-texture pipeline for the canvas.** CPU-side pixel painting into a plain buffer, pushed with the already-existing `Entropy.Texture.update`, does everything a raster paint canvas needs. An accumulation-buffer GPU approach would scale better to very large canvases or very heavy brushes, but it's a strictly bigger, riskier build this pass didn't need.
+- **Tilt-as-2D-vector elongation, explicitly flagged as an approximation.** `tiltX`/`tiltY` are independent per-axis angles, not a real azimuth/altitude pair, and treating their vector as an ellipse's direction/strength has no rigorous justification. It's simple, and the "hello" screenshot shows it reads as a real flat nib in practice - good enough for this pass, not a claim of physical accuracy.
+- **Texture upload throttled to once per frame via a dirty flag**, kept even after the isolated bench came back cheaper (0.13-0.30ms/call) than the "many more events than frames" framing implied it needed to be. Free at the measured cost, and the reasoning (pen packets structurally outrun frames, mouse doesn't) holds regardless of exact numbers on a different machine or a bigger canvas.
+
+## Failure notes
+
+- **The mouse-as-pen bug never actually ran** - caught by reading winit's `_ => None` match arm for non-touch/non-pen pointer types before writing `handle_stylus_touch`'s filter, not by seeing a mouse click misfire as a pen event. Worth noting as a case where reading the dependency's source first was strictly faster than writing the naive version and debugging it.
+- **`ReferenceError: setTimeout is not defined`**, thrown on every single `onStylusUp` the moment real tablet hardware was used to test this. The first version used `setTimeout(() => { usingStylus = false; }, 0)` to swallow a synthesized mouse-up compatibility event after a pen lift; every mouse-only test passed because that exact line never ran under mouse input. This addon's JS runtime is `deno_core` with a custom, minimal op set - not a browser, not Node - and has no timer APIs bound at all. Fixed by deferring through a boolean flag drained in the addon's own `onUpdatePlus`, the "wait for the next real frame" primitive this codebase already uses for the canvas-upload throttle.
+- **The UI window clipped its own evidence.** `Entropy.UI.createWindow`'s initial height (360px) cut off the "Last pen reading: pressure/tilt" labels below the fold - the exact readout meant to prove tilt was working was invisible until the running window was actually screenshotted and the missing rows noticed by their absence. Fixed by sizing the window to fit its content (520px).
+- **Pressure and tilt both read back toward 0 in the sidebar right at pen lift-off**, even though the stroke drawn a moment before clearly shows nonzero tilt. Not chased down this pass - plausibly the last `WM_POINTERUPDATE` before contact ends genuinely reports falling pressure and tilt as the tip lifts, but that's a guess, not a verified explanation, and it's left as an open question rather than stated as fact.
+- **`addon.d.ts` had three small, real, previously-uncaught gaps**: `ButtonConfig`/`SliderConfig` never declared an `id` field despite `addon_setup.js` already reading `config?.id` for both at runtime, and `SliderConfig.onChange` is typed `(value: string) => void` - correct, since slider values really do arrive as strings, which this addon's first draft got wrong by assuming a `number`. `npm run typecheck` caught all three immediately; `deno bundle`, the script the actual build uses, doesn't typecheck at all, which is presumably how `media_player_addon.ts` has shipped with the identical slider-onChange mismatch uncaught since it was written.
+
+## What's next
+
+- A real azimuth/altitude nib model, using `POINTER_PEN_INFO::rotation` (captured nowhere yet) alongside tilt, instead of the current flat 2D-vector approximation.
+- The pressure/tilt-drops-to-0-on-liftoff behavior above deserves an actual investigation - logging raw `penMask` bits through a full lift-off - before any addon should trust a `tilt: 0` reading as meaningful rather than "pen leaving contact."
+- No undo/redo, no save-to-file. This is a brush-engine and input-plumbing demo, not a paint app; either would be straightforward additions on top of the existing canvas buffer.
+- Everything in `src/stylus.rs` is `#[cfg(target_os = "windows")]`. A tablet story on macOS or Linux would need to find and read around whatever winit is missing on those platforms too - not investigated.
