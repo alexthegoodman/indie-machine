@@ -1,0 +1,184 @@
+---
+title: "Two More entropy_gui Widgets: KeyframeTimeline and TrackView"
+date: 2026-09-12
+series: Entropy
+crate_versions:
+  unchanged:
+    - wgpu = "27.0.1"
+    - winit = "0.30.12"
+    - deno_core = "0.332.0"
+    - lyon_tessellation = "1.0.16"
+  edition: "2024"
+  os: "Windows 11 Pro 10.0.26200 (only platform currently tested)"
+  tooling:
+    - "deno 2.6.7 CLI (bundles the addon's TypeScript to JS; not a Cargo dependency)"
+repo_link: https://github.com/alexthegoodman/entropy-engine
+---
+
+`entropy_gui` already had two addon-facing widgets built for a specific domain and then generalized: `NodeGraphEditor` (behavior-graph editing) and `PianoRoll` (the DAW). This post adds two more of the same shape, both aimed at the same underlying problem: scrubbing time against something that has state at specific points along it. `KeyframeTimeline` is a per-property animation-curve editor - rows of draggable keyframe diamonds. `TrackView` is a multi-track clip editor - lanes of draggable, resizable clips, with an optional waveform for audio. Both are plain, domain-agnostic Rust widgets exposed to addons the same way `Snarl`/`PianoRoll` already are, and both showed up together in one demo addon because a real editor wants them sharing a single playhead.
+
+## What we're building
+
+- `entropy_gui::KeyframeTimeline` (`src/entropy_gui/widgets_keyframe_timeline.rs`, new) - a row per animated property, diamond keyframes, drag to retime, right-click a row to add one at the playhead, Delete/Backspace to remove the selected one.
+- `entropy_gui::TrackView` (`src/entropy_gui/widgets_tracks.rs`, new) - a lane per track, colored clip blocks with drag-to-move and edge-drag-to-trim, an optional peak-bar waveform inside a clip, right-click to delete.
+- Three new `Memory` fields (`keyframe_drag`, `clip_drag`, and a shared `TimelineView { scroll_x, zoom }` slot) - the same live-drag-override trick `NodeGraphEditor`'s `node_drag`/`link_drag` already use, for the same reason: neither widget gets a `&mut` into the caller's data.
+- Two new `UiWidget` variants (`KeyframeTimeline`, `Tracks`), two new ops (`op_ui_widget_keyframe_timeline`, `op_ui_widget_tracks`), and matching render arms in `addon_engine.rs`.
+- `Entropy.UI.Widget.keyframeTimeline`/`.tracks` in `addon_setup.js`, plus `addon.d.ts` types (`KeyframeTimelineConfig`, `TracksConfig`).
+- `keyframe_tracks_demo_addon.ts` - "Clip & Curve Editor," a demo that puts both widgets on one shared playhead: three animated properties above, two video tracks and an audio track (with a synthetic waveform) below.
+
+## Generalizing a widget that already existed, again
+
+This engine already had a keyframe-and-clip editor: `core::video_timeline_ui::VideoTimeline`, roughly 700 lines built directly against `Editor`/`stunts_state` for the desktop video-editor app - ruler, ms-per-pixel zoom, clip drag/resize with edge detection, keyframe diamonds on property tracks, a playhead. It's real and it works, but it's wired to four hardcoded object kinds (`active_polygons`/`active_text_items`/`active_image_items`/`active_video_items`) and an `Editor` struct an addon has no access to. It was never reachable from the JS side.
+
+That's the exact relationship `NodeGraphEditor` had to the old Snarl-specific editor code before [the node graph editor post](/posts/entropy-node-graph-editor). Same move here: pull the interaction model (ruler ticks, ms-per-pixel zoom, drag-to-retime, edge-drag-to-resize, right-click menus) out of the `Editor`-coupled version and rebuild it against plain structs:
+
+```rust
+pub struct KeyframeRow {
+    pub id: String,
+    pub label: String,
+    pub keyframes: Vec<Keyframe>,
+}
+
+pub enum KeyframeTimelineEvent {
+    Seek(i32),
+    KeyframeMoved { row: String, keyframe: String, time_ms: i32 },
+    KeyframeSelected { row: String, keyframe: String },
+    KeyframeAddRequested { row: String, time_ms: i32 },
+    KeyframeDeleteRequested { row: String, keyframe: String },
+    RowClicked(String),
+    BackgroundClicked,
+}
+```
+
+```rust
+pub struct TrackClip {
+    pub id: String,
+    pub label: String,
+    pub start_ms: i32,
+    pub duration_ms: i32,
+    pub color: Color32,
+    /// Normalized (0..1) amplitude peaks drawn as vertical bars - empty means no waveform.
+    pub peaks: Vec<f32>,
+}
+```
+
+`show()` on both widgets takes `&[KeyframeRow]` / `&[Track]` - read-only - and returns a `Vec<...Event>` the caller applies back, exactly the contract `NodeGraphEditor` established: the addon-relay call site rebuilds its whole data set from JS state every frame, so there's no persistent `&mut` for the widget to hold between frames. Dragging a keyframe needs the same fix `node_drag` uses, just 1D:
+
+```rust
+let kf_id = timeline_id.with(("kf", &row.id, &kf.id));
+let live = ctx.memory(|m| m.keyframe_drag).filter(|(id, _)| *id == kf_id).map(|(_, t)| t);
+let effective_time = live.unwrap_or(kf.time_ms);
+// ...
+if resp.drag_started() {
+    ctx.memory_mut(|m| m.keyframe_drag = Some((kf_id, kf.time_ms)));
+} else if resp.dragged() {
+    let delta_time = resp.drag_delta().x * zoom; // zoom = ms per pixel
+    let new_time = (effective_time as f32 + delta_time).round() as i32;
+    let clamped = new_time.clamp(0, duration_ms);
+    ctx.memory_mut(|m| m.keyframe_drag = Some((kf_id, clamped)));
+    events.push(KeyframeTimelineEvent::KeyframeMoved { row: row.id.clone(), keyframe: kf.id.clone(), time_ms: clamped });
+}
+```
+
+`TrackView`'s clip dragging is the same shape, but a clip can also be resized from either edge, so the live override carries a `ClipDragKind` alongside the (start_ms, duration_ms) pair:
+
+```rust
+pub enum ClipDragKind { Move, ResizeLeft, ResizeRight }
+// ...
+let on_left_edge = resp.hovered() && hover_pos.map_or(false, |p| p.x < clip_rect.min.x + EDGE_GRAB);
+let on_right_edge = resp.hovered() && hover_pos.map_or(false, |p| p.x > clip_rect.max.x - EDGE_GRAB);
+if resp.drag_started() {
+    let kind = if on_left_edge { ClipDragKind::ResizeLeft }
+        else if on_right_edge { ClipDragKind::ResizeRight }
+        else { ClipDragKind::Move };
+    ctx.memory_mut(|m| m.clip_drag = Some((clip_id, kind, clip.start_ms, clip.duration_ms)));
+}
+```
+
+The edge-threshold-in-pixels approach (`EDGE_GRAB = 6.0`) is lifted straight from `VideoTimeline`'s existing `render_clip` closure - it already had this exact trick working, no reason to invent a different one.
+
+Zoom is mouse wheel over the canvas, keeping the time under the cursor fixed on screen - the same code shape as `NodeGraphEditor`'s 2D wheel zoom, just collapsed to one axis:
+
+```rust
+let scroll = ui.input(|i| i.scroll_delta.y);
+if scroll.abs() > 0.0 && over_canvas {
+    if let Some(cursor) = pointer_pos {
+        let time_at_cursor = (cursor.x - grid_rect.min.x - scroll_x) * zoom;
+        let factor = (1.0 + scroll * 0.0015).clamp(0.5, 1.6);
+        zoom = (zoom * factor).clamp(MIN_ZOOM, MAX_ZOOM);
+        scroll_x = cursor.x - grid_rect.min.x - time_at_cursor / zoom;
+    }
+}
+```
+
+## Wiring to the addon API
+
+Same pattern `Snarl`/`PianoRoll` use: a `UiWidget` enum variant carrying plain, `serde`-derived config, an `#[op2]` op that pushes it onto that window's per-frame widget queue, and a render arm in `addon_engine.rs` that builds the real `entropy_gui` types from the config and turns returned events into `|`-delimited strings:
+
+```rust
+KeyframeTimeline {
+    id: String,
+    duration_ms: i32,
+    playhead_ms: i32,
+    rows: Vec<KeyframeRowConfig>,
+    selected: Option<(String, String)>,
+},
+```
+
+```rust
+crate::entropy_gui::KeyframeTimelineEvent::KeyframeMoved { row, keyframe, time_ms } => {
+    events_to_push.push(format!("KFTL_KF_MOVED|{}|{}|{}|{}", kftl_id, row, keyframe, time_ms));
+}
+```
+
+`_process_events` in `addon_setup.js` gets one new branch (`KFTL_`/`TRACKS_` route on `parts[1]`, same as the existing `SNARL_`/`PIANOROLL_` entries), and `Entropy.UI.Widget.keyframeTimeline`/`.tracks` parse those raw strings back into typed callbacks (`onKeyframeMoved`, `onClipResized`, and so on).
+
+Both configs' `rows`/`tracks` arrays go through `op2`'s `#[serde]` parameter path rather than flat positional args. Per [deno_core's own `op2` docs](https://docs.rs/deno_core/0.332.0/deno_core/attr.op2.html), `#[serde]` parameters are documented as slower than the fastcall-eligible plain-numeric or `#[string]` paths, since they go through a full deserialization pass rather than a direct V8-to-Rust read. That's an accepted tradeoff here, not an oversight: a `KeyframeTimeline`/`Tracks` payload is a handful of rows or clips redrawn once per frame, nothing like `PianoRoll`'s per-cell grid, so the difference isn't one this demo can even measure without instrumentation - and no `criterion` benchmark is included in this post for exactly that reason (see the decision log).
+
+## Evidence
+
+The demo addon, "Clip & Curve Editor," puts three animated properties (Position X/Y, Opacity) above a three-track clip timeline (two video, one audio with a synthetic peaks waveform), sharing one `playheadMs`. All four screenshots below were captured against the actual running `example.exe keyframe-tracks-demo`, driven by synthetic `SetCursorPos`/`mouse_event` input, same verification method as the node graph editor post - not static renders.
+
+Initial state - three keyframe rows, three tracks, `Position X`'s second keyframe pre-selected:
+
+![Clip & Curve Editor's initial state: three keyframe rows (Position X/Y, Opacity) above a three-track clip timeline with two video clips and one audio clip showing a green waveform](/images/entropy-keyframe-tracks-initial.png)
+
+Clicking Play drives `playheadMs` forward through `addon.onUpdatePlus`, and the same playhead line moves through both widgets at once - `t = 3.06s` here, both rulers agreeing:
+
+![After clicking Play, the playhead has advanced to t = 3.06s and the same orange playhead line is visible at the same horizontal position in both the keyframe timeline above and the clip timeline below](/images/entropy-keyframe-tracks-playing.png)
+
+Dragging the `Position X` keyframe from 1.5s to roughly 2.3s - the diamond moved, and the round trip through the op/event/listener chain is visible in the status label:
+
+![The dragged keyframe now sits at roughly 2.3 seconds on the ruler, and the "Last event" label reads "KeyframeMoved(x, k2) -> 2325ms"](/images/entropy-keyframe-tracks-keyframe-drag.png)
+
+Dragging the `overlay.mp4` clip on Video B to the right - same round trip, this time through `TrackView`:
+
+![The overlay.mp4 clip has moved right on the Video B track, and the status label now reads "ClipMoved(video_b, c3) -> 1650ms"](/images/entropy-keyframe-tracks-clip-drag.png)
+
+## Decision log
+
+**Generalize `VideoTimeline`'s interaction model, don't invent a new one.** Ms-per-pixel zoom, the ruler tick-interval thresholds (`< 10.0` -> 100ms ticks, `< 50.0` -> 500ms, else 1000ms), and the edge-threshold clip-resize trick are all lifted from `core::video_timeline_ui.rs` verbatim. That file already proved the interaction model works; the only new thing this session builds is making it addressable from plain data instead of `Editor`/`stunts_state`.
+
+**Events out, live-drag overrides in `Memory`, same as `NodeGraphEditor`.** Not re-derived here - see [the node graph editor post](/posts/entropy-node-graph-editor)'s "who owns a node's position" section for the full reasoning. It applies unchanged to a keyframe's time and a clip's `(start_ms, duration_ms)`.
+
+**`#[serde]` config payloads over positional args, despite the documented cost.** Covered above - correct for this widget's actual call frequency (a handful of rows/clips per frame), and keeping the same shape as `Snarl`'s existing `BehaviorGraph` config was worth more than a marginal, unmeasured speedup.
+
+**Synthetic waveform peaks, not real audio decoding.** `TrackClip::peaks` is caller-supplied, normalized `0..1` amplitude data - the demo's `fakePeaks()` is a couple of summed sine lobes plus jitter, explicitly not decoded audio. Getting from a real `.wav`/`.mp3` to a peaks array is an addon's job (or a future op); this session only proves the rendering and interaction, not an audio pipeline.
+
+**No video thumbnails.** A thumbnail per clip needs a registered GPU texture the way `MiniMap` registers its landscape preview - real machinery, but a separate piece of work. A video clip today is a solid color block with its label, same as any other non-audio clip.
+
+**No occlusion in hit-testing, same as `NodeGraphEditor`.** Clicking a keyframe or clip also satisfies the background canvas's own click sense (this kit doesn't do z-order-aware input dispatch anywhere), so a caller can see e.g. a `ClipSelected` and a `BackgroundClicked` on the same frame. Documented in both widgets' module docs rather than silently inherited.
+
+## Failure notes
+
+**The playhead wouldn't move, and it wasn't the new widgets' fault.** The demo's Play button toggled correctly (its own `onClick` fired, the label flipped to "Pause") but `playheadMs` never advanced even after several seconds of wall-clock waiting, confirmed by a screenshot showing `t = 0.00s` unchanged. The cause was in `addon.onUpdate` itself, not in anything this session touched: `render_addon_frame.rs` computes the "current addon name" onUpdate callbacks are filtered against from `pipeline.current_workspace`, which defaults to `Workspace::Global` unless Studio's multi-addon shell has set it to `Workspace::Addon(name)`. A plain `EntropyApp` (this demo's `cargo run --bin example`) never leaves `Workspace::Global`, so `current_addon_name` is always `"Global"` - and a callback registered under the addon's own name (`"Clip & Curve Editor"`) never matches, so it's filtered out and silently never runs. `fft_water_addon.ts` already has the workaround (`onUpdatePlus("Global", cb)`, registering explicitly under the name that always matches outside Studio); switching to it fixed the demo immediately, confirmed by a follow-up screenshot showing `t = 3.06s` and both widgets' playhead lines agreeing. Not a new bug, but a real gotcha worth documenting for the next addon-only (non-Studio) demo written against this engine.
+
+**A `Button::new(...).show(ui)` call that was never going to compile.** The first pass at the context-menu code called `crate::entropy_gui::widgets::Button::new("...").show(menu_ui)`, modeled on the wrong widget's API from memory - `Button` implements the `Widget` trait's `.ui(self, ui)`, not a `.show()` method, and there's no inherent `.show()` on it either. Reading `widgets/button.rs` before the first `cargo build` of this session caught it, so it was never actually compiled in that form - fixed by switching to the existing `ui.button("...")` convenience method instead, the same one `core::video_timeline_ui.rs`'s own context menus already use.
+
+## What's next
+
+- Wire `TrackView` into the actual `core::video_timeline_ui::VideoTimeline`-driven editor - this session only proves the addon-facing API via the standalone demo, the same gap the node graph editor post left for `Snarl`.
+- Real audio-to-peaks decoding (an op that reads a file and returns a `Vec<f32>`), so `TracksConfig.peaks` doesn't have to be addon-supplied fiction.
+- Video thumbnails per clip, once there's a general per-clip texture-registration path.
+- Multi-select (marquee-drag multiple keyframes or clips) - both widgets currently track at most one selection, same single-selection limitation `NodeGraphEditor` still has.
+- "Add Keyframe"/"Add Clip" at an arbitrary clicked time, not only at the current playhead.
