@@ -1,0 +1,209 @@
+---
+title: "Wiring Up Entropy's Video Exporter: A Dead encode.rs, a Depth Buffer Mismatch, and a Black Cube"
+date: 2026-09-11
+series: Entropy
+crate_versions:
+  unchanged:
+    - windows = "0.58"
+    - wgpu = "27.0.1"
+    - winit = "0.30.12"
+    - deno_core = "0.332.0"
+  edition: "2024"
+  os: "Windows 11 Pro 10.0.26200 (only platform currently tested)"
+  backend: "Media Foundation for H.264 encode (Windows-only); wgpu default instance backend selection"
+  tooling:
+    - "deno 2.6.7 CLI (bundles the addon's TypeScript to JS; not a Cargo dependency)"
+repo_link: https://github.com/alexthegoodman/entropy-engine
+---
+
+Entropy has had a `src/video_export/` directory since the very first commit that pulled pieces of older engines together. What it actually had, on inspection, was: a `FrameCaptureBuffer` that correctly does a GPU texture-to-staging-buffer readback, an `encode.rs` that was never even compiled in (`pub mod encode;` was commented out), and an `exporter.rs` whose only real logic - the frame loop - was commented out too, calling a render path (`render_frame`, not `render_addon_frame`) that its own neighboring file admits is "legacy code kept for reference only." None of it had ever produced a video file. Nothing in the addon system exposed it to JS either.
+
+The goal for this pass: make it real. A working `Entropy.Video.export()` op, a dedicated addon that exercises it, and an actual MP4 on disk that `ffprobe` agrees is a real H.264 stream at the resolution, frame rate, and duration requested.
+
+## What's actually reused vs. rebuilt
+
+`frame_buffer.rs`'s `FrameCaptureBuffer` (texture -> staging buffer -> CPU-mapped `Vec<u8>`, handling wgpu's row-alignment padding) was already correct and stayed almost untouched - I only added `create_view()` and split the copy step out into `copy_to_staging()` so a caller can render directly into the capture texture instead of rendering elsewhere and copying in. The original `capture_frame(render_texture, ...)` method is still there too; it turns out `render_addon_frame.rs` and the legacy `render_frame.rs` both already call it, gated behind `pipeline.frame_buffer.is_some()` - a second, still-unused "auto-capture whatever's on screen" path that predates this session and that I left alone rather than folding into mine.
+
+`encode.rs` is a genuine revival, not a rewrite. `git show 1f7c534:src/video_export/encode.rs` (the initial cross-engine merge commit) has a complete Media Foundation H.264 sink-writer implementation - `MFCreateSinkWriterFromURL`, RGB32-in/H264-out media types, `IMFSample` submission - hardcoded to 1920x1080@60fps and never called from anywhere. I parameterized width/height/fps and fixed the two-argument `AddStream` call (the original discarded its `u32` stream-index return and just assumed 0, which happens to be correct for a single-stream file but isn't guaranteed by the API).
+
+`exporter.rs` is the one piece rebuilt from scratch rather than patched. The old design called `EntropyPipeline::new()` + `.initialize(..., Some(project_id), ...)` - reconstructing an entire second headless pipeline from a saved project, the same shape Entropy Studio's video-editor export presumably used at some point. That's the wrong shape for an addon that just wants to record whatever it's already showing: it doesn't have a `project_id`, and re-initializing a whole pipeline is unnecessary when the real one is sitting right there, already rendering. The new `start_export`/`step_export` pair takes `&mut EntropyPipeline` - the live one - and drives it directly.
+
+## The op boundary problem
+
+`Entropy.Video.export()` can't just call into the pipeline directly. Every Deno op in this codebase gets `&mut OpState`, and the thing it needs - `&mut EntropyPipeline`, to call `render_addon_frame` against the addon's actual running scene - isn't reachable from there; it lives on the render/window thread, not in `AddonContext`. The existing camera ops (`op_camera_set_transform` et al.) sidestep this by writing into `AddonContext.pending_camera_position` and letting `AddonEngine::update()` drain it once a frame, on the thread that does have the pipeline.
+
+Video export needs something similar, just heavier: `op_video_export_start` only queues a `VideoExportRequest` (output path, fps, duration) into a new `AddonContext.pending_video_export`.
+
+The first version of the actual encode loop ran entirely inside that same op-boundary check, in one call: pick up the pending request, then loop over every requested frame - render, read back, encode - before returning. It produced a correct MP4 and I said so in an earlier draft of this post. It's also a bad design: `EntropyPipeline::render_display_frame` is the same function that renders the addon's on-screen frame and drives the whole JS runtime forward every redraw, and looping the entire export inside one call to it means the window - and the addon's own `onUpdatePlus` - stops updating for however long the export takes. A 3-second clip finished in under a second, so this was fast enough to miss on casual testing, but it's exactly the kind of thing that gets worse the moment someone exports something longer than a demo clip, and "the app appears to hang while exporting" is not a shippable behavior.
+
+The fix: split it into `start_export` (called once, sets up the capture buffer and encoder) and `step_export` (called once per real redraw, renders/reads back/encodes exactly one frame, and reports whether the export is finished). `render_display_frame` drains the pending request into a `VideoExportState` stored on `EntropyPipeline` itself, then advances it by one frame every time it's called - before doing that same frame's normal on-screen render, not instead of it:
+
+```rust
+if self.video_export.is_none() {
+    let pending = self.export_editor.as_mut().and_then(|editor| {
+        editor.addon_engine.runtime.op_state().borrow_mut()
+            .try_borrow_mut::<AddonContext>()
+            .and_then(|ctx| ctx.pending_video_export.take())
+    });
+    if let Some(request) = pending {
+        match video_export::exporter::start_export(self, request) {
+            Ok(state) => self.video_export = Some(state),
+            Err(e) => self.publish_video_export_result(Err(e)),
+        }
+    }
+}
+
+if let Some(mut state) = self.video_export.take() {
+    match video_export::exporter::step_export(self, &mut state) {
+        Ok(Some(result)) => self.publish_video_export_result(Ok(result)),
+        Ok(None) => self.video_export = Some(state), // more frames to go - resumed next call
+        Err(e) => self.publish_video_export_result(Err(e)),
+    }
+}
+```
+
+A 3-second/30fps export is 90 calls to `step_export`, one per real frame, instead of one call that loops 90 times. The window keeps redrawing and the addon's own camera-orbit `onUpdatePlus` keeps ticking throughout - I proved this rather than assumed it (see Evidence: a tick counter incrementing continuously with `exporting=true` logged next to it, uninterrupted, for the whole export). There's still no background thread and no channel - `EntropyPipeline`/`wgpu::Device` aren't `Send`, and a per-frame state machine driven from the thread that already owns the pipeline solves the actual problem (a frozen window) without needing one.
+
+## Sizing the capture buffer: three attempts
+
+The interesting bug in this whole feature was resolution, and it took three attempts to get right.
+
+**First attempt**: size the `FrameCaptureBuffer` from `pipeline.texture.as_ref().unwrap().size()` - a texture already sitting on `EntropyPipeline`, so it looked like the obvious "current render target" to match. Running it panicked immediately:
+
+```
+wgpu error: Validation Error
+Caused by:
+  In a CommandEncoder
+    In a pass parameter
+      Attachments have differing sizes: the depth attachment's texture view has extent
+      (1280, 720, 1) but is followed by the color attachment at index 0's texture view
+      which has (1200, 768, 1)
+```
+
+`pipeline.texture` turned out to be an unrelated, fixed 1200x768 texture - a leftover default project canvas, not tied to the window at all. `pipeline.depth_view`, which every render pass attaches regardless, is sized from whatever `video_width`/`video_height` got passed into `EntropyPipeline::initialize` (which for an `EntropyApp` example is just `with_window_size`'s argument) and is resized in lockstep with the window on every resize event. Any color attachment I hand `render_addon_frame` has to match that, not `pipeline.texture`.
+
+**Second attempt**: read `camera.viewport.window_size` instead - the same field `AddonEngine::update()` already keeps in sync with the real window size, both at init and after every resize (`src/deno/addon_engine.rs`, the resize handler around line 1880). That's the correct source of truth, and it fixed the panic. Export resolution is therefore pinned to whatever the window currently is, not independently configurable - the TS-facing `Entropy.Video.export()` config only takes `outputPath`, `fps`, and `durationMs`, deliberately, rather than a `width`/`height` that would silently be ignored or would need a second, matching depth buffer of its own to actually honor.
+
+## A cube that rendered as pure black
+
+With sizing fixed, the exporter produced a valid MP4 - correct 3.0s duration, correct 90 frames at 30fps, correct H.264 stream - that was uniformly black, every single frame, live on-screen too (not just exported). Two separate bugs stacked here:
+
+```typescript
+const { vertices, indices } = buildCube(0.75);
+Entropy.Model.createMesh({
+    id: "video_export_demo_cube",
+    position: [0, 0, 0],
+    vertexData: vertices,
+    indexData: indices,
+    pipelineId: "default"
+} as any);
+```
+
+That rendered - correct cube silhouette, correct perspective, camera orbit clearly visible frame to frame - but almost invisibly dark: a single default point light at intensity 3.0 wasn't doing much against whatever the fallback PBR material's base albedo actually is. Adding a procedural sky (`Entropy.Lighting.updateSun`) and raising the point light to intensity 40 fixed the contrast. This is a demo-scene lighting choice, not an export-pipeline fix - the export was already capturing exactly what was on screen; the screen just wasn't showing much.
+
+## Evidence
+
+Same machine as the last few Entropy posts, verified again this session rather than assumed: Intel UHD Graphics 770 (integrated), 12th Gen Intel Core i5-12500, 32GB RAM, Windows 11 Pro 10.0.26200. `rustc 1.94.1`, `cargo 1.94.1`, `deno 2.6.7`.
+
+```
+cd examples/studio-bundle
+npm run build-video-export-demo   # deno bundle -> dist/video_export_demo.js
+cargo build --release --bin example
+```
+
+Clean release build, 56.44s (incremental against already-built dependencies), zero warnings in any file this session touched. Ran it:
+
+```
+cargo run --release --bin example -- video-export-demo
+```
+
+This environment has no way to drive a native Windows GUI click programmatically, so verification triggered the export through a temporary call to the exact same `Entropy.Video.export(...)` the button's `onClick` uses, rather than an actual click - removed before this shipped. Runtime log, this session:
+
+```
+EntropyPipeline initialized!
+[ADDON] Video Export Demo: initialized (cube + orbiting camera + key light)
+Create mesh "Global" "default" false
+[ADDON] [video-export-demo] tick 10 (exporting=false)
+[ADDON] [video-export-demo] tick 20 (exporting=false)
+[ADDON] [video-export-demo] tick 30 (exporting=false)
+[ADDON] [video-export-demo] tick 40 (exporting=true)
+[ADDON] [video-export-demo] tick 50 (exporting=true)
+[ADDON] [video-export-demo] tick 60 (exporting=true)
+...
+[ADDON] [video-export-demo] tick 200 (exporting=true)
+[ADDON] [video-export-demo] tick 210 (exporting=true)
+[ADDON] [video-export-demo] Exported 90 frames to public/video_export_demo.mp4 in 1086ms
+[ADDON] [video-export-demo] tick 220 (exporting=false)
+```
+
+That tick counter (also removed before shipping - it only existed to prove this) increments once per `onUpdatePlus` call, logged every 10th tick. It never stalls, and `exporting=true` sits next to a continuously advancing count across the entire export - the concrete evidence that the chunked redesign actually fixed the freeze, not just a claim that it should have. The export itself lands squarely inside that unbroken tick sequence rather than blocking it.
+
+`ffprobe` against the actual output file, not assumed from the log:
+
+```
+[STREAM]
+codec_name=h264
+width=1280
+height=720
+r_frame_rate=30/1
+nb_frames=90
+[/STREAM]
+[FORMAT]
+duration=3.000000
+```
+
+3 requested seconds at 30fps is 90 frames - exactly what came out, and the file plays. A frame pulled from partway through the clip, after the lighting fix, showing the cube mid-orbit against the procedural sky:
+
+![A lit cube rendered mid-orbit, pulled from the exported MP4 with ffmpeg](/images/entropy-video-export-demo-frame.png)
+
+And the first frame of the same clip, a different camera angle than the one above - confirming the orbit is actually baked into the exported frames and not a frozen single frame repeated 90 times:
+
+![The same clip's first frame, a visibly different angle than the mid-clip frame above](/images/entropy-video-export-demo-frame-start.png)
+
+First-party diff, `git show --stat 824ac37` - the first working version, the one committed before the blocking-vs-chunked correction below:
+
+```
+examples/studio-bundle/package.json                |   1 +
+examples/studio-bundle/src/addon.d.ts              |  40 ++++
+examples/studio-bundle/src/video_export_demo_addon.ts | 155 +++++++++++++++
+src/bin/example.rs                                 |   5 +
+src/core/pipeline.rs                               |  29 +++
+src/deno/addon_engine.rs                           |   7 +
+src/deno/addon_ops.rs                              |  59 ++++++
+src/deno/addon_setup.js                            |   4 +-
+src/video_export/encode.rs                         | 211 ++++++++------------
+src/video_export/exporter.rs                       | 212 ++++++++++-----------
+src/video_export/frame_buffer.rs                   |  25 ++-
+src/video_export/mod.rs                            |   4 +-
+12 files changed, 504 insertions(+), 248 deletions(-)
+```
+
+Plus a second, uncommitted `git diff --stat` for the blocking-to-chunked correction (see The Op Boundary Problem) on top of that commit:
+
+```
+examples/studio-bundle/src/addon.d.ts              |  16 +--
+examples/studio-bundle/src/video_export_demo_addon.ts |  30 ++--
+src/core/pipeline.rs                               |  55 +++++--
+src/video_export/exporter.rs                       | 160 +++++++++++++--------
+4 files changed, 165 insertions(+), 96 deletions(-)
+```
+
+## Decision log
+
+- **Drive the live pipeline directly, not a reconstructed headless one.** The old design's `EntropyPipeline::new()` + project-id `initialize()` assumed a Studio project on disk to reload. An addon recording its own already-running scene has no project id and no reason to pay for a second GPU pipeline when the first one is sitting right there with the scene already built.
+- **A per-frame state machine (`start_export`/`step_export`), not a loop, and not a background thread either.** The first version looped the whole export inside one call and blocked the window for its duration - real, working, and wrong the moment a clip runs longer than a couple of seconds. `EntropyPipeline`/`wgpu::Device` aren't `Send`, so a background thread would need its own channel/handoff machinery; advancing one captured frame per real `render_display_frame` call needed no new plumbing beyond the pending-request/poll pattern already in place, and it fully solves the actual problem (a frozen window), not just makes it less noticeable.
+- **Export resolution pinned to the current window size**, not an independent parameter. `pipeline.depth_view` is one texture, allocated once and resized with the window; a differently-sized color attachment panics on the first frame (see the wgpu error above). Supporting an independent export resolution means allocating a matching depth buffer for it, which this pass didn't need.
+- **The demo scene's camera orbit is computed twice** - once in the addon's `onUpdatePlus`, once directly in Rust inside `step_export` - rather than once. Both now run every real frame, export or not, but tying the *captured* frame's camera position to however fast real frames happen to arrive would make the exported clip's timing depend on this machine's frame rate instead of the requested fps; `step_export` computes it from its own frame index and the requested fps instead. Two copies of the same formula, in two languages, is the actual cost of that design - stated plainly rather than hidden.
+
+## Failure notes
+
+- **`capture_frame` broke on first build** - I'd replaced its body with the new `create_view()`/`copy_to_staging()` split, not realizing `render_frame.rs` and `render_addon_frame.rs` both still call the original three-argument version (dead in practice - `pipeline.frame_buffer` is never set to `Some` anywhere in this codebase - but still compiled). Restored it as a thin wrapper around the new `copy_to_staging`.
+- **The attachment-size panic** (1280x720 depth vs. 1200x768 color) was caught immediately and loudly by wgpu's validation layer, not discovered by a corrupted-looking video. Worth noting as a point in favor of validation layers over "ship it and see."
+- **`Entropy.Video` had no TypeScript declarations at all**, in `examples/studio-bundle/src/addon.d.ts`, despite `media_player_addon.ts` calling `Entropy.Video.open/play/pause/seek/setVolume/bindTexture/poll` since that addon shipped. `deno bundle` doesn't type-check (that's a separate `tsc --noEmit` script nobody's running as part of the build), so the gap was invisible. Added the full `Video` block while I was there, not just the two new `export`/`pollExport` entries.
+- **The first working version blocked the window for the whole export**, and I wrote it up as finished before catching it. It rendered every requested frame in one call from inside `EntropyPipeline::render_display_frame`, so the window and the addon's own `onUpdatePlus` genuinely stopped updating until the export finished - correct output, wrong behavior, and the kind of thing a 3-second test clip is too short to notice by eye. Caught on review, not by testing a longer clip; fixed by splitting into `start_export`/`step_export` (see The Op Boundary Problem).
+
+## What's next
+
+- **Configurable export resolution**, which needs its own depth buffer sized independently of the window rather than reusing `pipeline.depth_view`.
+- **A background thread**, if the per-frame render+readback ever gets expensive enough (a much heavier scene, or a much higher export resolution) that doing it once per real display frame - on top of that frame's own normal render - causes a visible stutter in the live window during export. Not needed for anything tested so far.
+- **Audio.** This exporter is video-only; there's no attempt here to mux in whatever the addon's `AudioEngine` might be playing during the capture window.
