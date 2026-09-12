@@ -1,0 +1,161 @@
+---
+title: "Entropy Renders a Real Webpage: taffy Layout, Servo's Selector Engine, and 'Example Domair'"
+date: 2026-09-12
+series: Entropy
+crate_versions:
+  new:
+    - scraper = "0.27.0"
+    - ego-tree = "0.11.0"
+    - taffy = "0.14.0"
+    - "url = \"2.5.8\""
+  reused:
+    - "image = \"0.25.9\" (already a dependency; reused here to decode fetched <img> bytes)"
+  unchanged:
+    - wgpu = "27.0.1"
+    - winit = "0.30.12"
+    - deno_core = "0.332.0"
+  edition: "2024"
+  os: "Windows 11 Pro 10.0.26200 (only platform currently tested)"
+  tooling:
+    - "deno 2.6.7 CLI (bundles the addon's TypeScript to JS; not a Cargo dependency)"
+repo_link: https://github.com/alexthegoodman/entropy-engine
+---
+
+Entropy addons build UI by calling `Entropy.UI.Widget.*` once per widget from TypeScript - a label here, a button there, entropy_gui renders whatever the addon called this frame. This post adds a second way to describe that same UI: hand it a raw HTML string, with `<style>` blocks and inline `style=` attributes, and get the same entropy_gui widgets back, laid out by something closer to how a real page actually flows.
+
+It is not a browser. There's no JavaScript execution, no text wrapping, and no real font metrics behind the text sizing - all three are explicit non-goals, stated in the module doc comments before a line of layout code runs. What it does have is real HTML parsing, a real (if source-order-only) CSS cascade, and a real flexbox/block layout solver computing actual positions - three components that don't already know about each other, wired together for the first time in this codebase. The interesting part of a post like this was never "does it compile" - it's where a "basics-only" engine stops matching a real page, and Entropy fetching `example.com` live found three separate, unglamorous ways that happens.
+
+## What we're building
+
+`Entropy.UI.Widget.html(windowId, html, { baseUrl?, width? })` is one op, `op_ui_render_html`, backed by two new modules:
+
+- **`src/deno/html_css.rs`** parses `<style>` blocks and inline `style=` into a `HashMap<NodeId, ComputedStyle>`. Selector matching is real - delegated to `scraper`, which is itself "an interface to Servo's `html5ever` and `selectors` crates, for browser-grade parsing and querying" (docs.rs's own description of the crate). `cargo tree -p scraper` confirms this repo pulls in `selectors 0.38.0` transitively, so `.card > p:first-child` and friends work today. What's simplified is the cascade itself: source-order only, no specificity scoring, inline `style=` always wins last - no `!important` beyond stripping the token, no media queries, no pseudo-classes with runtime state.
+- **`src/deno/html_layout.rs`** walks the parsed tree, resolves each element's `ComputedStyle`, and builds a `taffy::TaffyTree` - Block layout by default, Flex opt-in via `display: flex`, matching real CSS defaults. `taffy::TaffyTree::compute_layout` produces absolute positions, which get flattened into a flat `Vec<LayoutBox>` and returned as one `UiWidget::LayoutCanvas`.
+- `addon_engine.rs`'s render arm paints that `LayoutCanvas` in one pass: backgrounds and borders go straight through egui's raw painter, and anything interactive - button, checkbox, text input, hyperlink, dropdown - goes through `ui.child_ui_at(rect, ...)` so it gets entropy_gui's actual widget behavior (click, focus, typing, popups) at a taffy-computed rect instead of hand-rolled hit-testing.
+
+The demo addon (`html_ui_demo_addon.ts`) has two modes: hand-authored markup exercising the CSS subset (flex rows, a bordered/padded card, a real `<img>`), and a free-text URL box that fetches a real page through `Entropy.Net.getText` and feeds the raw HTML straight into the same `Widget.html` call.
+
+## The work
+
+### Getting from HTML text to a taffy tree
+
+`resolve_styles` in `html_css.rs` does two passes over the parsed `scraper::Html` document: collect every `<style>` block's text and parse it into `(Selector, Vec<(prop, value)>)` rules, then run each rule's selector against the whole document and accumulate declarations per matched `NodeId`. A second pass walks every element for an inline `style=` attribute and appends those declarations last, so they always win regardless of source order - the one specificity-like behavior this cascade bothers to implement.
+
+`html_layout::build_node` then walks the same tree a second time, converting each surviving element into a `taffy::NodeId`:
+
+```rust
+fn to_taffy_style(style: &ComputedStyle) -> taffy::Style {
+    let mut s = taffy::Style::default();
+    s.display = match style.display {
+        Some(DisplayMode::None) => taffy::Display::None,
+        Some(DisplayMode::Flex) => taffy::Display::Flex,
+        _ => taffy::Display::Block,
+    };
+    // ...
+}
+```
+
+That `_ => taffy::Display::Block` line is worth pausing on. taffy's own `Display` enum defaults to `Display::Flex` (`pub const DEFAULT: Display = Display::Flex`, per docs.rs) - taffy is a flexbox-first layout library, and treats Block as the opt-in. Real CSS is the other way around: block-level elements are the default, and `display: flex` is what you opt into. `html_layout.rs` explicitly overrides taffy's own default on every node rather than relying on it, specifically so a plain `<div>` with no CSS at all stacks vertically like a real page instead of behaving like a flex container. Worth flagging as exactly the kind of contradiction-check this gate asks for: the library's default and the spec it's being used to approximate disagree, and the code silently resolves it in the spec's favor - so silently that reading `html_layout.rs` in isolation, you'd have no reason to suspect taffy defaults to something else.
+
+### Inheritance and the invisible-text bug that came before this post
+
+`color`, `font-weight`, and `text-align` are real inherited CSS properties - a `<p>` with no `color` of its own takes its nearest styled ancestor's, all the way to the root. `background` and `border` are not inherited (each box paints only its own, matching spec), but `html_layout.rs` still threads an `ancestor_bg` field through its `Inherited` context anyway, purely so `default_text_color_for_bg` has something to react to:
+
+```rust
+fn default_text_color_for_bg(bg: Option<[f32; 4]>) -> Option<[f32; 4]> {
+    let bg = bg?;
+    let luminance = 0.299 * bg[0] + 0.587 * bg[1] + 0.114 * bg[2];
+    Some(if luminance > 0.5 { [0.05, 0.05, 0.05, 1.0] } else { [0.95, 0.95, 0.95, 1.0] })
+}
+```
+
+Real browsers don't need this - they always have a real default text color (black). This UI's default is the app's own dark-theme text color, which is fine against the app's own chrome and wrong against a page that sets a light `background` but never sets `color` - which is exactly what `example.com`'s own stylesheet does. Without this fallback, fetching `example.com` renders light text on its own light background: correct layout, invisible content. The luminance check is the fix, and it's the reason the screenshot below shows readable black text against `example.com`'s pale gray background rather than nothing at all.
+
+### Images: a real fetch, cached by URL
+
+`<img>` doesn't fall back to a placeholder unless it has to. `fetch_and_cache_image` resolves the `src` against `base_url`, fetches it with `net::blocking_fetch_bytes` (a plain `std::thread::spawn` wrapping `reqwest::blocking::get` - this codebase's `main` already runs inside a `#[tokio::main]` Tokio runtime, and `reqwest::blocking` panics if constructed from inside one, so every blocking fetch in this module goes through a spawned thread instead), decodes it with `image::load_from_memory`, and uploads it as a `wgpu::Texture` - the same `register_native_texture` + `egui_textures` cache pattern `UiWidget::MiniMap` already used elsewhere in this codebase. The cache key is the resolved absolute URL, stored on `AddonContext.html_image_dims`/`html_image_failed`, so a page re-rendered every frame (this is immediate-mode UI; `Widget.html` re-parses the HTML string fresh on every call) doesn't re-fetch or re-decode the same image sixty times a second.
+
+### One small, separate fix: scrolling
+
+A one-line commit landed after the CSS work: `UI.createWindow`'s render body wraps its widget list in `egui::ScrollArea::vertical()`. Before that fix, any window - HTML-rendered or not - whose content exceeded the window's height simply clipped past the bottom with no way to reach it. Small, unrelated to the CSS engine specifically, but it's the reason the screenshots below show the full markup demo instead of a page that stops partway down.
+
+## Evidence
+
+Same machine as recent Entropy posts, checked again this session: Intel UHD Graphics 770 (integrated), 12th Gen Intel Core i5-12500, 32GB RAM, Windows 11 Pro 10.0.26200. `rustc 1.94.1`, `cargo 1.94.1`, `deno 2.6.7`.
+
+```
+cd examples/studio-bundle
+npm run build-html-ui-demo   # deno bundle -> dist/html_ui_demo.js
+```
+
+Clean bundle (deno's own `⚠️ deno bundle is experimental` notice aside - that's deno's warning, not an error).
+
+```
+cargo build --release --bin example
+```
+
+`Finished \`release\` profile [optimized] target(s) in 9.18s` - incremental against an already-built tree, zero warnings.
+
+```
+cargo run --release --bin example -- html-ui-demo
+```
+
+Ran it, brought the real window to the foreground, and screenshotted it with a PowerShell `CopyFromScreen` (same approach as the stylus and HTML-UI posts before this one) - this environment has no way to drive native Windows clicks through the UI itself, so switching tabs used a synthetic `user32.dll` `mouse_event` click at the "Real Webpage" button's on-screen coordinates, not an actual mouse.
+
+Markup Demo mode, rendering the hand-authored CSS-subset markup - `<style>`-driven heading color, a bordered/padded `.card`, a flex row of pills with `gap` and `align-items: center`, and a real fetched `placehold.co` image at the correct 240x120 aspect ratio:
+
+![Entropy's Markup Demo mode rendering styled headings, a bordered card, a flex row of pills, and a fetched placeholder image](/images/entropy-html-css-markup-demo.png)
+
+Real Webpage mode, after fetching `https://example.com` live through `Entropy.Net.getText` and feeding the raw response into the same `Widget.html` call - heading, paragraph, and "Learn more" hyperlink all present, dark text correctly chosen against the page's own light background thanks to the luminance fallback above:
+
+![Entropy's Real Webpage mode after live-fetching example.com, showing its heading, paragraph, and hyperlink rendered with correct dark-on-light contrast](/images/entropy-html-css-example-com.png)
+
+Zoomed 3x (nearest-neighbor, no smoothing) on that same screenshot's heading and link text:
+
+![Zoomed crop showing example.com's heading rendering as 'Example Domair' and its link as 'Learn mor', both missing their final character](/images/entropy-html-css-text-clip-zoom.png)
+
+"Example Domain" renders as "Example Domair." "Learn more" renders as "Learn mor." Not a screenshot artifact - reproducible on every fetch of the same page. See Failure Notes below for why.
+
+Zoomed 4x on the Markup Demo's checkbox, next to the "A real button" button:
+
+![Zoomed crop showing the demo's checkbox rendering as an unrecognizable curved fragment instead of a checkbox](/images/entropy-html-css-checkbox-clip-zoom.png)
+
+That's not a checkbox. It's a fragment of one, clipped almost entirely out of frame.
+
+First-party diff across the whole arc this post covers (`git diff --stat 3cc47dc..c7f6940`, from just before this work started through the scroll fix):
+
+```
+ Cargo.toml               |   6 +-
+ src/deno/addon_engine.rs | 126 +++++++++-
+ src/deno/addon_ops.rs    |  67 ++++++
+ src/deno/html_css.rs     | 441 +++++++++++++++++++++++++++++++++++
+ src/deno/html_layout.rs  | 586 +++++++++++++++++++++++++++++++++++++++++++++++
+ src/deno/mod.rs          |   5 +-
+ src/deno/net.rs          |  26 +++
+ 7 files changed, 1250 insertions(+), 7 deletions(-)
+```
+
+(`html_css.rs` and `html_layout.rs` supersede an earlier, CSS-less `html_ui.rs` from the same arc's first commit - that file is fully deleted as part of this diff, not left behind as dead code.)
+
+Two primary sources checked directly against docs.rs rather than assumed from training data: taffy 0.14.0's `Display` enum documents `pub const DEFAULT: Display = Display::Flex` with Block's own doc comment reading "The children will follow the block layout algorithm" - confirming the override in `to_taffy_style` above is deliberate, not accidental. scraper 0.27.0's crate-level docs state it "provides an interface to Servo's `html5ever` and `selectors` crates, for browser-grade parsing and querying" - confirming the selector-matching claim above isn't scraper's own reimplementation.
+
+## Decision log
+
+- **Real selector matching, simplified cascade.** Reimplementing CSS specificity scoring for an addon-facing "basics" renderer wasn't worth it when `scraper`/`selectors` already does real matching for free; source-order-plus-inline-wins covers every case the demo and `example.com` both needed, and is stated as a limitation rather than smoothed over.
+- **Fixed average-character-width text sizing, not real font metrics.** `op_ui_render_html` runs before any per-window `entropy_gui::Context` exists, so there is nothing to measure real glyph widths against at layout time. This was a known, accepted tradeoff going in - and it's exactly what produced "Example Domair" below, so the tradeoff's cost is now a measured fact, not a hypothetical.
+- **Override taffy's own `Display::DEFAULT` per node instead of relying on it.** taffy defaults to `Flex`; real HTML/CSS defaults to block flow. Forcing `Block` unless the page's own CSS says otherwise matches the thing being approximated, not the layout library's own convenience default.
+- **Cache fetched images by resolved URL, reusing `MiniMap`'s existing texture-cache pattern**, rather than inventing a second one. `Widget.html` re-parses its HTML argument fresh every call (immediate-mode, no retained DOM), so caching at the fetch/decode/upload layer is what keeps a static `<img>` from re-fetching every frame - not caching the parse itself.
+- **Never execute fetched content as code, full stop, for now.** `<script>` tags are skipped outright - their text is never even read, let alone run through a JS engine - and `<style>` is parsed as inert data. This is stated as a load-bearing security boundary directly in `html_layout.rs`'s doc comment: if a future session adds real remote-script execution, that JS must run with CLI, filesystem, and multithreading access denied by default, gated behind an explicit consent prompt before any of the three is granted. A `SECURITY.md` audit landed in the same arc's last commit, and its own priority-ordered list names `Net.getText` - the exact op this feature's live fetch depends on - as the standout unscoped capability today: no per-addon domain allowlist, so a malicious page URL and an internal-network probe cost exactly the same call.
+
+## Failure notes
+
+1. **The fixed-width text estimate clips real proportional-font text.** `estimate_text_size` sizes every text leaf as `chars().count() as f32 * 7.2px`, before any real font exists to measure against. egui's actual font renders most lowercase letters narrower than that flat average and a few (bold text, `m`, `w`) wider - so a text leaf sized from the estimate is sometimes too tight for what egui actually draws into it, and the last character or two falls outside the leaf's `child_ui_at` rect and never appears. "Example Domain" becomes "Example Domair"; "Learn more" becomes "Learn mor." This reproduces on every fetch, not just once - confirmed by re-running the fetch and re-screenshotting.
+2. **The checkbox leaf's fixed 20x20px box is too small for the widget it hosts.** `html_layout.rs` allocates every `<input type="checkbox">` a flat 20x20 leaf; `addon_engine.rs` then calls `child.checkbox(&mut current, "")` inside a `child_ui_at` constrained to exactly that rect. egui's checkbox needs room for its frame plus interaction padding beyond the bare glyph box, so the widget renders clipped to an unrecognizable curved fragment instead of a checkbox - visible directly in the zoomed screenshot above, not something the doc comments already called out.
+3. **`<input placeholder="...">` is silently dropped.** The demo markup includes `<input type="text" placeholder="Type here" />`, but `html_layout.rs`'s input-element mapping only reads the `value` attribute (`attr(node, "value").unwrap_or("")`) - `placeholder` is never inspected at all. The rendered result is a plain empty text box with no hint text, and nothing in the code path even attempts to read it; it's a gap, not a bug with a visible symptom to chase.
+
+## What's next
+
+- Real font metrics for text sizing, which needs either restructuring `Widget.html` to run after a per-window `entropy_gui::Context` exists, or a standalone font-metrics table independent of `Context` - either fixes failure note 1 above.
+- Size interactive leaves (checkbox, dropdown, button) from their actual egui intrinsic size rather than a fixed guess, which fixes failure note 2.
+- Read `placeholder` (and whatever else `html_layout.rs`'s attribute handling still ignores) in the input-element mapping.
+- `SECURITY.md`'s own priority list puts a per-addon domain allowlist on `Net.getText` first - no longer a hypothetical hardening item once a feature (this one) actually depends on that op being reachable from arbitrary addon code.
