@@ -1,0 +1,148 @@
+---
+title: "Adding Delay, Reverb, and WAV Export to Entropy's DAW, One Detached Sink at a Time"
+date: 2026-09-13
+series: Entropy
+crate_versions:
+  unchanged:
+    - fundsp = "0.23.0"
+    - rodio = "0.21.1"
+    - deno_core = "0.332.0"
+  new:
+    - hound = "3.5.1"
+  edition: "2024"
+  os: "Windows 11 Pro 10.0.26200 (only platform currently tested)"
+  tooling:
+    - "deno 2.6.7 CLI (bundles the addon's TypeScript to JS; not a Cargo dependency)"
+repo_link: https://github.com/alexthegoodman/entropy-engine
+---
+
+Entropy's DAW addon (`daw_synth_addon.ts`, a step sequencer with a built-in synth and drum kit) plays every note the same way: `AudioEngine::play_note` builds a `fundsp` signal graph for that one note, wraps it in a detached `rodio::Sink`, and lets it mix into the output stream's shared mixer on its own. There's no per-track bus, no master bus, nothing persistent at all - each note is its own independent, fire-and-forget audio graph from the moment it's triggered to the moment its envelope finishes.
+
+That's a fine way to get polyphony for free (the OS mixer does the summing), but it means "add reverb" isn't "insert a reverb node into the signal path" the way it would be in a real DAW with a mixer bus. There's no bus to insert into. This post is about what `fundsp`'s own combinator algebra lets you do instead - splicing delay and reverb into every note's own one-shot graph - and what that costs, measured, not guessed.
+
+## What we're building
+
+- `build_note_node` (`src/audio/mod.rs`, new) - the single place every voice's graph gets built, now type-erased to `Box<dyn AudioUnit>` and always ending in a stereo delay stage and reverb stage, shared between realtime playback and offline export instead of being duplicated.
+- A real effects chain: `fundsp::prelude::delay`/`feedback` for echo, `fundsp::prelude::reverb_stereo` (a 32-channel hybrid FDN) for reverb, mixed dry/wet through the `&` bus combinator.
+- `render_pattern_to_wav` (new) - an entirely offline, non-realtime renderer: ticks each scheduled note's graph into a buffer, mixes at sample-accurate offsets, peak-normalizes if needed, and writes a real stereo WAV via `hound`.
+- `op_audio_render_pattern_wav` / `Entropy.Audio.renderPatternToWav` - opens a native save dialog, renders, and reports back a path and duration.
+- DAW addon UI: per-track Delay Time/Feedback/Mix and Reverb Room/Time/Damping/Mix sliders, an "Export Pattern to WAV" button with a status label, and a `daw_export_wav` tool so the chat AI can trigger an export too.
+
+## The work
+
+### Splicing effects into a graph that has no bus
+
+`fundsp` builds signal graphs out of typed combinators - `>>` chains, `&` sums two same-shaped branches (a "bus"), `|` stacks independent channels side by side. The doc example for `reverb_stereo` shows exactly the idiom I needed:
+
+```rust
+// from fundsp-0.23.0/src/prelude.rs, reverb_stereo's own doc comment
+multipass() & 0.2 * reverb_stereo(10.0, 5.0, 0.5);
+```
+
+`multipass::<U2>()` is dry stereo passthrough; `& (wet * mix)` sums in the wet signal scaled by a mix amount. Since `Mul<f32>` is implemented generically for any `An<X>` regardless of channel count (`fundsp-0.23.0/src/combinator.rs`), `reverb_stereo(...) * reverb_mix` just works without needing a tuple or per-channel gain node.
+
+Delay/echo isn't a single built-in function the way reverb is - it's built from the same primitives, straight from `feedback`'s own doc example:
+
+```rust
+// from fundsp-0.23.0/src/prelude.rs, feedback's doc comment
+pass() & feedback(delay(1.0) >> lowpass_hz::<f64>(1000.0, 1.0));
+```
+
+Stereo version, stacking two independent mono delay lines with `|`:
+
+```rust
+let delay_stage = multipass::<U2>()
+    & (feedback((delay(delay_time) | delay(delay_time)) * delay_fb) * delay_mix);
+let reverb_stage = multipass::<U2>()
+    & (reverb_stereo(room_size, reverb_time, reverb_damping) * reverb_mix);
+
+let stereo = ($node) >> pan(0.0);
+let mut node = stereo >> delay_stage >> reverb_stage;
+```
+
+Every voice - `square`, `saw`, `kick`, `snare`, all of them - now goes through `pan(0.0)` (centered mono-to-stereo) and both stages before it's ever played or rendered. `FundspSource`, the `rodio::Source` wrapper, dropped its generic `N: AudioUnit` type parameter entirely and hardcodes 2-channel output, since every graph is stereo now by construction.
+
+### Always in the graph, not conditionally there
+
+The obvious alternative was to only add the delay/reverb stages when a track actually wants them - branch on `delay_mix > 0.0`, skip `reverb_stereo` entirely otherwise. I didn't do that, and the reason is architectural, not laziness: with one detached `Sink` per note and no persistent bus, "off" can't mean "the effect isn't in the graph" without either (a) a combinatorial explosion of match arms (8 voices x 4 delay/reverb on/off combinations, each a distinct monomorphized type before I added `Box<dyn AudioUnit>` type erasure) or (b) `Box<dyn AudioUnit>` making the branch cheap to write but not free to run. I picked "always splice it in, multiply the wet signal by a mix parameter that defaults to 0." `delay(0.0)` is documented as a legal zero-length delay line, and `reverb_stereo(...) * 0.0` contributes exactly nothing to the summed output - so the *sound* is identical to before this change when mix is 0. The *cost* isn't. See Evidence.
+
+`NoteParams` grew seven new fields (`delay_time`, `delay_feedback`, `delay_mix`, `reverb_room_size`, `reverb_time`, `reverb_damping`, `reverb_mix`), all defaulted to the "off" values, so every existing caller of `Entropy.Audio.playNote` (there are several outside the DAW addon) keeps its old sound with zero code changes.
+
+### Offline export, not a recorded live pass
+
+`render_pattern_to_wav` doesn't touch `rodio::OutputStream` or `Sink` at all. The DAW addon walks every unmuted track's note grid once (respecting solo/gain/velocity, exactly like the realtime `triggerStep` does) and builds a flat list of `NoteEvent { start_time, voice, params }`. Rust then ticks each event's own `build_note_node` graph, sample by sample, into its own buffer:
+
+```rust
+for event in events {
+    let mut node = build_note_node(&event.voice, &event.params, sr);
+    let total_dur = note_total_duration(&event.params);
+    let n_frames = (total_dur * sr as f64).ceil() as usize;
+
+    let mut buf = vec![0.0f32; n_frames * 2];
+    for i in 0..n_frames {
+        let mut out = [0.0f32; 2];
+        node.tick(&[], &mut out);
+        buf[i * 2] = out[0];
+        buf[i * 2 + 1] = out[1];
+    }
+    // ...additively mixed into a master buffer at event.start_time's sample offset
+}
+```
+
+`note_total_duration` extends a note's own render length past its raw `duration` when delay or reverb mix is non-zero, so an echo or reverb tail isn't cut off mid-decay the way a naive "render exactly `duration` seconds" pass would. The master buffer is peak-normalized only if something actually clips (`peak > 1.0`) - most single-track patterns never trip this, since 16 drum hits and a bassline rarely sum past 0-3 dBFS, but a busy multi-track pattern can, and clamping without first scaling down would just distort instead of getting quieter.
+
+This is also why export is deterministic and sample-accurate in a way the realtime step sequencer isn't: the realtime path schedules notes off `Date.now()` in JS, subject to whatever jitter the update loop has that frame; the offline render computes every note's exact sample offset from `start_time * sample_rate` with no wall-clock involved.
+
+## Evidence
+
+Real running app, `cargo run --bin example -- daw`, screenshotted via synthetic Win32 mouse input - not static renders.
+
+Default state after the FX sliders were added - Delay and Reverb sections both at mix 0, sound unchanged from before this session:
+
+![The DAW addon's Drums track panel showing the new FX - Delay and FX - Reverb sections with Delay Time, Delay Feedback, Delay Mix, Room Size, Reverb Time, Damping, and Reverb Mix sliders, all at their off/default values, above the Preview buttons and piano roll](/images/entropy-daw-fx-ui.png)
+
+Clicking directly on the Delay Mix and Reverb Mix sliders (this widget kit's sliders are click-to-set, not drag-only) - values updated live in the UI, and a follow-up Kick preview click played through both stages without a crash or hang:
+
+![The same panel with Delay Mix now reading 0.57 and Reverb Mix reading 0.52, both slider handles visibly moved right from their default positions](/images/entropy-daw-fx-live-sliders.png)
+
+Clicking "Export Pattern to WAV" opens a real native Save As dialog, pre-filled with a sensible filename and the WAV filter already selected - this is `rfd::FileDialog::new().add_filter(...).set_file_name(...).save_file()`, the same pattern the existing model-import op already used:
+
+![A native Windows Save As dialog titled "Save As", open over the DAW window, with the file name field pre-filled with "daw-pattern-96bpm.wav" and "Save as type" set to "WAV Audio (*.wav)"](/images/entropy-daw-wav-export-dialog.png)
+
+After clicking Save, the file lands on disk (a real 412KB WAV) and the addon's own status label confirms it on the next render:
+
+![The DAW panel's Transport section now showing the text "Exported 2.34s to C:\Users\alext\Documents\daw-pattern-96bpm.wav" below the Export Pattern to WAV button](/images/entropy-daw-wav-export-done.png)
+
+First-party benchmark: `src/bin/daw_fx_bench.rs` (`cargo run --release --bin daw_fx_bench`, this session's hardware, a 12th Gen Intel Core i5-12500). Two synthetic patterns (a 4-bar drums+bass loop and the same loop looped to 32 bars), each rendered once with every note's delay/reverb mix at 0 and once with delay_mix=0.3/reverb_mix=0.35 on every note:
+
+```
+[4bar-dry]  events=56  render_claimed_dur=9.781s  elapsed=55.5ms   speed=176.2x realtime  peak=0.700 rms=0.0695
+[4bar-fx]   events=56  render_claimed_dur=12.721s elapsed=913.9ms  speed=13.9x realtime   peak=0.707 rms=0.0622
+[32bar-dry] events=448 render_claimed_dur=79.781s elapsed=395.5ms  speed=201.7x realtime  peak=0.700 rms=0.0688
+[32bar-fx]  events=448 render_claimed_dur=82.721s elapsed=7208.1ms speed=11.5x realtime   peak=0.707 rms=0.0690
+```
+
+`render_claimed_dur`/`elapsed`/`peak`/`rms` are all read back independently from the actual written WAV file via a fresh `hound::WavReader::open`, not trusted from the render function's own return value - real audio, not silence (peak ~0.7, RMS ~0.06-0.07 in every case, well under clipping so the normalization path wasn't even exercised here). The number that matters: turning on delay+reverb for every note drops render speed from ~180-200x realtime to ~11-14x realtime, a measured ~15x cost, entirely attributable to instantiating a fresh 32-delay-line `reverb_stereo` FDN per note (see Decision log) rather than to anything about export itself. Both cases are still far faster than realtime for offline export - even 82 seconds of heavily-reverbed audio rendered in 7.2 seconds - but 11-14x is the number to remember before ever routing many simultaneous reverbed notes through the realtime playback path instead of an offline bounce.
+
+## Decision log
+
+**Always splice delay/reverb into the graph, multiply by a mix parameter, over conditionally including them.** Covered above - this repo's per-note architecture has no persistent bus to attach/detach an effect from at trigger time, so "off" has to be a value, not an absence. The real cost of that choice is the ~15x render-speed hit measured above, paid on every single note regardless of whether its mix is actually 0. A future persistent-bus rewrite (see What's next) would let "off" mean "not instantiated" again.
+
+**`Box<dyn AudioUnit>` type erasure over one monomorphized type per voice/effect combination.** `fundsp`'s `An<X>: AudioUnit` blanket impl (`fundsp-0.23.0/src/audiounit.rs`) made this a natural fit: `AudioUnit::tick`/`reset`/`set_sample_rate` are all object-safe (`&mut self`, no generic params), so `Box<dyn AudioUnit>` gets me one shared function (`build_note_node`) instead of what would otherwise be 8 voices times up to 4 delay/reverb-presence combinations of distinct compile-time types, all needing their own `FundspSource<N>` monomorphization. Dynamic dispatch has a cost, but it's dwarfed by `reverb_stereo`'s own per-instantiation and per-sample cost - not something this benchmark could isolate from the dyn-dispatch overhead even if I wanted to.
+
+**A native save dialog inside the op, not a JS-supplied path.** Matches the existing `op_io_pick_and_import_model` pattern (`rfd::FileDialog::new().pick_file()`) rather than inventing a second way to get a path from JS to Rust. `op_video_export_start` takes a plain `output_path: String` instead, but that op is driven by a whole separate export-configuration UI in its own demo addon; a single "export this pattern" button didn't need a parallel path-picking mechanism when one already exists in this codebase.
+
+**Peak-normalize only when something actually clips.** An unconditional normalize-to-peak on every export would make a quiet pattern louder than the user designed it, which is a worse default than "leave it alone unless it would clip."
+
+## Failure notes
+
+**`total_frames.max(...)` didn't compile - two `max`s in scope.** `fundsp::prelude::*` (glob-imported for the DSP combinators) brings in `fundsp::Num`, which also defines `.max()` for numeric types, colliding with `std::cmp::Ord::max` on a plain `usize`. `rustc`'s own E0034 diagnostic named both candidates and suggested the fix directly - `std::cmp::Ord::max(a, b)` instead of `a.max(b)` - so this cost a few seconds, not a debugging session, but it's a real, reproducible gotcha anywhere this file's glob-imported `fundsp::prelude` shares a method name with something in `std`.
+
+**A screenshot taken too eagerly looked like a missing status label, and wasn't one.** The very first post-export screenshot (clicking Save, waiting 1.2 seconds, then capturing) showed no "Exported..." label at all under the button - looked exactly like `lastExportStatus` wasn't being set, or the label render branch had a bug. It wasn't: a second screenshot taken a moment later, no code changed, showed the label correctly reading "Exported 2.34s to C:\Users\alext\Documents\daw-pattern-96bpm.wav". The native Save As dialog is a blocking modal - control doesn't return to the addon's render loop until it closes, and the very next frame after that hasn't necessarily been drawn and presented to the screen yet by the time an external screenshot tool fires. Worth knowing for anyone else driving this engine's UI via external synthetic input and screenshots: after any op that can block on a native dialog, give the render loop at least one more real frame before trusting a screenshot that shows nothing changed.
+
+## What's next
+
+- A real persistent per-track (or master) mixing bus, so delay/reverb tails from overlapping notes on the same track can actually share state instead of each note getting its own independent instance - would need moving off "one detached `Sink` per note" toward a continuous mixed stream, a much bigger architectural change than this session's scope.
+- More instrument presets beyond the current kick/snare/hihat/clap/tom plus sine/square/saw/triangle/noise.
+- A proper piano-roll rebuild on `TrackView`/`KeyframeTimeline` (see [the keyframe timeline and track view post](/posts/2026-09-12-entropy-keyframe-timeline-track-view)) instead of the DAW's current bespoke `PianoRoll` widget.
+- MIDI input.
