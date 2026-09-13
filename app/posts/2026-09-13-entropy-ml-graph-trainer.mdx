@@ -1,0 +1,221 @@
+---
+title: "Entropy Trains a Real Model From a Node Graph: Burn Has No Runtime Models, So We Built One"
+date: 2026-09-13
+series: Entropy
+crate_versions:
+  unchanged:
+    - "burn = 0.20 (resolved 0.20.1, features ndarray/autodiff) - already a dependency for crate::yumon, not newly added"
+    - serde = "1"
+    - rand = "0.8.5"
+  new:
+    - "none - no new Cargo dependencies. This is the first use of burn for a model whose shape isn't known at compile time, not a new crate."
+  edition: "2024"
+  os: "Windows 11 Pro 10.0.26200 (only platform currently tested)"
+  backend: "burn::backend::Autodiff<burn::backend::NdArray<f32>> - CPU only, no GPU backend (burn-wgpu/burn-candle) tested against this code"
+  tooling:
+    - "deno 2.6.7 CLI (bundles the addon's TypeScript to JS; not a Cargo dependency)"
+repo_link: https://github.com/alexthegoodman/entropy-engine
+---
+
+Every Burn model in this codebase up to now has been a fixed Rust struct. `crate::yumon::system::BrainModel` is `Lstm -> Dropout -> Dense -> two heads`, hand-written, known at compile time. That's normal for Burn - a model's shape is part of its type.
+
+A node graph editor doesn't work that way. The whole point of dragging out a Dense node and wiring it into a chain is that the shape isn't decided until someone stops editing the graph, which could be any point at runtime. So the interesting problem this post is about isn't "hook a graph editor up to some numbers" (see the [Nocode Calculator](/posts/2026-09-09-entropy-node-graph-editor), which already does that in plain JS) - it's "take a graph nobody has typed a `struct` for and hand Burn a real, trainable model built from it."
+
+## What we're building
+
+- `src/ml_graph.rs` - parses a JSON graph (one `Input` node, a chain of `Dense` nodes, one `Loss` node) into a `DynamicMlp<B>` whose layer count is a runtime value, trains it full-batch on a background thread against two built-in synthetic datasets (XOR, two interleaved half-moons), and reports loss/accuracy back through a poll-style channel.
+- `Entropy.ML.trainGraph` / `.poll` (`op_ml_graph_train` / `op_ml_graph_poll`) - the JS-facing surface, following the same start-a-thread / poll-for-updates shape `crate::yumon::system::BackgroundTrainer` already established for the Yumon brain.
+- `ml_graph_demo_addon.ts` ("ML Graph Trainer", `cargo run --bin example -- ml-graph-demo`) - a real graph you build with your mouse: add Dense layers, wire them, pick a dataset, hit Train, and watch the Loss node's own title update as it converges.
+
+## The work
+
+### A model whose layer count Rust doesn't know about
+
+A `#[derive(Module)]` struct normally has a fixed set of named fields. There's no obvious way to write `dense_1: Linear<B>, dense_2: Linear<B>, ...dense_n` when `n` comes from a JSON file. The fix is that `Vec<T>` already has a blanket `Module` impl in burn-core - I confirmed this by reading the actual crate source rather than guessing from memory, since burn's public docs don't spell this out anywhere prominent (`burn-core-0.20.1/src/module/param/primitive.rs`):
+
+```rust
+impl<T, B> Module<B> for Vec<T>
+where
+    T: Module<B> + Debug + Send + Clone,
+    B: Backend,
+{
+    type Record = Vec<T::Record>;
+    // ...visits/maps/loads every element, same as a named field would
+}
+```
+
+and the matching `AutodiffModule` impl right below it, so a `Vec<Linear<B>>` gets real parameter registration, gradient tracking, and serialization for free - it behaves exactly like `n` separate named `Linear<B>` fields would. The one thing that blanket impl can't carry is which activation function runs after each layer, since an `Activation` enum isn't itself a tensor-bearing `Module`. burn-core has a purpose-built escape hatch for exactly this, `Ignored<T>` (`burn-core-0.20.1/src/module/param/constant.rs`):
+
+```rust
+/// Container to satisfy the Module trait for types that are not modules.
+pub struct Ignored<T>(pub T);
+```
+
+So the whole model is two fields:
+
+```rust
+#[derive(Module, Debug)]
+pub struct DynamicMlp<B: Backend> {
+    layers: Vec<Linear<B>>,
+    activations: Ignored<Vec<Activation>>,
+}
+
+impl<B: Backend> DynamicMlp<B> {
+    pub fn forward(&self, x: Tensor<B, 2>) -> Tensor<B, 2> {
+        let mut h = x;
+        for (layer, act) in self.layers.iter().zip(self.activations.0.iter()) {
+            h = act.apply(layer.forward(h));
+        }
+        h
+    }
+}
+```
+
+`#[derive(Module)]` also generates the `AutodiffModule` impl, the same way it does for `crate::yumon::system::BrainModel` - as long as every field is `AutodiffModule` when `B: AutodiffBackend`, which both `Vec<Linear<B>>` and `Ignored<Vec<Activation>>` are (confirmed the same way, reading `primitive.rs`'s `AutodiffModule` impl for `Vec<T>` and `constant.rs`'s for `Ignored<T>`). Nothing about training this model is special-cased - `GradientsParams::from_grads(loss.backward(), &model)` and `optimizer.step(...)` work exactly as they do for a hand-written struct.
+
+### Walking the graph into that shape
+
+The graph itself is untyped JSON from the addon:
+
+```rust
+#[derive(Debug, Clone, Deserialize)]
+#[serde(tag = "kind")]
+pub enum GraphNodeSpec {
+    Input { id: String, size: usize },
+    Dense { id: String, units: usize, activation: String },
+    Loss { id: String },
+}
+```
+
+`parse_graph` walks it starting at the one `Input` node, following the single outgoing `link` at each node in turn, until it reaches the one `Loss` node:
+
+```rust
+loop {
+    let link = spec.links.iter().find(|l| l.from == current_id)
+        .ok_or_else(|| format!("node '{current_id}' has no outgoing link to continue the chain"))?;
+    let next = spec.nodes.iter().find(|n| n.id() == link.to)
+        .ok_or_else(|| format!("link points at unknown node '{}'", link.to))?;
+
+    match next {
+        GraphNodeSpec::Dense { id, units, activation } => {
+            let act = Activation::parse(activation)?;
+            layer_dims.push((current_size, *units, act));
+            current_size = *units;
+            current_id = id.clone();
+        }
+        GraphNodeSpec::Loss { .. } => break,
+        GraphNodeSpec::Input { .. } => return Err("a link points back into the Input node".to_string()),
+    }
+}
+```
+
+No branching support - a multilayer perceptron is a chain, and that constraint is what keeps this a same-session scope instead of a general dataflow compiler (more on this in the decision log). All of this validation happens synchronously, before any thread is spawned - a malformed graph, or a final Dense layer whose unit count doesn't match the chosen dataset's class count, throws straight back to the caller with no background work ever starting.
+
+### Training without blocking the UI thread
+
+Once the graph is valid, training runs on its own thread and reports back through an `mpsc` channel - the exact shape `crate::yumon::system::BackgroundTrainer` already uses for the Yumon brain, reused rather than invented:
+
+```rust
+thread::spawn(move || {
+    let device = <MlBackend as Backend>::Device::default();
+    let mut model = build_model::<MlBackend>(&model_spec, &device);
+    let mut optimizer: OptimizerAdaptor<Adam, DynamicMlp<MlBackend>, MlBackend> = AdamConfig::new().init();
+    let loss_fn = CrossEntropyLossConfig::new().init::<MlBackend>(&device);
+
+    let (flat_x, ys) = dataset.generate();
+    let x_t = Tensor::<MlBackend, 2>::from_floats(TensorData::new(flat_x, [batch, model_spec.input_size]), &device);
+    let y_t = Tensor::<MlBackend, 1, Int>::from_data(TensorData::new(ys.clone(), [batch]), &device);
+
+    for epoch in 0..epochs {
+        let logits = model.forward(x_t.clone());
+        let loss = loss_fn.forward(logits, y_t.clone());
+        let grads = GradientsParams::from_grads(loss.backward(), &model);
+        model = optimizer.step(lr, model, grads);
+        // ...send a TrainingUpdate{epoch, loss, done, accuracy} down the channel
+    }
+});
+```
+
+Unlike Yumon's trainer, this one is full-batch: both datasets (4 points for XOR, 200 for two moons) fit in a single forward pass, so there's no minibatching or shuffling to write. `Entropy.ML.poll(id)` drains whatever updates have queued since the last call - usually one or zero, since a model this small finishes many epochs between two animation frames on CPU.
+
+### The graph you actually build
+
+`ml_graph_demo_addon.ts` renders the graph through the same `Entropy.UI.Widget.snarl` / `NodeGraphEditor` the Nocode Calculator uses for pure-JS arithmetic - but the graph here isn't evaluated in JS at all; it's serialized and handed to Rust. `+ Dense Layer` / `- Remove Last Dense` mutate the node list, `Auto-Wire Chain` re-chains `Input -> hidden... -> Output -> Loss` as a convenience default, and manual pin-dragging via the editor's own `onConnect`/`onDisconnect` still works and wins afterward. Per-node unit count is a `NumericInput` (drag to change); activation is a cycling button, not a dropdown - see the decision log for why. The Loss node's own title updates live to show the current loss, the same trick the calculator uses to show computed values in node titles.
+
+## Evidence
+
+Same machine as recent Entropy posts: 12th Gen Intel Core i5-12500, Windows 11 Pro 10.0.26200. `rustc 1.94.1`, `cargo 1.94.1`, `deno 2.6.7`.
+
+Headless correctness check, `cargo run --bin ml_graph_bench` (CPU, `NdArray` backend, full run this session):
+
+```
+=== XOR (xor, hidden=[8], epochs=300, lr=0.05) ===
+  epoch    1/300  loss=0.693473
+  epoch  150/300  loss=0.002790
+  epoch  300/300  loss=0.001013  accuracy=100.0%
+
+=== Two Moons (two_moons, hidden=[16, 16], epochs=200, lr=0.02) ===
+  epoch    1/200  loss=0.723661
+  epoch  100/200  loss=0.000682
+  epoch  200/200  loss=0.000176  accuracy=100.0%
+
+=== Validation errors surface synchronously (no thread spun up) ===
+  OK: final Dense node has 3 units, but dataset 'xor' has 2 classes - the last layer before Loss must match
+  OK: graph must have exactly one Input node, found 0
+```
+
+Both runs finished in well under a second on CPU - deliberately small and fast, given the hardware constraint that's currently blocking Yumon Pet's transformer from a real convergence run (see that series' 2026-09-10 post).
+
+Verified interactively against the real running app, not just the headless bench - built the default graph, clicked Train, and screenshotted before and after:
+
+![The ML Graph Trainer window before training: Input(2) wired through one Dense(8, relu) hidden layer to an Output Dense(2, linear) and a Loss node, "Not trained yet" shown above the canvas](/images/entropy-ml-graph-trainer-untrained.png)
+
+![The same graph after clicking Train: the Loss node's own title now reads "Loss = 0.0014", and the status line above shows epoch 250/250, loss 0.001432, accuracy 100.0%](/images/entropy-ml-graph-trainer-xor-trained.png)
+
+Then, still in the same running window: cycled the dataset button to `two_moons`, clicked `+ Dense Layer` to add a second hidden layer, and re-trained:
+
+![A two-hidden-layer graph (Dense(8, relu) x2) re-wired automatically after adding the new node, trained on two_moons to loss 0.000358 / accuracy 100.0%, Loss node title reading "Loss = 0.0004"](/images/entropy-ml-graph-trainer-two-moons.png)
+
+Both training runs finished in under three seconds end to end, including the JS-side polling loop and UI redraw - clicking Train and watching the numbers land felt closer to instant than to "wait for training."
+
+First-party diff, `git diff --stat` at commit `f9c9d8d1cc9001c4e2608fdbe919248ffd33bb14` (tag `ml-graph-trainer-2026-09-13`):
+
+```
+ examples/studio-bundle/package.json               |  1 +
+ examples/studio-bundle/src/addon.d.ts             | 32 +++++++++++++
+ src/bin/example.rs                                |  6 ++
+ src/deno/addon_engine.rs                          |  8 ++-
+ src/deno/addon_ops.rs                             | 38 +++++++++++++
+ src/deno/addon_setup.js                           | 17 +++++++
+ src/lib.rs                                        |  1 +
+ examples/studio-bundle/src/apps/ml_graph_demo_addon.ts | 233 lines (new)
+ src/bin/ml_graph_bench.rs                              |  66 lines (new)
+ src/ml_graph.rs                                        | 367 lines (new)
+ 10 files changed, 767 insertions(+), 2 deletions(-)
+```
+
+## Decision log
+
+- **`Vec<Linear<B>>` + `Ignored<Vec<Activation>>`, instead of a fixed enum of "known architectures."** The alternative that doesn't require reading burn-core's source is a closed set of hand-written model structs (`Mlp1Layer`, `Mlp2Layer`, ...) selected by a match statement - which defeats the point of a graph editor, since the graph would only ever be choosing between a handful of pre-baked shapes. Confirming the `Vec<T: Module<B>>` blanket impl actually exists (and reading `Ignored<T>`'s doc comment, which says outright it exists "to satisfy the Module trait for types that are not modules") made the real dynamic version no harder to write than the fake one would have been.
+- **A chain-only graph, no branching.** Real dataflow graphs merge and split. Supporting that means topological sorting, multi-input nodes, and a decision about what "Dense with two inputs" even means (concatenate? sum?) - each a reasonable feature, and each enough scope on its own to blow this past a same-session Novel Integration post. An MLP is a chain; this post ships the chain.
+- **Full-batch training, not Yumon's context-window minibatching.** `crate::yumon::system::BackgroundTrainer` batches because its LSTM needs sequential context windows built per-sample. Both datasets here (4 points, 200 points) fit in one tensor - minibatching would be complexity with no benefit at this scale.
+- **A fixed, non-deletable `Output` Dense node, distinct from user-addable hidden layers.** The final layer's unit count has to equal the dataset's class count or training rejects the graph outright. Making every Dense node freely editable means a beginner's first action (deleting the wrong node, or typing an arbitrary number into the last layer) is a thrown error before they've seen anything train. Fixing the output layer's shape to the dataset's own requirement, while leaving hidden layers fully free-form, keeps the interesting part of the UI (how many hidden layers, how wide, what activation) genuinely free while removing the most common way to produce an error message instead of a result.
+- **A cycling button instead of a dropdown for activation/dataset choice.** `entropy_gui`'s dropdown widget's change-event payload format has no existing example in this repo to check against (no other addon calls `Widget.dropdown`), and the 2026-09-12 doc-editor post already found `NumericInput`/`ColorInput` limited to drag-only/cycle-only interaction in this GUI kit. Rather than reverse-engineer an unverified payload shape for a same-session demo, activation and dataset selection reuse the already-proven cycling-button pattern.
+- **Reused `BackgroundTrainer`'s mpsc/poll shape rather than inventing a new one.** The Yumon brain trainer already solved "run Burn training on a thread without blocking a JS-driven UI loop." Building a second, different mechanism for the same problem in the same codebase would be pure duplication.
+
+## Failure notes
+
+No first-try compile or runtime failures this session - worth stating plainly rather than manufacturing a war story, since [past posts in this series](/posts/2026-09-11-entropy-stylus-drawing) have hit real ones. The difference this time: every load-bearing Burn API (`Ignored<T>`, the `Vec<T>` blanket `Module`/`AutodiffModule` impls, `CrossEntropyLossConfig::init`/`forward`'s exact signature) was confirmed by reading the actual vendored crate source in `~/.cargo/registry/src/.../burn-core-0.20.1/` and `burn-nn-0.20.1/` before any model code was written, rather than reconstructed from memory of an earlier Burn version. The one place that paid off concretely: `burn-nn`'s own `cross_entropy.rs` test suite builds its integer target tensor as `Tensor::<TestBackend, 1, Int>::from_data(TensorData::from([2, 0, 4, 1]), &device)` with no explicit type conversion - a test elsewhere in the same file that mixes an `as i64` cast into the literal array does need `.convert::<IntElem<TestBackend>>()`. Copying the plain-literal form directly avoided finding that out by hitting a type-mismatch error.
+
+Two real, open gaps rather than bugs:
+
+- **Only the `NdArray` CPU backend is exercised.** `MlBackend` is hardcoded to `Autodiff<NdArray<f32>>`; nothing here has been run against `burn-wgpu` or `burn-candle`, and a graph large enough for that to matter (bigger datasets, wider layers) hasn't been tried.
+- **Both datasets are small enough that "full-batch" was never a real design tradeoff.** A dataset with tens of thousands of points would need actual minibatching, and nothing here has been tested at that scale.
+
+## What's next
+
+- More node types - at minimum a Dropout node (Yumon's own `BrainModel` already proves the underlying `Dropout`/`DropoutConfig` works in this codebase) and possibly an LSTM node, reusing `crate::yumon::system::BrainModel`'s exact layer as a template rather than a new implementation.
+- Branching graphs - multiple inputs merged into one node - once there's an actual use case that needs it, rather than built speculatively.
+- A live loss-curve visualization using `entropy_gui::KeyframeTimeline` (see the [KeyframeTimeline/TrackView post](/posts/2026-09-12-entropy-keyframe-timeline-track-view)) instead of a single running number, since both training runs in this post finished fast enough that a curve would actually be visible forming in real time.
+- Save/load a trained graph's weights - right now the model exists only inside the training thread's closure and is discarded once the final `MlTrainingUpdate` is sent.
+- A real dropdown-payload investigation, so activation/dataset selection isn't permanently stuck on cycling buttons.
