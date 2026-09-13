@@ -1,0 +1,234 @@
+---
+title: "A Real Multi-Page Document Editor in entropy_gui: Pagination, Faux Bold/Italic, and a Keystroke Budget"
+date: 2026-09-12
+series: Entropy
+crate_versions:
+  unchanged:
+    - wgpu = "27.0.1"
+    - winit = "0.30.12"
+    - deno_core = "0.332.0"
+    - fontdue = "0.9.2"
+    - etagere = "0.2"
+  edition: "2024"
+  os: "Windows 11 Pro 10.0.26200 (only platform currently tested)"
+  tooling:
+    - "deno 2.6.7 CLI (bundles the addon's TypeScript to JS; not a Cargo dependency)"
+    - "rustc/cargo 1.94.1"
+  benchmark_hardware: "12th Gen Intel Core i5-12500, cargo build --release"
+repo_link: https://github.com/alexthegoodman/entropy-engine
+---
+
+Entropy's addon-facing UI kit already has real multi-line text (`text_edit_multiline`) and a line-numbered `code_editor`, but nothing that behaves like a word processor: fixed page dimensions, margins, content that flows and breaks across page boundaries, mixed bold/italic runs inside one paragraph. This post builds that as a new `entropy_gui` widget, `DocEditor`, with a specific target set before writing any of it: a keystroke's cost should not grow with total document length, and that claim needs a real number behind it, not a feeling.
+
+## What we're building
+
+- `entropy_gui::DocEditor` (`src/entropy_gui/widgets_doc_editor.rs`, new) - paragraphs of formatted runs, a per-paragraph shaped-line cache, and a page-assignment pass that buckets already-shaped lines into fixed-size pages with margins. A paragraph can span a page break at line granularity, same as a real word processor.
+- `Painter::styled_glyphs` (`painter.rs`, new method) - paints pre-shaped glyphs with an optional per-glyph faux-bold (double-strike, offset a fraction of a pixel) and italic (a per-vertex shear), since there is no separate bold/italic font face anywhere in this engine.
+- A dedicated `doc_editors` map on `entropy_gui::Memory`, not the small `WidgetState` enum every other widget's cursor/blink state lives in - see "who owns the document" below.
+- A new `UiWidget::DocEditor` variant, `op_ui_widget_doc_editor`, and a render arm in `addon_engine.rs`.
+- `Entropy.UI.Widget.docEditor` in `addon_setup.js`/`addon.d.ts`.
+- `doc_editor_demo_addon.ts` ("Document Editor Demo"), reachable via `cargo run --bin example -- doc-editor-demo`.
+- `src/bin/doc_editor_bench.rs` - a headless benchmark exercising the exact same `DocEditorState` methods the live widget calls every frame, no window or GPU needed.
+
+## Who owns the document
+
+Every complex `entropy_gui` widget so far - `NodeGraphEditor`, `KeyframeTimeline`, `TrackView` - follows the same contract: the addon rebuilds its whole data set from JS state every frame and hands it to `show()` as a plain slice; the widget never gets a persistent `&mut` into it. That's the right call for a few keyframes or clips. It's the wrong call for a document, because this whole render loop runs continuously at the window's frame rate - a JSON round-trip of the entire document through `deno_core`'s serde path, 60 times a second, would itself become the bottleneck the rest of this post is trying to avoid, especially on a document with hundreds of paragraphs.
+
+So `DocEditor` breaks the pattern on purpose. The document - paragraphs, per-paragraph layout cache, cursor, selection, active format - lives entirely Rust-side, keyed by the widget's id, the same way `TextEditState`'s cursor/blink already does for `text_edit_singleline`. The op only ever carries page geometry:
+
+```rust
+DocEditor { id: String, page_width: f32, page_height: f32, margin: f32 },
+```
+
+and stats (word/char/page counts) come back over the same `ui_events` string channel a button click already uses:
+
+```rust
+UiWidget::DocEditor { id: doc_id, page_width, page_height, margin } => {
+    let page = crate::entropy_gui::PageConfig { width: *page_width, height: *page_height, margin: *margin };
+    let resp = crate::entropy_gui::DocEditor::new(doc_id.as_str()).show(ui, page);
+    events_to_push.push(format!("DOCEDIT_STATS|{}|{}|{}|{}", doc_id, resp.word_count, resp.char_count, resp.page_count));
+}
+```
+
+The one wrinkle this creates: `Memory`'s existing `WidgetState` enum stores small copyable state and its `get`/`set` clone the whole value on every access - fine for a cursor position, not fine for a document. `DocEditorState` gets its own map and a take/put pair instead:
+
+```rust
+pub fn take_doc_editor(&mut self, id: Id) -> DocEditorState {
+    self.doc_editors.remove(&id).unwrap_or_default()
+}
+pub fn put_doc_editor(&mut self, id: Id, state: DocEditorState) {
+    self.doc_editors.insert(id, state);
+}
+```
+
+`show()` moves the state out at the top of the call (an O(1) hashmap remove, not a clone), mutates it as a plain owned local for the whole frame, and moves it back at the end. That also sidesteps a real constraint in this GUI kit: `Memory` lives inside the same `RefCell<ContextInner>` that the painter/atlas/font registry share, so holding a `memory_mut` borrow open while calling `painter.text(...)` would panic on a second borrow. Every helper here (`layout_paragraph`, `styled_glyphs`) opens and closes its own short-lived `ctx.inner_mut()` borrow, the same shape `Painter::text`/`measure_text` already use.
+
+## Real pagination, not a scrolling column
+
+A document is `Vec<Paragraph>`, each paragraph a `Vec<Run>` of `(text, format)`. Enter creates a new paragraph rather than inserting a literal `\n`, so word-wrap only ever has to reason about one paragraph's plain text at a time.
+
+Two passes run every frame:
+
+**Reshape.** `ensure_layout` calls `text_layout::shape_text` on one paragraph's concatenated text and caches the result, keyed by paragraph index, invalidated only when that paragraph's text, format, or the page's content width actually changed:
+
+```rust
+fn ensure_layout(&mut self, ctx: &Context, page: PageConfig, idx: usize) {
+    let cw = page.content_width();
+    if (self.cached_content_width - cw).abs() > 0.5 {
+        for c in self.layout_cache.iter_mut() { *c = None; }
+        self.cached_content_width = cw;
+    }
+    if self.layout_cache[idx].is_none() {
+        self.layout_cache[idx] = Some(layout_paragraph(ctx, &self.paragraphs[idx], cw));
+    }
+}
+```
+
+A keystroke touches exactly one paragraph, so this costs O(that paragraph's length), not O(document length).
+
+**Paginate.** `paginate` walks every already-shaped line's cached height and buckets lines into pages:
+
+```rust
+pub fn paginate(&self, page: PageConfig) -> Vec<PageLayout> {
+    let content_h = page.content_height();
+    let mut pages = Vec::new();
+    let mut cur = PageLayout::default();
+    for (pi, layout) in self.layout_cache.iter().enumerate() {
+        let Some(layout) = layout else { continue };
+        let n_lines = layout.lines.len().max(1);
+        let mut line_start = 0usize;
+        while line_start < n_lines {
+            let remaining = content_h - cur.used_height;
+            let max_fit = (remaining / LINE_HEIGHT).floor().max(0.0) as usize;
+            if max_fit == 0 && cur.used_height > 0.0 {
+                pages.push(std::mem::take(&mut cur));
+                continue;
+            }
+            let take = max_fit.max(1).min(n_lines - line_start);
+            cur.entries.push(PageEntry { para: pi, line_start, line_end: line_start + take });
+            cur.used_height += take as f32 * LINE_HEIGHT;
+            line_start += take;
+        }
+        cur.used_height += PARA_SPACING;
+    }
+    if !cur.entries.is_empty() || pages.is_empty() { pages.push(cur); }
+    pages
+}
+```
+
+This is O(total lines in the document), but it's pure arithmetic over cached line counts - no fontdue, no glyph atlas - so even at a few thousand lines it's microseconds, not milliseconds (numbers below). Both passes are plain methods on `DocEditorState`, so `doc_editor_bench` can call the exact same code the live widget calls, headlessly.
+
+Painting only walks pages that intersect the current scroll viewport, so a keystroke's paint cost stays bounded by what's on screen, not by total page count either.
+
+## Formatting without a bold font
+
+`entropy_gui::fonts` loads exactly one proportional face (a variable-weight Figtree TTF, rasterized by fontdue at its default instance - fontdue has no API for selecting a variable font's weight axis) and one monospace face. There is no separate bold or italic file to switch to. `Painter::styled_glyphs` fakes both instead, working directly with already-shaped glyphs rather than `Painter::text`'s single-color path:
+
+```rust
+let shear = if italic { (y1 - y0) * ITALIC_SHEAR } else { 0.0 };
+let passes: &[f32] = if bold { &[0.0, BOLD_OFFSET] } else { &[0.0] };
+for &dx in passes {
+    // ...push a quad per pass, top corners at (x0+dx+shear, x1+dx+shear),
+    // bottom corners at (x0+dx, x1+dx) - italic shears the top of the glyph
+    // right relative to the bottom; bold just draws the glyph twice.
+}
+```
+
+`RunFormat { bold, italic }` lives per run; `Paragraph::insert` picks the fast path (a plain `String::insert_str`, no run-list surgery) whenever the character being typed matches the run it's landing in, and only splits/creates a new run when the active format actually differs from its neighbor. Toggling Bold/Italic with an active selection reads whether every run inside the selection already has the flag set (`selection_all_has`) and flips the opposite way, matching normal word-processor toggle behavior; with no selection it just flips the format that gets applied to whatever's typed next.
+
+## Wiring to the addon API
+
+Same shape every other complex widget uses: a `UiWidget` variant, an `#[op2(fast)]` op that pushes it onto that window's per-frame widget queue, a render arm in `addon_engine.rs`, and a JS wrapper in `addon_setup.js` that the demo addon calls:
+
+```ts
+Entropy.UI.Widget.docEditor(win, {
+    id: "main_doc",
+    pageWidth: 816, pageHeight: 1056, margin: 96,
+    onStats: (s) => { stats = s; }
+});
+```
+
+`DOCEDIT_STATS|id|words|chars|pages` gets one more branch in `_process_events`' prefix dispatch, next to the existing `KFTL_`/`TRACKS_` entries - the only new wiring `_process_events` needed, since (per the section above) the document itself never crosses this boundary at all.
+
+## Evidence
+
+All screenshots below are real `example.exe doc-editor-demo` runs, driven by synthetic `SetCursorPos`/`mouse_event`/`SendKeys` input against the actual window, same verification method earlier Entropy posts use - not static renders.
+
+A blank US Letter page (816x1056px at 96 DPI, 1" margins) with the toolbar:
+
+![A blank white page inside the Document Editor Demo window, with Bold, Italic, and Load Sample buttons above it and a "0 words - 0 characters - 1 pages" status line](/images/entropy-doc-editor-initial.png)
+
+After loading the 300-paragraph synthetic sample and clicking mid-paragraph to place the cursor and type - real word-wrap, real reflow around the insertion point, 43 pages for 20,859 words:
+
+![The document now shows real paragraphs wrapped to the page width, with a typed sentence inserted and reflowed in the middle of the first paragraph, and the status line reading 20859 words, 123762 characters, 43 pages](/images/entropy-doc-editor-pagination.png)
+
+Toggling Bold with no selection (applies to whatever's typed next), typing, then toggling it back off:
+
+![The words "THIS PART SHOULD BE BOLD" appear visibly heavier than the surrounding text, followed by normal-weight text again after Bold was toggled off](/images/entropy-doc-editor-active-format.png)
+
+Selecting the document's first word with Shift+Right and toggling Bold on the selection:
+
+![The word "the" at the very start of the document now renders visibly bolder than the rest of the paragraph, with the Bold toolbar button showing an active/focused outline](/images/entropy-doc-editor-selection-bold.png)
+
+**Benchmark.** `cargo run --release --bin doc_editor_bench`, on the hardware/toolchain in the frontmatter. Per-keystroke cost is `insert_char` + `ensure_all_layout` + `paginate` together, i.e. exactly what `DocEditor::show` runs after every typed character:
+
+```
+=== Per-keystroke cost vs. total document size (typing at the midpoint paragraph) ===
+   1 paragraphs (  1 pages,     40 words):  avg 0.0226 ms  p50 0.0212  p95 0.0298  p99 0.0447  max 0.1132
+  10 paragraphs (  2 pages,    655 words):  avg 0.0272 ms  p50 0.0266  p95 0.0365  p99 0.0475  max 0.1178
+  50 paragraphs (  8 pages,   3435 words):  avg 0.0342 ms  p50 0.0316  p95 0.0559  p99 0.0663  max 0.1751
+ 150 paragraphs ( 22 pages,  10365 words):  avg 0.0338 ms  p50 0.0333  p95 0.0391  p99 0.0492  max 0.0736
+ 300 paragraphs ( 43 pages,  20850 words):  avg 0.0436 ms  p50 0.0427  p95 0.0624  p99 0.0817  max 0.1670
+ 600 paragraphs ( 86 pages,  41700 words):  avg 0.0462 ms  p50 0.0462  p95 0.0554  p99 0.0624  max 0.0795
+```
+
+Going from a 1-paragraph, 1-page document to 600 paragraphs / 86 pages / 41,700 words moves the average keystroke cost from 0.023ms to 0.046ms - roughly double, not the roughly-14x a document-length-proportional design would produce. That residual growth is `ensure_all_layout`'s own cheap `is_none()` scan over every paragraph's cache slot (still O(paragraph count), just not O(fontdue shaping)) plus `paginate`'s O(total lines) bucketing - both real, both intentionally left in rather than further optimized, since even at 600 paragraphs they stay two orders of magnitude under a 16.7ms 60fps frame budget.
+
+The second table isolates the part of the design that does *not* stay flat - reshaping is per-paragraph, not per-line, so a keystroke's cost scales with the length of the one paragraph it lands in:
+
+```
+=== Per-keystroke cost vs. the EDITED paragraph's own length (single paragraph doc) ===
+paragraph ~   100 chars:  avg 0.0148 ms  p50 0.0146  p95 0.0175  p99 0.0192  max 0.0236
+paragraph ~  1000 chars:  avg 0.0513 ms  p50 0.0450  p95 0.0705  p99 0.0793  max 0.0847
+paragraph ~  5000 chars:  avg 0.2366 ms  p50 0.2203  p95 0.3130  p99 0.4434  max 0.4732
+paragraph ~ 20000 chars:  avg 1.7049 ms  p50 1.5630  p95 2.2820  p99 3.3169  max 3.6399
+```
+
+A normal prose paragraph (a few hundred characters) stays comfortably under a tenth of a millisecond. A 20,000-character single paragraph - not a realistic paragraph, but a real stress case - costs about 1.7ms per keystroke: still well inside frame budget, but a real, measured scaling wall, not a hypothetical one. See "what's next."
+
+Pagination alone, over the 600-paragraph document, cache fully warm, no edits:
+
+```
+=== Paginate-only cost at a large document (no edits, cache fully warm) ===
+paginate() over 600 paragraphs:  avg 0.0137 ms  p50 0.0134  p95 0.0139  p99 0.0185  max 0.0478
+```
+
+Confirms the design claim directly: bucketing ~2,600 already-shaped lines into pages costs about 14 microseconds, not milliseconds, because it never touches fontdue or the glyph atlas.
+
+## Decision log
+
+**Document state lives in `entropy_gui::Memory`, not in the addon's JS data.** Covered above - the only real architectural deviation from every prior complex widget in this kit, made because a document is the one payload here plausibly large enough for a 60Hz JSON round-trip to actually matter.
+
+**Wrap-boundary detection by x-decrease, not y-change.** Covered fully in failure notes below - x is monotonically non-decreasing within one real shaped line and only resets at an actual wrap; fontdue's per-glyph `y` is not a reliable same-line signal.
+
+**Faux bold/italic via `styled_glyphs`, not new font files.** A real visual effect (verified in the screenshots above), not a placeholder - but a documented simplification. Adding actual bold/italic weight or style files is a separable follow-up once there's a reason to invest in real font-face management.
+
+**Per-paragraph reshape granularity, not per-line.** Simpler to build and reason about, and the benchmark shows it's the right tradeoff for anything that looks like real prose. It stops being the right tradeoff for a pathologically long single paragraph - measured, not asserted, in the second benchmark table.
+
+**Selection-based Bold/Italic is single-paragraph only.** `apply_format_range` bails out (a no-op) when a selection spans a paragraph boundary - a documented gap, not a silent one, and the common case (formatting a run of text within one paragraph) works end to end, per the screenshots.
+
+**The "Load 300-Paragraph Sample" and Bold/Italic buttons are built into the widget itself, not the demo addon.** Keeps the addon-facing API surface down to page geometry only (the point of the whole "who owns the document" section), and means the same self-contained widget is what any future addon gets, not a reimplementation of a toolbar per caller.
+
+## Failure notes
+
+**A diagonal staircase instead of wrapped paragraphs, caused by trusting the wrong field for line detection.** The first version detected a wrapped line boundary by watching `ShapedGlyph::y` change between consecutive glyphs. Loading the 300-paragraph sample and typing into it rendered every paragraph as a descending diagonal of one-to-four-character fragments - not a crash, not an error, just wrong, and only visible by actually looking at a screenshot rather than trusting that `cargo build`/`cargo run` succeeded. Per fontdue's own docs (`docs.rs/fontdue/0.9.2`, `GlyphPosition::y`), `y` is "the ymin of the glyph bounding box" in the coordinate system in use here (`PositiveYDown`, so ymin is the glyph's own top) - not a fixed per-line baseline or line-top. A glyph with a descender sits at a different bounding-box top than one without, even on the same visual line, so a small y-based epsilon produced a false "new line" every couple of characters, while those glyphs' `x` values (never reset, since it wasn't really a new line) kept climbing - painting each fake line at a full line-height step down while x kept increasing produced exactly the observed staircase. Fixed by detecting a wrap via `x` resetting backward instead (monotonic within one real line, reliably reset only at an actual wrap) and re-zeroing each line's glyph `y` values relative to that line's own minimum before caching them, so painting's own per-line vertical offset doesn't get compounded with fontdue's absolute-within-paragraph `y`. Verified by reloading the same 300-paragraph sample and confirming normal left-aligned wrapped paragraphs (see the pagination screenshot above).
+
+**Typed text arriving scrambled, caused by re-running hit-testing on every frame instead of once per click.** After fixing the line-detection bug, typing into a document still produced garbled, partially-reordered text - fragments of the sample paragraph interleaved with fragments of what was actually typed. The cause: cursor-placement used `Response::interact_pointer_pos()`, which (per `ui::interact`'s own implementation) returns `Some(pointer_pos)` on *every frame the pointer merely hovers the rect*, not only on the frame of an actual click. With the mouse left resting over the same screen position after the initial click, every subsequent frame re-ran hit-testing against that same pixel and reset the cursor there - and since the paragraph kept reflowing as new characters were inserted, "that same pixel" mapped to a different byte offset each frame, so each new character landed at a drifting position instead of advancing from the last one. Fixed by gating cursor placement on `canvas_response.clicked()`, an edge-triggered single-frame event, the same signal already used for setting keyboard focus a few lines above. Verified by loading the sample, clicking once, typing a full sentence, and confirming it appears intact and in order (see the pagination screenshot above - both bugs are in that one screenshot's history, fixed in sequence).
+
+## What's next
+
+- Real per-line incremental reshaping. Today a keystroke reshapes its whole paragraph; the benchmark's second table shows that's fine for normal prose and a real, if distant, wall for a pathologically long single paragraph.
+- Cross-paragraph selection formatting - `apply_format_range` currently bails out at a paragraph boundary.
+- Mouse drag-to-select, copy/paste, undo - none of the three exist yet.
+- Real bold/italic/size font faces, if this engine ever loads more than the one proportional face.
+- Horizontal scroll or a shrink-to-fit zoom for a canvas narrower than the page - today a narrow window just clips the page's sides.
