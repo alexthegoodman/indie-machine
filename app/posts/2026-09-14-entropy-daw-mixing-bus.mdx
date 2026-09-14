@@ -1,0 +1,208 @@
+---
+title: "A Persistent Mixing Bus for Entropy's DAW, and an AudioEffect Registry to Go With It"
+date: 2026-09-14
+series: Entropy
+crate_versions:
+  unchanged:
+    - fundsp = "0.23.0"
+    - rodio = "0.21.1"
+    - deno_core = "0.332.0"
+  edition: "2024"
+  os: "Windows 11 Pro 10.0.26200 (only platform currently tested)"
+  tooling:
+    - "deno 2.6.7 CLI (bundles the addon's TypeScript to JS; not a Cargo dependency)"
+repo_link: https://github.com/alexthegoodman/entropy-engine
+---
+
+The last DAW post ended with every note in Entropy's step sequencer getting its own detached `rodio::Sink`, its own `fundsp` graph, and its own private delay/reverb instance - fire-and-forget, no bus, no shared state. That post's own "what's next" named the obvious follow-up: a real persistent per-track mixing bus, so effects and levels live in one place instead of being baked into every single note trigger. This post builds that bus, and along the way replaces the flat `delayTime`/`reverbRoomSize`/... fields that were living directly on every note and track config with a small, reusable effect registry - `Entropy.AudioEffect` - so a delay or reverb is a thing you create once and attach by id, not a pile of parameters you retype everywhere.
+
+The DAW addon's UI got rebuilt at the same time. It's not really a separate change: once tracks own a persistent bus with real gain/mute/solo/effects, the natural UI for that is a mixer - channel strips side by side - not the single scrolling column of sliders the addon had before.
+
+## What we're building
+
+- `TrackBus` (`src/audio/mod.rs`, new) - a persistent per-track mixing bus wrapping a `rodio::mixer::Mixer`, replacing the one-`Sink`-per-note architecture. Gain/mute/solo apply continuously, every sample, including to notes that are already ringing.
+- `Entropy.AudioEffect` (new) - `createDelay`/`createReverb` return an id; `setDelayParams`/`setReverbParams` update it live; a track's bus references effects by id via `ensureTrackBus`'s `effectIds`. Effects are bus-only, not attachable to a single one-shot note - see Decision log for why.
+- `StereoDelayLine` (new) - a hand-rolled ring-buffer echo, replacing `fundsp`'s `delay()` combinator for this use case because a persistent effect needs its time/feedback live-adjustable without rebuilding anything.
+- Two new `entropy_gui` layout primitives, `UI.Widget.vertical`/`UI.Widget.group`, alongside the existing `horizontal`/`collapsingHeader` - `group` draws a bordered box around its contents, which is what makes a mixer channel strip actually look like one.
+- The DAW addon's whole panel reorganized into collapsible sections (Transport / Mixer / Voice / Effects / Preview / Piano Roll), with the Mixer section laid out as side-by-side channel-strip boxes instead of a vertical list of rows.
+
+## The work
+
+### A bus instead of a Sink
+
+`rodio::mixer::mixer(channels, sample_rate)` (`rodio-0.21.1/src/mixer.rs`) returns a `(Mixer, MixerSource)` pair - `Mixer::add(source)` mixes a new source in, `MixerSource` is itself a `Source` that sums whatever's currently playing. That's exactly the primitive a per-track bus needs: every note on a track gets pushed into the same `Mixer`, and the resulting `MixerSource` is what the bus applies gain/mute/solo/effects to.
+
+The one wrinkle is in that file's own doc comment: "a mixer without any input source behaves like an `Empty` source... input sources added later might not be forwarded." A `MixerSource` reports itself finished (`next()` returns `None`) whenever it has nothing playing, which is exactly the state a track's bus is in between notes - and a `Sink` drops a source the moment it reports finished. `TrackBusSource` wraps the `MixerSource` instead of exposing it directly, and never signals completion:
+
+```rust
+// src/audio/mod.rs
+fn next(&mut self) -> Option<Self::Item> {
+    if self.buf_idx == 0 {
+        let dry = [
+            self.mixer_source.next().unwrap_or(0.0),
+            self.mixer_source.next().unwrap_or(0.0),
+        ];
+        let mut x = dry;
+        for effect in self.effects.lock().unwrap().iter() {
+            x = effect.process_and_mix(x);
+        }
+        let active = if self.any_solo.load(Ordering::Relaxed) {
+            self.solo.load(Ordering::Relaxed)
+        } else {
+            !self.muted.load(Ordering::Relaxed)
+        };
+        let gain = if active { f32::from_bits(self.gain.load(Ordering::Relaxed)) } else { 0.0 };
+        self.buf = [x[0] * gain, x[1] * gain];
+    }
+    // ...
+}
+```
+
+An empty mixer just reads as silence here, so the bus - and the gain/mute/solo atomics it reads every sample - keeps running for the track's entire lifetime. `AudioEngine::ensure_track_bus` creates this once per track and stores it in a `HashMap<String, TrackBus>`; `play_note_on_track` looks the bus up and calls `note_mixer.add(...)` on it, nothing more.
+
+### Where effects live
+
+The old design baked `delayTime`/`delayFeedback`/`delayMix`/`reverbRoomSize`/`reverbTime`/`reverbDamping`/`reverbMix` directly into every note config. Moving to a persistent bus was a chance to fix that properly instead of just relocating the same flat fields onto a track config. `Entropy.AudioEffect.createReverb(...)` now returns an id; a track's bus takes a list of ids:
+
+```ts
+// examples/studio-bundle/src/apps/daw_synth_addon.ts
+addon.Audio.ensureTrackBus(track.id, {
+    gain: track.gain, muted: track.muted, solo: track.solo,
+    effectIds: [track.delayEffectId!, track.reverbEffectId!]
+});
+```
+
+Each `EffectHandle` owns its processing state behind a `Mutex` and its wet/dry mix behind a lock-free atomic (read every sample), and `process_and_mix` does the same additive dry+wet blend the old per-note `wrap!` macro's fundsp combinators did - `dry + wet * mix` - so chaining several of these reproduces the same signal flow as before, just with the effect instance itself now shared and persistent instead of rebuilt per note.
+
+This is deliberately bus-only. A stateful streaming effect - a delay line, a reverb's FDN - needs to see one continuous, already-summed signal to process correctly. Sharing one live effect instance across several *simultaneously* triggered, independently-clocked notes would mean multiple unsynchronized callers ticking the same internal buffer, which is exactly what a mixing bus exists to prevent by summing first. A note that wants a totally private, non-shared effect still has the old baked-in path - `build_note_node`/`play_note`/`render_pattern_to_wav` - untouched.
+
+### A delay that doesn't need rebuilding
+
+The previous post used `fundsp::prelude::delay(t)` for echo, built fresh into the note's own graph every time. That's fine for a graph you build once and throw away, but wrong for a persistent effect whose time and feedback need to change live from a slider - `delay()`'s buffer length is fixed at graph-construction time. `StereoDelayLine` is a plain ring buffer sized once (2 seconds of headroom) so `process` just moves its read offset:
+
+```rust
+fn process(&mut self, input: [f32; 2], delay_time: f32, feedback: f32) -> [f32; 2] {
+    let cap = self.buffer.len();
+    let delay_samples = std::cmp::Ord::min(
+        (delay_time.max(0.0) * self.sample_rate) as usize,
+        cap - 1,
+    );
+    let read_pos = (self.write_pos + cap - delay_samples) % cap;
+    let delayed = self.buffer[read_pos];
+    let fb = feedback.clamp(0.0, 0.95);
+    self.buffer[self.write_pos] = [input[0] + delayed[0] * fb, input[1] + delayed[1] * fb];
+    self.write_pos = (self.write_pos + 1) % cap;
+    delayed
+}
+```
+
+Time and feedback are ordinary atomics, read fresh every sample. No rebuild, ever, for this effect kind.
+
+### Reverb still gets rebuilt, just less often
+
+`reverb_stereo` isn't something you can restructure after construction the way a ring buffer's read offset is - room size, time, and damping bake into the delay-line lengths and damping filter weights at the moment you call it (`fundsp-0.23.0/src/prelude.rs`). `EffectHandle::set_params` only rebuilds when one of those three actually changed:
+
+```rust
+EffectParams::Reverb(p) => {
+    self.mix.store((p.mix.clamp(0.0, 1.0) as f32).to_bits(), Ordering::Relaxed);
+    let mut state = self.state.lock().unwrap();
+    if let EffectState::Reverb { node, room_size, time, damping } = &mut *state {
+        if *room_size != p.room_size || *time != p.time || *damping != p.damping {
+            *node = build_reverb_node(p.room_size, p.time, p.damping, self.sample_rate);
+            *room_size = p.room_size; *time = p.time; *damping = p.damping;
+        }
+    }
+}
+```
+
+`mix` is always live. This matters in practice because this widget kit's sliders are click-to-set, not continuous-drag (confirmed in the previous DAW post) - so a rebuild here fires once per click, not sixty times a second while someone drags. The expensive part of a reverb is now paid once per track, and again only when room/time/damping actually move.
+
+### Wiring it into the DAW addon
+
+`triggerStep` used to pre-filter muted/soloed-out tracks before ever calling `playNote`, and multiplied `track.gain` into the note's own gain. Both of those move to the bus now:
+
+```ts
+// no more `if (track.muted) continue` / `if (anySolo && !track.solo) continue` here -
+// the bus applies both live, every sample, to notes that are already ringing.
+addon.Audio.playNoteOnTrack(track.id, {
+    freq, waveform: voice, duration, cutoff: track.voice.cutoff, resonance: track.voice.resonance,
+    gain: note.velocity, attack: track.voice.attack, decay: track.voice.decay,
+    sustain: track.voice.sustain, release: track.voice.release
+});
+```
+
+The offline WAV exporter (`buildPatternEvents`/`render_pattern_to_wav`) is untouched and keeps its own mute/solo pre-filter - an export shouldn't include a muted track at all, which is a different requirement than "let the live bus silence it in real time."
+
+### A mixer that isn't a flat column
+
+`entropy_gui`'s existing `horizontal`/`collapsingHeader` widgets work by pushing `Start`/`End` marker values into a flat per-window widget list, then `render_widgets` finds the matching end marker and recurses on the slice between them (`src/deno/addon_engine.rs`). `vertical` and `group` are the same pattern:
+
+```rust
+UiWidget::StartGroup => {
+    // ...find matching EndGroup by depth-counting only StartGroup/EndGroup markers...
+    if end_idx < widgets.len() {
+        let sub_widgets = &widgets[i + 1..end_idx];
+        ui.group(|ui| {
+            ui.vertical(|ui| {
+                Self::render_widgets(ui, sub_widgets, events_to_push, context, egui_renderer);
+            });
+        });
+        i = end_idx;
+    }
+}
+```
+
+Because each marker type only counts its own kind, `StartGroup`/`EndGroup` nests correctly inside `StartHorizontal`/`EndHorizontal` (or vice versa) with no changes needed to the existing container types. The DAW addon's Mixer section is now `horizontal(tid => project.tracks.forEach(track => group(tid, strip => { ...one channel's controls... })))` - one bordered, vertically-stacked box per track, laid out left to right.
+
+## Evidence
+
+Real running app, `cargo run --bin example -- daw`, screenshotted via synthetic Win32 mouse input against the actual window - not static renders. Mixer section expanded, showing the Drums and Bass channel strips as separate bordered boxes side by side (Drums highlighted orange as the active track):
+
+![The DAW addon's Mixer section showing two bordered channel-strip boxes side by side, one labeled Drums with its button outlined in orange as the active track and one labeled Bass, each with a Gain slider, M and S checkboxes, and a Delete button, with plus-Synth-Track and plus-Drum-Track buttons below](/images/entropy-daw-mixer-strips.png)
+
+The full panel with every section expanded - Transport, Mixer, the active track's Voice (Oscillator and Envelope boxes side by side), and Effects (Delay and Reverb boxes side by side):
+
+![The full DAW panel with Transport, Mixer, Oscillator/Envelope, and Delay/Reverb sections all expanded, each pair of related controls grouped into its own bordered box arranged side by side rather than one long vertical list](/images/entropy-daw-fx-effects-section.png)
+
+Toggling Drums' Mute checkbox mid-playback (Stop button visible, confirming the transport was actively running) - the checkbox lands on the persistent bus's atomic mute flag, silencing the track live rather than only affecting the next scheduled note:
+
+![The DAW panel mid-playback (the Transport button reads Stop) with the Drums channel strip's M checkbox now checked while the Bass strip's M checkbox remains unchecked](/images/entropy-daw-live-mute.png)
+
+I can't capture audio in a screenshot, so what's verified here is structural: the mute flag flips and persists, and the app ran through a sustained real playback session (repeated `triggerStep` calls into `play_note_on_track`, dozens of pattern loops) plus this live mute toggle with zero panics, zero errors in the addon's own log. Whether the track actually goes silent needs a human's ears, same as every other audio claim in this series.
+
+First-party benchmark: `src/bin/daw_bus_bench.rs` (`cargo run --release --bin daw_bus_bench`, this session's hardware, a 12th Gen Intel Core i5-12500). It isolates the exact cost the previous DAW post's benchmark flagged - `reverb_stereo` allocates a fresh 32-channel FDN on every call - by comparing building 500 independent reverb instances (what the old per-note path paid on every trigger) against building one instance and pushing 500 live mix updates into it (what a track bus does now):
+
+```
+N = 500
+Building 500 independent reverb instances (old per-note-equivalent): 103.7051ms total, 207.41µs/instance
+1 reverb instance, 500 live mix updates (new per-track-bus path):    16.1µs total, 32ns/update
+Speedup: 6441.3x
+```
+
+That's not a claim that note-triggering itself got 6441x faster overall - triggering a note still does real oscillator/envelope work either way. It's a direct measurement of the one operation this session's architecture change removes from the per-note hot path entirely: building a reverb graph. A live mix update is now an atomic store; building a whole new reverb used to be, on this hardware, about 207 microseconds every single time a note played through a reverbed track.
+
+## Decision log
+
+**Effects attach to a bus, never to a single note.** Covered above - a stateful streaming effect needs one already-summed input, and only a bus provides that for multiple simultaneously-triggered notes. The one-off `Entropy.Audio.playNote` path keeps its own independent, non-shared FX bake for exactly this reason.
+
+**A hand-rolled ring-buffer delay over `fundsp::prelude::delay()`.** `delay()`'s buffer length is fixed when the graph is built, which was fine for a graph rebuilt every note but wrong for a persistent effect whose time/feedback need to move live. A plain ring buffer with atomic time/feedback needs no rebuild at all for this effect kind - simpler than reaching for `fundsp`'s `tap()` (runtime-modulatable delay within a fixed max) would have been, and just as correct for a single control-rate parameter rather than an audio-rate modulation source.
+
+**Reverb rebuilds on structural change, not on every parameter touch.** `reverb_stereo`'s delay-line lengths and damping weights are baked in at construction (confirmed in its own doc comment and source, `fundsp-0.23.0/src/prelude.rs`) - there's no live path around that the way there is for a hand-rolled delay. Rebuilding only when room/time/damping actually change, with `mix` always live, keeps the expensive path off the hot path (per-note trigger) and off the common slider (mix) while still allowing the structural knobs to work, just with the same construction cost as before, now paid rarely instead of constantly.
+
+**`build_voice_node` duplicates `build_note_node`'s oscillator match arms instead of sharing them.** Each match arm's fundsp node has a distinct concrete type before it's erased to `Box<dyn AudioUnit>`; unifying a "no FX" tail with a "delay+reverb" tail across the same match would need a macro that itself takes a macro as an argument. Two small, independent functions were more readable than that machinery for two call sites.
+
+**`triggerStep` drops its mute/solo pre-filter; `buildPatternEvents` (offline export) keeps its own.** Live playback wants the bus's real-time silencing (including on notes already ringing). An offline export is a different question - "did the user want a muted track in the rendered file at all" - and the answer there is still no, unconditionally, computed once before rendering rather than every sample.
+
+**New `vertical`/`group` widgets copy the existing `Start`/`End` marker-list pattern exactly, rather than inventing a callback-based container.** `horizontal`/`collapsingHeader` already solved "how does a nested container's contents end up in the right sub-slice of a flat per-window widget list" - reusing that shape meant the new containers needed no changes to how `render_widgets` walks the list, just two more marker pairs and two more `ui.vertical`/`ui.group` calls.
+
+## Failure notes
+
+**The same `fundsp::Num` vs. `std::cmp::Ord` ambiguity as last time, in new code.** `StereoDelayLine::new`/`process` called `.max(1)`/`.min(cap - 1)` on plain `usize` values, and `fundsp::prelude::*`'s glob-imported `Num` trait collided with `std::cmp::Ord` again - `rustc`'s E0034 named both candidates directly, same as the previous post's failure note. Fixed the same way, `std::cmp::Ord::max`/`min` spelled out. Worth remembering as a standing gotcha in this file specifically, not a one-off: any bare `.max()`/`.min()` on an integer here is ambiguous the moment `fundsp::prelude` is glob-imported.
+
+**Synthetic clicks aimed at precomputed coordinates missed after the UI reflowed.** Clicking five collapsing-header positions in one batch (computed from a single screenshot taken before any of them were clicked) worked for the first header, then missed - expanding "Transport" pushed every header below it down the page, so the coordinates for "Mixer"/"Drums - Voice"/etc. were stale by the time those clicks fired. One of those misses landed on the newly-revealed Play button instead of a header, which left playback running uninterrupted for the rest of the session - not a bug in the app, but a reminder that a batch of synthetic clicks against a reflowing UI needs a fresh screenshot (or position re-read) between clicks that can change the layout, not just between clicks that can't.
+
+## What's next
+
+- More effect kinds on the `AudioEffect` registry - filter, chorus, EQ - now that adding one doesn't mean touching every note/track config's field list.
+- A live per-track level meter on each channel strip, now that there's a persistent bus signal to read from.
+- The still-outstanding items from the previous DAW post: more instrument presets, a proper piano-roll rebuild on `TrackView`/`KeyframeTimeline`, MIDI input.
