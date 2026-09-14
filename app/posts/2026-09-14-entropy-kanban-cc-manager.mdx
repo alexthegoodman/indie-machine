@@ -1,0 +1,239 @@
+---
+title: "entropy_gui Gets a Kanban Board: Planning Claude Code Work as a Widget"
+date: 2026-09-14
+series: Entropy
+crate_versions:
+  unchanged:
+    - wgpu = "27.0.1"
+    - winit = "0.30.12"
+    - deno_core = "0.332.0"
+    - lyon_tessellation = "1.0.15"
+  edition: "2024"
+  os: "Windows 11 Pro 10.0.26200 (only platform currently tested)"
+  tooling:
+    - "deno 2.6.7 CLI (bundles the addon's TypeScript to JS; not a Cargo dependency)"
+repo_link: https://github.com/alexthegoodman/entropy-engine
+---
+
+Most `entropy_gui` widgets in this series exist to prove a rendering or interaction technique. This one exists because we needed it: this repo's own Claude Code planning work has to live somewhere, and "somewhere" turned into a real kanban board - `entropy_gui::KanbanBoard`, a new widget, and CC Manager, the addon built on it.
+
+The interesting constraint wasn't the drag-and-drop mechanics (those are a solved problem by now in this codebase - `NodeGraphEditor`, `TrackView`, and `KeyframeTimeline` all do some version of it). It was the storage model: the board's entire state has to be a plain file that both a human clicking around in a GUI and a Claude Code session editing text can read and write, with neither one needing to know the other exists.
+
+## What we're building
+
+- `entropy_gui::KanbanBoard` (`src/entropy_gui/widgets_kanban.rs`, new) - fixed columns, click-and-drag cards between or within columns, click to select, right-click to delete, a "+" per column header to request a new card.
+- `KanbanCard`/`KanbanColumn`/`KanbanEvent` - the same read-in, events-out contract every complex widget in this kit uses.
+- A new `Memory::kanban_drag` field for the live-drag ghost, same pattern as `NodeGraphEditor`'s `node_drag`/`link_drag` and `TrackView`'s `clip_drag`.
+- `UiWidget::Kanban`, `op_ui_widget_kanban`, and `Entropy.UI.Widget.kanban` wiring through `addon_ops.rs`/`addon_engine.rs`/`addon_setup.js`/`addon.d.ts`.
+- **CC Manager** (`examples/studio-bundle/src/apps/cc_manager_addon.ts`, run via `cargo run --bin example -- cc-manager`) - not a widget demo but a real app: its board is `<repo root>/cc-manager/tasks.json`, a plain file this addon polls and a Claude Code session edits directly, with CLAUDE.md pointing every session at it.
+
+## The widget: read-only data in, events out
+
+Same shape as every other complex widget in this kit by now:
+
+```rust
+pub struct KanbanCard {
+    /// Unique within the whole board, not just its column.
+    pub id: String,
+    pub title: String,
+    pub description: String,
+    pub color: Color32,
+    pub tags: Vec<String>,
+}
+
+pub enum KanbanEvent {
+    CardMoved { card: String, from_column: String, to_column: String, to_index: usize },
+    CardSelected { column: String, card: String },
+    CardDeleteRequested { column: String, card: String },
+    AddCardRequested { column: String },
+    ColumnClicked(String),
+    BackgroundClicked,
+}
+```
+
+`show()` takes `&[KanbanColumn]` and returns `Vec<KanbanEvent>` - the caller rebuilds its whole board from JS state every frame and applies events back, the same convention `NodeGraphEditor` established. Dragging needs the same live-override trick every other draggable widget in this kit uses, since there's no persistent `&mut` into the caller's data:
+
+```rust
+let dragging = ctx.memory(|m| m.kanban_drag.clone()).filter(|(id, _, _)| *id == board_id);
+// ...
+if resp.drag_started() {
+    ctx.memory_mut(|m| m.kanban_drag = Some((board_id, col.id.clone(), card.id.clone())));
+    events.push(KanbanEvent::CardSelected { column: col.id.clone(), card: card.id.clone() });
+}
+```
+
+Two bugs from earlier in this widget's build are worth explaining, because they're the kind of thing that only shows up once you actually drag something, and they're both documented directly in the source rather than smoothed over.
+
+**The drop target has to be computed once, for the whole board, before the per-column render loop starts:**
+
+```rust
+// Computed once, up front, for the *whole* board: which column/insertion-slot the
+// pointer is currently over. This must NOT be computed incrementally inside the
+// per-column loop below - the dragged card's own `drag_stopped` handling runs while
+// that loop is still visiting the card's *source* column, which for a rightward drag
+// is always visited before the target column, so an incremental version would only
+// ever see columns already passed and silently fall back to "drop in place."
+let drop_target: Option<(usize, usize)> = pointer_pos.and_then(|p| { /* ... */ });
+```
+
+The first version computed `drop_target` column-by-column inside the same loop that also fires the dragged card's `drag_stopped` handling. Dragging left-to-right worked fine (the target column was already visited by the time the source card's own turn came up); dragging right, the target simply didn't exist yet when it was needed, and the card silently stayed put. Moving the whole computation to a single pre-pass over all columns fixed it regardless of drag direction.
+
+**A click inside a card also satisfies the board's own background click sense**, since this kit has no topmost-only hit-testing:
+
+```rust
+// `bg_response` spans the whole board, including every card/header/button drawn on
+// top of it - this app's `interact()` has no topmost-only hit-test, so a click inside
+// a card also satisfies the board background's own click test. Track whether anything
+// more specific consumed the click so `BackgroundClicked` doesn't fire (and stomp a
+// `CardSelected` from the same press) alongside it.
+let mut click_consumed = false;
+```
+
+Without `click_consumed`, selecting a card and immediately deselecting it on the same click were indistinguishable - `CardSelected` would fire, then `BackgroundClicked` would fire right after, wiping out the selection the instant it was made.
+
+Word-wrapping card descriptions uses real glyph metrics rather than a fixed average-character-width guess:
+
+```rust
+fn wrap_text(ctx: &Context, text: &str, font_id: FontId, max_width: f32, max_lines: usize) -> Vec<String> {
+    // ... greedy word wrap using Painter::measure_text per candidate line
+}
+```
+
+That choice isn't arbitrary - the [HTML/CSS renderer post](/posts/entropy-html-css-taffy-render) already hit the failure mode of the other approach: a fixed `AVG_CHAR_WIDTH` constant clipped real proportional-font text into "Example Domair." Measuring actual glyph widths here costs more per frame than a constant multiply, but a kanban card's description is a handful of lines redrawn on an idle UI, not a hot path.
+
+## Wiring: op → event string → JS callback
+
+Same three-layer pattern every widget in this kit uses. The op takes serde-friendly config and pushes it onto the window's per-frame widget queue:
+
+```rust
+#[op2(fast)]
+pub fn op_ui_widget_kanban(
+    state: &mut OpState,
+    #[string] window_id: String,
+    #[serde] columns: Vec<KanbanColumnConfig>,
+    #[serde] selected: Option<(String, String)>,
+    #[string] id: String,
+) {
+    // ...
+    ctx.ui_widgets.entry(window_id).or_default().push(UiWidget::Kanban { id, columns, selected });
+}
+```
+
+The render arm builds the real `entropy_gui` types from that config, calls `show()`, and turns returned events into `|`-delimited strings:
+
+```rust
+crate::entropy_gui::KanbanEvent::CardMoved { card, from_column, to_column, to_index } => {
+    events_to_push.push(format!("KANBAN_CARD_MOVED|{}|{}|{}|{}|{}", kanban_id, card, from_column, to_column, to_index));
+}
+```
+
+And `Entropy.UI.Widget.kanban` on the JS side parses those back into typed callbacks:
+
+```js
+kanban: (windowId, config) => {
+    const id = nextWidgetId(windowId, "kanban", config?.id);
+    ops.op_ui_widget_kanban(windowId, columns, selected, id);
+    // ...
+    if (type === "KANBAN_CARD_MOVED" && config.onCardMoved) config.onCardMoved(parts[2], parts[3], parts[4], parseInt(parts[5], 10));
+    else if (type === "KANBAN_CARD_SELECTED" && config.onCardSelected) config.onCardSelected(parts[2], parts[3]);
+    // ...
+}
+```
+
+## The addon: a JSON file as the API
+
+CC Manager's `board` is one plain object, loaded and saved through this addon's own scoped `IO.save`/`IO.load` - not the project-id-keyed addon-data path every other addon uses, but a `.with_data_dir("../cc-manager")` binding that puts `tasks.json` at the repo root:
+
+```json
+{
+  "columns": [
+    { "id": "backlog", "title": "Backlog", "cards": [ { "id": "...", "title": "...", "description": "...", "tags": [] } ] },
+    { "id": "in_progress", "title": "In Progress", "cards": [] },
+    { "id": "review", "title": "Review", "cards": [] },
+    { "id": "done", "title": "Done", "cards": [] }
+  ]
+}
+```
+
+Every `onCardMoved`/`onCardDelete`/`onAddCard` handler in the addon writes straight through to disk on every change - there's no separate "save" step a human or a session could forget:
+
+```js
+onCardMoved: (card, fromColumn, toColumn, toIndex) => {
+    const from = findCard(fromColumn, card);
+    if (!from) return;
+    const [moved] = from.column.cards.splice(from.index, 1);
+    const to = board.columns.find((c) => c.id === toColumn);
+    const clampedIndex = Math.max(0, Math.min(toIndex, to.cards.length));
+    to.cards.splice(clampedIndex, 0, moved);
+    saveBoard();
+},
+```
+
+Going the other direction - a Claude Code session editing the file while the app is open - needs a poll, since there's no filesystem-watch op in this codebase yet:
+
+```js
+const RELOAD_INTERVAL_FRAMES = 90;
+let frame = 0;
+// ...
+frame++;
+if (frame % RELOAD_INTERVAL_FRAMES === 0 && addingToColumn === null && selected === null) {
+    loadBoard();
+}
+```
+
+Ninety frames at a nominal 60fps is roughly a second and a half. The reload is skipped whenever a local edit is in progress (a card selected, or the add-card form open), so an external reload can't clobber unsaved keystrokes mid-edit - both of those paths already write straight to disk on every change anyway, so nothing is actually lost by skipping the poll.
+
+## Evidence
+
+All of the following is checked against the actual running `cc-manager` app and this repo's real `cc-manager/tasks.json` - not a mocked board.
+
+Initial state, the real backlog/in-progress/review/done board this repo already had:
+
+![CC Manager's initial board: Backlog with nine cards, In Progress and Review empty, Done with four cards](/images/entropy-kanban-initial.png)
+
+Clicking a card selects it and opens its editor above the board, with a white border marking the selected card:
+
+![The "Word wrap on kanban cards" card selected, with an editor panel above showing its title, description, and tags fields](/images/entropy-kanban-card-selected.png)
+
+Right-click brings up the delete menu:
+
+![Right-clicking a card in the In Progress column shows a small "Delete Card" context menu popup](/images/entropy-kanban-context-menu.png)
+
+Dragging a card between columns works, but it's a genuinely awkward moment - see the failure notes below for why the editor panel is open here mid-drag:
+
+![A card mid-drag: the editor panel for the dragged card has popped open above the board, and the board itself has reflowed downward underneath the cursor](/images/entropy-kanban-drag-reflow.png)
+
+The floating ghost card, drawn at the cursor with a white outline, hovering over the target column once the drag has actually crossed into it:
+
+![A ghost copy of the dragged card, outlined in white, floating over the In Progress column, which is currently empty](/images/entropy-kanban-drag-ghost.png)
+
+And the completed move - card counts update, the card lands in its new column, and the editor panel has closed on its own:
+
+![Backlog now shows eight cards and In Progress shows one, containing the card that was just dragged over](/images/entropy-kanban-card-moved.png)
+
+Every one of those interactions was cross-checked against `tasks.json` on disk, not just the screen - the column each card actually landed in, and its position within that column, matched what the widget showed every time.
+
+`cargo build --bin example` is clean. `deno bundle` on `cc_manager_addon.ts` is clean. `tsc --noEmit` across the whole `studio-bundle` project reports the same pre-existing, unrelated errors this series has flagged before (level editor and game-template files, none in `cc_manager_addon.ts` or anything kanban-related) - confirmed by grepping the `tsc` output for `cc_manager`/`kanban` and finding nothing.
+
+## Decision log
+
+**A bare file at the repo root, not addon-scoped storage.** Every other addon's persistent state goes through a project-id-keyed path an addon-only API controls. CC Manager deliberately opts out of that with its own `IO.save`/`IO.load` bound to `../cc-manager`, because the entire point is that a Claude Code session needs to read and write the same file with zero API of its own - just a file path and a JSON schema, documented once in CLAUDE.md.
+
+**Events out, live-drag override in `Memory`, no exception for this widget.** Not re-derived here - the [node graph editor post](/posts/entropy-node-graph-editor)'s reasoning for "who owns a node's position" applies unchanged to a card's column and index.
+
+**No per-column scrolling in v1.** A column's cards stack top-to-bottom and the column grows to fit them; a very tall column scrolls past the window unless the caller wraps the whole board in scroll handling of its own. CC Manager doesn't do that yet - it's a documented v1 simplification, not an oversight, and it's the first thing tracked in this repo's own backlog for the widget.
+
+**Real glyph metrics for word wrap, not an average-width estimate.** Already covered above - directly informed by a documented failure in an earlier post rather than a fresh guess.
+
+## Failure notes
+
+**Starting a drag also opens the card's editor, which reflows the whole board mid-drag.** `KanbanEvent::CardSelected` fires on `drag_started()`, not just on a plain click - the widget's own docs call this out: a click and the start of a drag are "indistinguishable until release." CC Manager's addon renders the card editor panel above the board whenever a card is selected, so the instant a drag crosses the drag threshold, the editor pops open and the entire board shifts downward underneath the cursor. The drop still lands correctly once the pointer is over the reflowed layout - this isn't a broken feature - but it's a genuinely awkward moment to watch happen, and it's the kind of thing that's easy to miss until you actually drag a card instead of just reading the event list.
+
+**The editor closes itself once the dragged card lands in a different column - not a bug, but non-obvious.** CC Manager's addon tracks the open editor as a `{ column, card }` pair. Once a card moves to a new column, looking it up by its *old* column fails, and the addon's own `if (!found) { selected = null; }` guard clears the selection. So the net effect across a drag is: editor pops open mid-drag (see above), then closes itself the moment the drop lands - a visible flicker during the drag, but a clean board state once it's over. Worth knowing if this behavior is ever "fixed" without meaning to change it: the fix for the first issue could easily remove the second one too.
+
+## What's next
+
+- Per-column scrolling, so a very tall column doesn't just run off the bottom of the window.
+- Multi-select drag (marquee-select several cards at once) - same single-selection limitation every complex widget in this kit currently has.
+- Actually reproducing and fixing the text-input reliability report above.
+- Everything already tracked in `cc-manager/tasks.json`'s own backlog for every other addon this series has covered - which, fittingly, is now visible in the very screenshots above.
