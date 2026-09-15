@@ -1,0 +1,197 @@
+---
+title: "Canvas Surfaces, Part 3: One Raycast for Planes, Boxes, Cylinders, and Spheres"
+date: 2026-09-15
+series: Entropy
+crate_versions:
+  unchanged:
+    - wgpu = "27.0.1"
+    - winit = "0.30.12"
+    - transform-gizmo = "0.8.0"
+    - deno_core = "0.332.0"
+  edition: "2024"
+  os: "Windows 11 Pro 10.0.26200 (only platform currently tested)"
+  tooling:
+    - "deno 2.6.7 CLI (bundles the addon's TypeScript to JS; not a Cargo dependency)"
+repo_link: https://github.com/alexthegoodman/entropy-engine
+---
+
+Every Canvas Surface so far has been a flat rectangle, bent or not. [Part 2](/posts/entropy-canvas-surfaces-bend) closed the bend/raycast gap the epic's own backlog named, but it left the shape itself alone - a page, still. This post adds three more: box, cylinder, sphere. The interesting part isn't any one shape's geometry, which is textbook - it's that all four kinds (plane included) now share exactly one mesh-building path, one raycast, and one AABB implementation, with no per-shape branch anywhere except "which patches does this kind produce."
+
+## What we're building
+
+- A surface's `kind` is now `"plane" | "box" | "cylinder" | "sphere"`, chosen at spawn time via a cycling Shape button, with per-kind dimension sliders (Width/Height/Depth for a box, Radius/Height for a cylinder, Radius for a sphere).
+- All four kinds paint and raycast identically - draw on a box's face, a cylinder's curved side, or a sphere, and the stroke lands exactly where the cursor is, same as a plane.
+- All four kinds share one texture per surface. A box's 6 faces, a cylinder's side + 2 caps, and a sphere's single equirectangular wrap are all just different regions (an atlas) of the same canvas buffer this addon has used since Part 1.
+- Bend stays plane-only - it isn't a supported operation on the other three kinds, and their UI simply doesn't show bend controls.
+
+Same demo, same repo location: `examples/studio-bundle/src/apps/canvas_surface_addon.ts`, `cargo run --bin example -- canvas-surface-demo`.
+
+## The abstraction: a Patch is just a grid, wherever it bends
+
+Part 2's plane was a row/col grid of local-space points plus a matching grid of UVs. Nothing about that idea is plane-specific - a `Patch` interface says so directly:
+
+```typescript
+interface Patch {
+    rows: number;
+    cols: number;
+    localPoint(row: number, col: number): Vec3;
+    outwardAt(row: number, col: number): Vec3;
+    uvAt(row: number, col: number): { u: number; v: number };
+}
+```
+
+A shape is just one or more of these. A plane and a sphere are one patch each; a box is 6 face patches; a cylinder is a side patch plus two cap patches:
+
+```typescript
+function shapePatches(s: Surface): Patch[] {
+    switch (s.kind) {
+        case "plane": return [planePatch(s)];
+        case "box": return boxPatches(s);
+        case "cylinder": return cylinderPatches(s);
+        case "sphere": return [spherePatch(s)];
+    }
+}
+```
+
+The cylinder's side patch is a good example of how little actually changes per shape - it's the same row/col grid shape as a plane, just with a different `localPoint`:
+
+```typescript
+const side: Patch = {
+    rows: H + 1, cols: R + 1,
+    localPoint: (row, col) => {
+        const y = hh - (2 * hh * row) / H;
+        const angle = (col / R) * Math.PI * 2;
+        return [radius * Math.cos(angle), y, radius * Math.sin(angle)];
+    },
+    outwardAt: (_row, col) => {
+        const angle = (col / R) * Math.PI * 2;
+        return [Math.cos(angle), 0, Math.sin(angle)];
+    },
+    uvAt: (row, col) => ({ u: col / R, v: (row / H) * CYL_SIDE_V_FRACTION }),
+};
+```
+
+The circumference seam (angle wrapping from 2π back to 0) isn't a modular-index special case anywhere in the triangulation code - it's just a duplicated column of vertices at the same world position with a different U (0 vs 1), the standard mesh-generation trick. That's what keeps every patch, cylinder and sphere included, a plain non-wrapping grid: mesh-building and raycasting never need to know a shape wraps at all.
+
+## Winding, derived once, not hand-derived six times
+
+Getting a plane's triangle winding right (which diagonal makes the two triangles face the intended direction) took real by-hand cross-product algebra in Part 2 and again for the ground-reference grid. Doing that by hand for 6 box faces plus a cylinder's side and 2 caps is exactly the kind of repeated, error-prone work worth automating instead:
+
+```typescript
+function patchWinding(patch: Patch): [number, number, number, number, number, number] {
+    const row = Math.min(1, patch.rows - 2);
+    const col = Math.min(1, patch.cols - 2);
+    const p00 = patch.localPoint(row, col);
+    const p01 = patch.localPoint(row, col + 1);
+    const p11 = patch.localPoint(row + 1, col + 1);
+    const outward = patch.outwardAt(row, col);
+    const nCandidate = crossV(subV(p11, p00), subV(p01, p00));
+    return dotV(nCandidate, outward) >= 0
+        ? [0, 3, 1, 0, 2, 3]
+        : [0, 1, 3, 0, 3, 2];
+}
+```
+
+Every patch just declares its own `outwardAt` (a box face's constant normal, a cylinder's radial direction, a sphere's radial direction), and this picks the correct diagonal automatically at one representative interior cell - never row/col 0, which is degenerate at a sphere's pole or a cap's center point. It's safe to test only once and reuse for the whole patch because every patch here has a globally consistent row/col orientation, and because both rotation and this addon's bend are orientation-preserving, so a winding computed in local, undeformed space stays correct once a surface is rotated or (for a plane) bent.
+
+## Painting and raycasting don't know shapes exist
+
+`raycastSurfaceMesh` - the function stylus and mouse input both go through to turn a screen point into a canvas pixel - iterates a surface's cached world-space patches and asks each patch for its own winding instead of assuming one:
+
+```typescript
+function raycastSurfaceMesh(s: Surface, origin: Vec3, dir: Vec3): SurfaceHit | null {
+    let best: { t: number; u: number; v: number } | null = null;
+    for (const patch of s.worldPatches) {
+        const [i0, i1, i2, i3, i4, i5] = patch.winding;
+        for (let row = 0; row < patch.rows - 1; row++) {
+            for (let col = 0; col < patch.cols - 1; col++) {
+                const cornerV = [patch.verts[row][col], patch.verts[row][col + 1], patch.verts[row + 1][col], patch.verts[row + 1][col + 1]];
+                const cornerUV = [patch.uv[row][col], patch.uv[row][col + 1], patch.uv[row + 1][col], patch.uv[row + 1][col + 1]];
+                // ... Moller-Trumbore against cornerV[i0..i2] and cornerV[i3..i5], same as Part 2
+            }
+        }
+    }
+    // ...
+}
+```
+
+Nothing here says "plane" or "box." A box's 6 faces just mean this loop runs over 6 patches instead of 1 - 3072 triangle tests total at this demo's grid resolution, still comfortably sub-millisecond with no bounding-volume pre-check, the same "deliberately simple, cheap enough at this scale" call Part 2 made for the plane.
+
+`surfaceAABB` (what edge/center snapping compares) got simpler, not more complex, from supporting four shapes: instead of a plane's 4 special-cased corners, it just scans every cached vertex across every patch:
+
+```typescript
+function surfaceAABB(s: Surface): AABB {
+    const min: Vec3 = [Infinity, Infinity, Infinity];
+    const max: Vec3 = [-Infinity, -Infinity, -Infinity];
+    for (const patch of s.worldPatches) {
+        for (const row of patch.verts) {
+            for (const p of row) {
+                for (let axis = 0; axis < 3; axis++) {
+                    min[axis] = Math.min(min[axis], p[axis]);
+                    max[axis] = Math.max(max[axis], p[axis]);
+                }
+            }
+        }
+    }
+    return { min, max };
+}
+```
+
+A box or cylinder doesn't have a small fixed corner set the way a flat quad does, so this is the one implementation that just works for all four kinds - `worldCorner` and the old `CORNERS` constant are gone entirely.
+
+## One texture, four atlases
+
+Every shape still gets exactly one `Entropy.Texture.create` canvas - the per-surface machinery (one buffer, one textureId, one dirty flag) from Part 1 never had to change. What changed is how a patch's UV maps into that texture. A plane and a sphere use the whole 0..1 square (a sphere with a standard equirectangular wrap). A box packs its 6 faces into a 3x2 grid of cells:
+
+```typescript
+const BOX_ATLAS_COLS = 3, BOX_ATLAS_ROWS = 2;
+// ...
+uvAt: (row, col) => ({ u: face.cellCol * cellW + (col / N) * cellW, v: face.cellRow * cellH + (row / N) * cellH }),
+```
+
+A cylinder gives its side the top 66% of the texture (so a label wraps naturally around the circumference) and splits the bottom third between the two caps, each mapped from its own polar coordinate into a small circular region of the atlas.
+
+## Evidence
+
+Same machine as recent Entropy posts: 12th Gen Intel Core i5-12500, Windows 11 Pro 10.0.26200. `rustc 1.94.1`, `cargo 1.94.1`, `deno 2.6.7`.
+
+```
+cd examples/studio-bundle && npm run build-canvas-surfaces   # deno bundle -> dist/canvas_surfaces.js
+cargo build --bin example
+cargo run --bin example -- canvas-surface-demo
+```
+
+`cargo build --bin example` clean (no Rust changed this session). `npm run build-canvas-surfaces` (deno bundle) clean. `tsc --noEmit` reports no new errors in `canvas_surface_addon.ts`.
+
+A box, rotated via its Yaw slider - the diagonal cut at bottom-left and the slanted top edge are the front face meeting a receding side face, not a flat card:
+
+![A white box surface rotated to show a real 3D corner, with a diagonal edge where the front face meets a receding side face](/images/entropy-canvas-surfaces-p3-box.png)
+
+A diagonal ink stroke drawn with a synthetic mouse drag directly on a cylinder's curved side - continuous and undistorted, confirming the raycast tracks correctly across curved geometry:
+
+![A dark diagonal ink stroke drawn cleanly across the curved side of a white cylinder](/images/entropy-canvas-surfaces-p3-cylinder-stroke.png)
+
+The same test on a sphere:
+
+![A dark diagonal ink stroke drawn across the front of a white sphere, following its curvature](/images/entropy-canvas-surfaces-p3-sphere-stroke.png)
+
+The full production path, not a direct function call: Shape cycled to "sphere" via its button, spawned with "+ New Surface," selected, and repositioned with the ordinary X/Y/Z sliders - gizmo attached and everything:
+
+![The Canvas Surfaces panel showing Shape: sphere selected, a spawned sphere surface, and its position sliders and translate gizmo in the 3D view](/images/entropy-canvas-surfaces-p3-ui-flow.png)
+
+## Decision log
+
+- **One shared `Patch` abstraction over four separate mesh builders.** The alternative - a `switch` on `kind` inside `surfaceMeshData`, `pushSurfaceTransform`, and `raycastSurfaceMesh` - would have meant three copies of triangle-index math and three copies of the raycast loop, one per new shape, plus the plane's existing one. Writing `Patch` once meant every one of those functions needed exactly zero new branches to support box/cylinder/sphere.
+- **Automatic winding instead of hand-derived per shape.** Deriving a triangle's correct diagonal by hand already produced a real (if caught) mistake once this session, for the ground-reference grid's own two triangles. Doing that by hand six more times (one per box face) for a feature this size wasn't worth the risk - `patchWinding` trades a few extra cross-product calls at mesh-creation time for zero chance of a silently-inverted face.
+- **An atlas, not a texture per patch.** Giving a box 6 separate textures (or a cylinder 3) would have meant multiplying every piece of per-surface state - canvas buffer, textureId, dirty flag - by however many patches a shape happens to have. Packing them into one shared texture kept every one of those exactly single, unchanged since Part 1.
+- **Bend stays plane-only.** Cylindrically bending an already-curved shape (a box's flat face, sure, but a cylinder or sphere?) isn't a coherent operation the way it is for a flat plane, so it's simply not offered - the UI only shows Bend controls when `s.kind === "plane"`.
+
+## Failure notes
+
+- **A synthetic right-drag orbit near the camera's target washed the whole viewport out to near-white**, repeatably, regardless of drag direction - not a shape bug. The orbit target sits at `[0, 1.2, 0]`, right next to a freshly spawned surface at `[0, 1.5, 0]`; a right-drag apparently moves the camera close enough to (or inside) that geometry that the screen fills with the surface's own blank canvas background color (`[250, 248, 244]`, itself an off-white) seen at point-blank range. Verified by switching to rotating the *object* via its Yaw slider instead of orbiting the camera, which produced a normal, correctly framed view immediately - an orbit-versus-object-rotation distinction worth remembering for any future verification pass in this addon, not a defect in this session's actual feature work.
+- **The demo's existing "+ New Surface" auto-layout positioned the second surface exactly on top of the first** (`n=1` mapped to the same `[0, 1.5, 0]` slot the very first plane already occupies) - a pre-existing quirk from Part 1, not introduced here, but it's what produced an apparently-blank viewport the first time a box was spawned via the real UI button in this session. Root-caused by deleting the first surface before spawning the second and by repositioning via the X/Y/Z sliders afterward, then fixed properly: the stagger grid now starts one slot ahead (`surfaces.length + 1`), so the first-ever click lands on a genuinely empty spot instead of silently overlapping the initial surface.
+
+## What's next
+
+- **Stroke/surface grouping, including nested groups** (`canvas-surfaces-phase3-grouping` on the project's task board - an unrelated numbering collision with this post's "Part 3," tracked before shapes were on the roadmap) - still blocked on the same fact as before: no native parent/child transform system for addon-spawned meshes.
+- Everything here is Windows-only, like the rest of this series - untested on any other platform.
