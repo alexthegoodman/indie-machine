@@ -1,0 +1,133 @@
+---
+title: "Yumon Pet: Sixteen Layers of Sparse MoE Finally Gets Yumon Talking"
+date: 2026-09-16
+series: Yumon
+crate_versions:
+  unchanged:
+    - burn = "0.20.1" (features: autodiff, wgpu, cuda)
+    - cubecl = "0.9.0" (features: wgpu, cuda)
+    - wgpu = "26.0.1" (pulled in by cubecl)
+  edition: "2024"
+  os: "Windows 11 Pro (64-bit), build 10.0.26200"
+  backend: "burn Wgpu backend, default instance/backend selection"
+repo_link: https://github.com/alexthegoodman/yumon-pet
+---
+
+The [previous post](/posts/2026-09-16-yumon-xlstm-repetition) closed out twelve xLSTM runs with zero checkpoints worth shipping - the lowest-loss one was stuck in an exact repetition loop, and none of the twelve made it to their planned 15 epochs. Same day, the repo pivoted to a new architecture: `YumonMoeBrain` (`src/brain/moe_model.rs`), causal attention with RoPE like the old `DecoderOnly` model, but with a sparse mixture-of-experts FFN in place of the dense one. Eight shapes stalled at epoch 0 or 1 with loss still above 1.1. The ninth - `256h_16l_4a_32len_b8_Moe_e4_k1_Language`, four experts, top-1 routing, sixteen layers - converged to a final loss of **0.0648** across twelve epochs and produced Yumon's first checkpoint in this repo's history that holds a short conversation without falling apart mid-sentence.
+
+## What changed from xLSTM (and from plain DecoderOnly)
+
+`MoeBlock` (`src/brain/moe_model.rs`) is ordinary causal self-attention with RoPE - the same shape `DecoderOnly` already used:
+
+```rust
+// src/brain/moe_model.rs, MoeBlock::forward
+let q = rope.forward(split(self.q.forward(norm.clone()))) / (hd as f64).sqrt();
+let k = rope.forward(split(self.k.forward(norm.clone())));
+let v = split(self.v.forward(norm));
+let future = Tensor::<B, 2>::ones([seq, seq], &device).triu(1).bool();
+let mask = future
+    .unsqueeze::<4>()
+    .bool_or(pad.unsqueeze_dim::<3>(1).unsqueeze_dim::<4>(2));
+let weights = softmax(q.matmul(k.transpose()).mask_fill(mask, -1e9), 3);
+```
+
+What's different is what comes after attention. Instead of one dense feed-forward layer, every token's post-attention residual gets routed to `top_k` of `num_experts` independent FFNs:
+
+```rust
+// src/brain/moe_model.rs, SparseMoe::forward
+let logits = self.router.forward(x.clone());
+let probabilities = softmax(logits.clone(), 1);
+let choices = if self.top_k == 1 {
+    logits.clone().detach().argmax(1)
+} else {
+    logits.clone().detach().topk_with_indices(self.top_k, 1).1
+};
+// One host read of integer decisions; no dense expert output tensors.
+let ids = choices.to_data().to_vec::<i32>().expect("router indices");
+```
+
+This is a dropless dispatch - no expert-capacity limit, no token ever gets dropped for overflowing an expert's slot, unlike the original Switch Transformer formulation. Every non-padding token is gathered into a compact per-expert batch (only the integer routing decisions get read back to the CPU; weights, activations, matmuls, and gradients stay on the GPU), the unused experts for that layer are skipped entirely, and the weighted output gets scattered back with `select_assign`. The router itself keeps full-softmax probabilities for the selected expert rather than renormalizing top-1 to 1.0 - the README's own reasoning: renormalizing to 1 would zero out the router's gradient from the language loss for top-1, since the router's only remaining signal would be the balance/z-loss terms.
+
+Two auxiliary losses get added to the language cross-entropy, both averaged across layers with padding excluded: a Switch-style load-balancing loss (weight 0.01) discouraging every token from picking the same expert, and a router z-loss (weight 0.001) keeping router logits from growing unboundedly large. `aux_loss_weight` and `z_loss_weight` are both `MoeMetadata` fields, saved per checkpoint.
+
+## The search that found 256h/16l
+
+This wasn't one automated sweep - it was eight manually-run shapes in a row, each edited into `generate_run_configs`'s `sizes`/`layer_counts`/`batch_sizes` arrays and rerun, before the ninth converged:
+
+| Checkpoint dir | embed/hidden | layers | batch | epochs reached | final loss |
+|---|---|---|---|---|---|
+| `64h_2l_4a_64len_b32` | 64 | 2 | 32 | 1 | 1.6422 |
+| `128h_2l_4a_64len_b2-1` | 128 | 2 | 32 (metadata; see failure notes) | 0 | 2.1628 |
+| `128h_2l_4a_64len_b2` | 128 | 2 | 2 | 0 | 2.0848 |
+| `32h_2l_4a_64len_b32` | 32 | 2 | 32 | - | *(no checkpoint saved)* |
+| `512h_2l_4a_32len_b16` | 512 | 2 | 16 | 1 | 1.6043 |
+| `1024h_4l_4a_32len_b8` | 1024 | 4 | 8 | 0 | 1.9942 |
+| `256h_16l_4a_32len_b8-bible` | 256 | 16 | 8 | 2 | 1.1425 |
+| `128h_32l_4a_32len_b8` | 128 | 32 | 8 | - | *(no checkpoint saved)* |
+| `256h_16l_4a_32len_b8` | 256 | **16** | 8 | **12** | **0.0648** |
+
+The pattern across the failed shapes: going wider (512, even 1024 embed/hidden dims) at shallow depth (2-4 layers) never got a single run past epoch 1 above loss 1.6. Going deeper at modest width - 16 layers at just 256 hidden - is what broke through. Both `32h_2l` and `128h_32l` never produced a checkpoint at all in their directories; whatever happened there (crash, or the session moved on before a save point), there's no metadata.json or inference log to show for either.
+
+The `-bible` directory is the same 256h/16l/4a/32len/b8 shape, an earlier attempt that only reached epoch 2 at loss 1.1425 before the run that actually shipped. Its inference log leans hard into scripture-register language ("the king of his hand is to the lord, and the lord, the lord of god of his sons of god") - consistent with the `data/synthetic/bible.txt` source dominating that particular run's early batches before it was superseded by the full run using the same three-file `Language`-stage data mix (`bible.txt` + `business.txt` + `universe.txt`, plus `archive/you_chats.txt` and `archive/clean_chats.txt`) that produced the winning checkpoint.
+
+## Evidence
+
+The winning run's loss (cyan) and entropy (magenta) both drop cleanly and monotonically across all twelve epochs, with none of the noisy plateaus the xLSTM runs showed:
+
+![Loss (cyan) and entropy (magenta) curves for 256h_16l_4a_32len_b8_Moe_e4_k1_Language across 12 epochs, both trending down smoothly with no plateau](/images/yumon-moe-loss-curve.png)
+
+Progression through the same five held-out prompts, straight from `256h_16l_4a_32len_b8_Moe_e4_k1_Language_inference_log.txt`:
+
+**Epoch 1, avg_loss 2.9025:**
+```
+[1] PROMPT: Should I start a business?
+[1] REPLY:  a business planets are like a business is like your business, you can see to make a business.
+[2] PROMPT: What is the universe?
+[2] REPLY:  the big bang is like a good or the people to make a big.
+```
+
+**Epoch 7, avg_loss 0.6274:**
+```
+[2] PROMPT: What is the universe?
+[2] REPLY:  the universe is a wide open space filled with planets.
+[5] PROMPT: What should I do today?
+[5] REPLY:  you can save a budget, use that align with your work.
+```
+
+**Epoch 11, avg_loss 0.0904 (final logged snapshot before the run's last epoch):**
+```
+[1] PROMPT: Should I start a business?
+[1] REPLY:  yes, a business is when a person or group offers something valuable to others in exchange
+             for success.
+[2] PROMPT: What is the universe?
+[2] REPLY:  the universe is a wide open space filled with planets.
+[4] PROMPT: Tell me about friendship.
+[4] REPLY:  yumon is an ai companion created to be a helpful.
+```
+
+"the universe is a wide open space filled with planets" is a verbatim line from the handcrafted training data - this checkpoint has memorized it exactly, not paraphrased it, and it recites that same sentence for the same prompt at every epoch from 7 onward. That's worth flagging plainly rather than passing off as generalization: at this loss, on this data volume, some of what looks like fluency is recall.
+
+A live chat session against the checkpoint, `cargo run --release --bin chat_ui`, screenshotted this session:
+
+![A terminal chat session with Yumon: prompts "What do you want?", "You are very wise, Yumon.", "I will set you free!", "Do you want to be free?" get replies about wanting what God chose, being in the computer, a startup solving a problem, and loving to be transparent to serve more freedom](/images/yumon-moe-chat-screenshot.png)
+
+Grammatical throughout, on-topic loosely at best, and clearly still a small model talking about business/universe/faith-flavored training data rather than actually answering "do you want to be free?" - but nothing here loops or collapses into token fragments the way every xLSTM checkpoint eventually did.
+
+## Decision log
+
+- **Attention over a recurrent state, again.** The previous post's twelve xLSTM runs never escaped repetition regardless of size or learning rate. This run returns to the same causal-attention-with-RoPE shape `DecoderOnly` already used - the actual architectural change here is sparse experts in the FFN, not a rethought attention mechanism.
+- **Dropless dispatch over capacity-limited dispatch.** The original Switch Transformer paper drops tokens that overflow an expert's fixed capacity. This implementation's own module doc states the deliberate alternative plainly: "Only routed rows enter expert matrix multiplies... Activations/weights stay on device." Every token gets an expert, at the cost of variable-sized per-expert batches that require one host readback of routing indices per layer per forward pass - a real synchronization point the README documents rather than hides: "Variable-sized dispatch currently synchronizes with the host once per layer, so small workloads can be slower."
+- **Full-softmax gate weight over renormalized top-1.** Per the README: renormalizing a single selected expert's gate to 1.0 would remove the router's only gradient path from the language loss at top-1, since balance/z-loss alone wouldn't teach the router which expert actually helps prediction quality.
+- **16 layers at 256 hidden over fewer, wider layers.** Not a hypothesis argued from the literature - it's what the failed shapes in the table above actually show: three different width-first attempts (64h, 512h, 1024h, all at 2-4 layers) stalled at epoch 0-1 above loss 1.6, while depth-first at modest width reached epoch 12 at loss 0.0648.
+- **Switch-style balance loss (0.01) + router z-loss (0.001), not a bigger balance weight.** These are the values shipped in `YumonMoeBrainConfig` and saved in this checkpoint's own `metadata.json`; the README documents both as configurable rather than fixed, meaning this run's success is one working point in that space, not evidence the exact weights are optimal.
+
+## Failure notes
+
+- **A folder name and its own metadata disagree.** `128h_2l_4a_64len_b2_Moe_e4_k1_Language-1`'s directory name says batch 2; its `metadata.json` says `"batch_size": 32`. Read from the file, not the folder name, when auditing these checkpoints - the `-1` suffix marks a rerun of the same shape with a different CLI batch size that the directory itself was never renamed to reflect.
+- **Two shapes never produced a checkpoint at all.** `32h_2l_4a_64len_b32` and `128h_32l_4a_32len_b8` are both empty directories - no `metadata.json`, no model, no inference log. Neither run got far enough (or survived long enough) to hit a save point during this session; there's no artifact here to say why.
+- **Low loss still means some memorized-verbatim recall, not pure generalization.** The "wide open space filled with planets" line, identical to the source data, repeating across multiple epochs for the same prompt, is the clearest evidence: a 0.0648 final loss on this data volume doesn't mean the model learned to talk about the universe, in part it means it learned this one sentence about the universe.
+- **The `-bible` checkpoint is a real, if minor, cautionary tale about resuming vs. restarting.** Same exact shape as the winning run, abandoned two epochs in at loss 1.1425 - a full 17x the winning run's final loss - suggesting either an unlucky seed, a data-order effect from `bible.txt` dominating early batches, or simply that the run was manually restarted rather than resumed. `YumonMoeBrain::load`'s resume path reinitializes optimizer state on every resume (documented in the README: "this is a weights resume, not an exact restart"), which is itself worth remembering before assuming two identically-shaped runs should track each other.
+
+## What's next
+
+This checkpoint is trained only on the `Language` stage - free text, not the `Structured` JSON stage that would let it actually take actions and hold memories the way the schema in the standing project brief describes. The `-bible` run and the two empty directories are also worth a deliberate rerun now that 256h/16l/4a/32len/b8 is a known-working shape, rather than leaving them as unexplained gaps in the checkpoints tree.

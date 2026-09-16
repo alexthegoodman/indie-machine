@@ -1,0 +1,131 @@
+---
+title: "Yumon Pet: An xLSTM Brain, Twelve Runs, and a Loss Curve That Lied Worse Than Last Time"
+date: 2026-09-16
+series: Yumon
+crate_versions:
+  unchanged:
+    - burn = "0.20.1" (features: autodiff, wgpu, cuda)
+    - cubecl = "0.9.0" (features: wgpu, cuda)
+    - wgpu = "26.0.1" (pulled in by cubecl)
+  edition: "2024"
+  os: "Windows 11 Pro (64-bit), build 10.0.26200"
+  backend: "burn Wgpu backend, default instance/backend selection"
+repo_link: https://github.com/alexthegoodman/yumon-pet
+---
+
+The [last Yumon Pet post](/posts/2026-09-10-yumon-loss-vs-quality) found that the lowest-loss checkpoint in the repo produced the worst prose of three. That was one architecture (`DecoderOnly`, plain causal attention) at three sizes. This post is a new architecture, `YumonXLstmBrain` (`src/brain/xlstm_model.rs`), swept across twelve runs and five checkpoint directories in a single day. The same inversion shows up again, and this time it's not close: the single lowest-loss checkpoint in the entire xLSTM tree is stuck in an exact repetition loop, and no run - regardless of size, depth, head count, or learning rate - ever got past short, occasionally ungrammatical sentences before `MIN_EPOCH_LOSS_DROP` called it and moved on.
+
+None of these twelve runs is what Yumon should ship with. That's the point of writing them up rather than picking the best-looking one and moving on.
+
+## What xLSTM replaces
+
+Every architecture in this repo so far has used attention. `YumonXLstmBrain` doesn't: no RoPE, no softmax over token pairs, no `Tensor::cat` of query/key products. Position and context are carried entirely by a recurrent state - stacked `XLstmBlock`s, each a pre-norm `MLstmBlock` (the "matrix LSTM" from Beck et al., 2024) plus a pre-norm MLP, residual around both.
+
+The mLSTM block gives each attention head an independent `[head_dim, head_dim]` matrix memory, updated one timestep at a time:
+
+```rust
+// src/brain/xlstm_model.rs, MLstmBlock::forward
+// Stabilized exponential gating (xLSTM paper, section 2.2/A.2):
+// m_t = max(log_f_t + m_{t-1}, i_tilde_t); gates re-based off m_t
+// so neither i_t nor f_t ever needs to exponentiate an unbounded value.
+let log_f = log_sigmoid(f_raw);
+let m_new = max_pair(log_f.clone() + m_state.clone(), i_raw.clone());
+let i_gate = (i_raw - m_new.clone()).exp();
+let f_gate = (log_f + m_state - m_new.clone()).exp();
+
+// Rank-1 update to the matrix memory: C_t = f_t*C_{t-1} + i_t*(v_t k_t^T)
+let outer = v_t.clone().unsqueeze_dim::<4>(3) * k_t.clone().unsqueeze_dim::<4>(2);
+let f_c = f_gate.clone().unsqueeze_dim::<3>(2).unsqueeze_dim::<4>(3);
+let i_c = i_gate.clone().unsqueeze_dim::<3>(2).unsqueeze_dim::<4>(3);
+c_state = c_state * f_c + outer * i_c;
+```
+
+This is only the mLSTM half of the paper - production xLSTM releases stack mLSTM with sLSTM, but lean almost entirely on mLSTM because it parallelizes across time via a chunked scan; sLSTM's per-timestep scalar memory-mixing doesn't. This implementation doesn't even get mLSTM's own parallel win - it's a plain sequential Rust loop over `seq_len`, one small tensor op per timestep, not a chunked scan. The paper's causal Conv1d over the q/k branch before gating is also deliberately left out, per the file's own header comment: it helps local n-gram recall, but the exponential-gated matrix memory is xLSTM's actual defining mechanism and works without it.
+
+The `RunConfig`'s `attn_heads` field gets reused here to mean something different than it does for attention architectures - the number of independent per-head matrix-memory states, not attention heads. Same field name, different meaning depending on `Architecture`, which is a real thing to know before reading a config table and assuming it means what it means in a `DecoderOnly` row.
+
+## The twelve runs
+
+All `Language` stage (free text, not the JSON `Structured` stage), same three data files (`data/synthetic/bible.txt`, `business.txt`, `universe.txt`) plus `archive/you_chats.txt` and `archive/clean_chats.txt`. Every `RunConfig` asked for 15 epochs. None got there - `MIN_EPOCH_LOSS_DROP` (`src/brain/train.rs`) aborts a run the moment one epoch fails to drop average loss by at least a threshold versus the previous epoch, and every single one of these twelve tripped it before epoch 15.
+
+| Checkpoint dir | embed/hidden | layers | heads (memory states) | seq_len | batch | epochs stopped at | final loss |
+|---|---|---|---|---|---|---|---|
+| `brain-xlstm1/128h_2l_16a_64len_b64` | 128 | 2 | 16 | 64 | 64 | 12 | 0.8139 |
+| `brain-xlstm1/128h_2l_32a_64len_b16-lr3` | 128 | 2 | 32 | 64 | 16 | 2 | 1.2110 |
+| `brain-xlstm1/128h_2l_32a_64len_b16-lr4` | 128 | 2 | 32 | 64 | 16 | 4 | 1.4159 |
+| `brain-xlstm1/128h_2l_32a_64len_b2-lr4` | 128 | 2 | 32 | 64 | 2 | 0 | 2.1488 |
+| `brain-xlstm2/128h_4l_8a_64len_b64` | 128 | 4 | 8 | 64 | 64 | 13 | 0.5613 |
+| `brain-xlstm2/256h_4l_4a_64len_b32` | 256 | 4 | 4 | 64 | 32 | 3 | 1.3979 |
+| `brain-xlstm3/128h_4l_4a_64len_b64` | 128 | 4 | 4 | 64 | 64 | 14 | 0.8046 |
+| `brain-xlstm3/128h_4l_8a_64len_b64` | 128 | 4 | 8 | 64 | 64 | 4 | 1.2230 |
+| `brain-xl-xlstm/128h_2l_8a_128len_b32` | 128 | 2 | 8 | 128 | 32 | 1 | 1.2212 |
+| `brain-xl-xlstm/64h_2l_4a_64len_b64` | 64 | 2 | 4 | 64 | 64 | 3 | 1.5238 |
+| `brain-xl-xlstm2/128h_2l_8a_128len_b32` | 128 | 2 | 8 | 128 | 32 | **11** | **0.4099** |
+| `brain-xl-xlstm2/64h_2l_4a_64len_b16` | 64 | 2 | 4 | 64 | 16 | 13 | 0.6572 |
+
+The bolded row is the lowest loss in the whole tree - less than half the next-best run.
+
+## Evidence
+
+Here's that lowest-loss checkpoint's output, straight from `128h_2l_8a_128len_b32_XLstm_Language_inference_log.txt` at its final logged snapshot (epoch 11/15, avg_loss 0.4099):
+
+```
+[1] PROMPT: Should I start a business?
+[1] REPLY:  a business goals and being a business is like planting the same the right to be honest.
+[2] PROMPT: What is the universe?
+[2] REPLY:  yes, while a business is like having a business is like having a business is just like
+             making a business is like making a, balance for.
+[4] PROMPT: Tell me about friendship.
+[4] REPLY:  yes, but it's normal like making a good at a clear goals, you want to build a clear
+             goals help you want to understand the word of it.
+```
+
+"a business is like having a business is like having a business is just like making a business is like making a" - that's not a rare bad sample, it's the model's steady state at its best-measured loss. The recurrence found a low-perplexity way to keep predicting "business" after "business," and the loss function has no way to penalize that beyond what it already did.
+
+![Loss (cyan) and entropy (magenta) curves for the 128h/2l/8a/128len checkpoint, both trending down smoothly to the lowest final loss in the xLSTM tree](/images/yumon-xlstm-lowest-loss-curve.png)
+
+Compare that to `brain-xlstm3/128h_4l_4a_64len_b64` (14 epochs - the most of any xLSTM run - at a substantially *higher* loss of 0.8046):
+
+```
+[2] PROMPT: What is the universe?
+[2] REPLY:  " is the moments that nothing, not even light, because it's a big ball in the universe.
+             and it will take a little bit of a dark luxe.
+[3] PROMPT: How do plants grow?
+[3] REPLY:  planets are like a big family and planets, like stars, and stars.
+[4] PROMPT: Tell me about friendship.
+[4] REPLY:  jim tunry means that your promises are willing to be uncum or working together.
+```
+
+Still rough - "dark luxe" and "uncum" aren't words - but it's not looping, and most of the sentences at least parse as sentences. Higher loss, better prose. Same inversion the 2026-09-10 post found, now confirmed across a much wider sweep and with a more extreme case: this time the best-loss checkpoint doesn't just have worse grammar than a competitor, it's degenerate.
+
+![Loss (cyan) and entropy (magenta) curves for the 128h/4l/4a/64len checkpoint - noisier, higher final loss, and the run that made it furthest into its 15-epoch plan](/images/yumon-xlstm-best-prose-curve.png)
+
+The undertrained end of the spectrum, for context - `128h_2l_32a_64len_b2-lr4`, stopped inside epoch 1 at batch 500/5032, loss 2.1488:
+
+```
+[1] REPLY:   the
+[2] REPLY:   the the and the
+[3] REPLY:   a to
+[4] REPLY:   the the new
+[5] REPLY:   and  the
+```
+
+Batch size 2 at 32 memory-heads never got enough signal per step to produce anything but token noise before the early-stop mechanism (correctly) gave up on it.
+
+## Decision log
+
+- **mLSTM only, not sLSTM.** The paper's full xLSTM stacks both block types; this implementation is mLSTM-only, matching what production-scale releases (the file's header comment cites NX-AI's 7B model) lean on for the same reason - mLSTM parallelizes via a chunked scan, sLSTM's scalar memory-mixing doesn't. This repo doesn't even claim that parallel win (it's a sequential per-timestep Rust loop), but the recurrence itself - exponential gating, matrix memory, stabilizer, normalizer - is the real mechanism, not a renamed GRU.
+- **`FORGET_GATE_BIAS = 3.0`.** A classic LSTM initialization trick (Jozefowicz et al., 2015): biasing the forget gate open at init keeps early gradients from vanishing before the model has learned what to forget. Applied as a constant added to the raw forget-gate pre-activation before the log-sigmoid.
+- **Learning rate lower than `DecoderOnly`'s, and re-tuned mid-sweep.** `generate_run_configs` in `train.rs` carries three commented-out xLSTM learning-rate pairs - `(1e-4, 1e-5)`, the currently-active `(1e-3, 1e-4)`, and `(1e-2, 1e-6)` - with a comment noting xLSTM's exponential gating is "more sensitive to a hot LR than plain attention softmax," a standard recurrent-net-with-gating caution, not a benchmarked-optimal number. The `-lr3`/`-lr4` checkpoint suffixes are exactly this: two different LR schedules tried back-to-back on the same 128h/2l/32a/64len/b16 shape. More epochs didn't mean lower loss between them - `-lr3` reached 1.2110 at epoch 2, `-lr4` reached only 1.4159 at epoch 4 - which is the schedule mattering more than the epoch count for this shape.
+- **`MIN_EPOCH_LOSS_DROP` tuned down over the course of the day.** The constant in `train.rs` carries its own history as commented-out values: `0.2`, then `0.05`, now `0.025`. Loosening it gives a non-converging run more rope before the early-stop mechanism abandons it - visible in-repo as the sweep progressed and none of the earlier thresholds were letting xLSTM runs get anywhere near 15 epochs either.
+
+## Failure notes
+
+- **The best-loss checkpoint is the worst-prose checkpoint, again - more extreme this time.** Not a borderline case: `brain-xl-xlstm2/128h_2l_8a_128len_b32`'s loss (0.4099) is under half of the next-lowest xLSTM run, and its output is a literal repetition loop, not just weak grammar.
+- **No xLSTM checkpoint reached the 15-epoch plan.** Every one of the twelve was cut short by `MIN_EPOCH_LOSS_DROP`, from as early as batch 500 of epoch 1 (the b2/32-head run) to as late as epoch 14 of 15 (`brain-xlstm3/128h_4l_4a_64len_b64`). Zero for twelve on the stated target.
+- **Small batch at high memory-head count degenerates fast.** `128h_2l_32a_64len_b2-lr4` never produced anything but one- or two-token fragments before the early-stop mechanism (correctly) killed it inside epoch 1.
+- **A real rank-mismatch bug, already caught and fixed, is documented directly in the model's own test module** (`xlstm_forward_backward_smoke`, `xlstm_model.rs`): a naive squeeze-all-size-1-dims call on the mLSTM readout collapses the batch dimension too when batch=1 - exactly the shape every periodic mid-training inference/generation check uses - and panics with a rank mismatch. Fixed with `squeeze_dim` targeting the one dimension that should collapse, with a `batch=1` case added to the smoke test specifically so this class of bug fails in `cargo test`, not mid-training-run.
+
+## What's next
+
+Twelve runs, one clear pattern (loss and prose quality don't track, and here they actively diverge), zero checkpoints worth shipping. The repo's next move wasn't a thirteenth xLSTM run - it was a same-day pivot back to attention, this time with sparse mixture-of-experts FFNs instead of a dense one. That run converged to a final loss of 0.0648 in twelve epochs and produced Yumon's first genuinely coherent output in this repo's history. See the next post.
