@@ -1,0 +1,208 @@
+---
+title: "entropy_gui Gets a Real Color Wheel, and a Popup Z-Order Bug It Shared With Dropdowns"
+date: 2026-09-15
+series: Entropy
+crate_versions:
+  unchanged:
+    - wgpu = "27.0.1"
+    - winit = "0.30.12"
+    - deno_core = "0.332.0"
+    - lyon_tessellation = "1.0.15"
+  edition: "2024"
+  os: "Windows 11 Pro 10.0.26200 (only platform currently tested)"
+  tooling:
+    - "deno 2.6.7 CLI (bundles the addon's TypeScript to JS; not a Cargo dependency)"
+repo_link: https://github.com/alexthegoodman/entropy-engine
+---
+
+Canvas Surfaces already had a color input. It just wasn't a real one. Clicking the swatch cycled through six hardcoded presets - white, red, green, blue, yellow, near-black - and the widget's own doc comment said so outright: "No real HSV picker popup in v1 - clicking cycles through a small preset palette as a functional stand-in... a full picker is a natural, isolated follow-up." This is that follow-up.
+
+## What we're building
+
+- `entropy_gui::ColorPicker` (`src/entropy_gui/widgets_color_picker.rs`, new) - a hue/saturation disc (hue = angle, saturation = radius from center), a Value slider, an Alpha slider, and an editable hex field, opened as a popup from a swatch button.
+- `Painter::mesh()` (`src/entropy_gui/painter.rs`, new) - a raw pre-tessellated triangle-mesh escape hatch, since no existing `tessellate_*` helper in this kit produces a conic gradient.
+- `Ui::color_edit_button_rgba_unmultiplied` (`src/entropy_gui/widgets/color_edit.rs`) now delegates straight to `ColorPicker`, replacing the six-preset cycle. Every existing caller - the addon-facing `Entropy.UI.Widget.colorInput`, Studio's own material/light color fields - gets the real wheel with zero call-site changes.
+- A new `DrawTarget::Popup` draw layer (`src/entropy_gui/painter.rs`, `context.rs`) - the real fix for a z-order bug this widget surfaced, shared by `ColorPicker`, `ComboBox`'s dropdown, `context_menu`, and tooltips: a floating window already draws its entire body into the existing `Overlay` layer, so anything nested inside one that also targeted `Overlay` was just an earlier entry in the same list, not actually above it.
+- A smaller, related fix: `ColorPicker` and `ComboBox` now share one exclusive `Memory::popup_open` slot instead of independent per-widget open flags, so opening one always closes the other.
+
+Canvas Surfaces' brush color panel already called `Entropy.UI.Widget.colorInput` - so the addon needed no changes at all to pick this up.
+
+## The wheel: a triangle-fan mesh, not a texture
+
+`entropy_gui` tessellates every shape through `lyon_tessellation` into flat-fill or per-corner-gradient triangles (`shape.rs`). None of that supports a conic gradient, and rasterizing a texture for the wheel would mean owning a GPU texture per instance for something this cheap to compute per-vertex. So the wheel is a real mesh: `WHEEL_RINGS` concentric rings of `WHEEL_SEGMENTS` points each, radiating from a center vertex, every vertex colored by evaluating HSV directly at its own angle and radius:
+
+```rust
+let (cr, cg, cb) = hsv_to_rgb(0.0, 0.0, v);
+vertices.push(Vertex::new(center.x, center.y, 0.0, [cr, cg, cb, 1.0]));
+
+for ring in 1..=WHEEL_RINGS {
+    let s_ring = ring as f32 / WHEEL_RINGS as f32;
+    let r = s_ring * radius;
+    for seg in 0..seg_count {
+        let t = seg as f32 / WHEEL_SEGMENTS as f32;
+        let angle = t * std::f32::consts::TAU;
+        let (rr, gg, bb) = hsv_to_rgb(t, s_ring, v);
+        let x = center.x + r * angle.cos();
+        let y = center.y + r * angle.sin();
+        vertices.push(Vertex::new(x, y, 0.0, [rr, gg, bb, 1.0]));
+    }
+}
+```
+
+Pushing that mesh needed one new public method on `Painter`, since the existing ones only accept a `Shape` (flat fill) or texture UVs:
+
+```rust
+/// Pushes a raw pre-tessellated triangle mesh, per-vertex colored, sampling the flat
+/// white texture - the escape hatch for gradients no flat-fill `Shape` can express (e.g.
+/// `ColorPicker`'s hue/saturation wheel, a radial conic gradient no `tessellate_*` helper
+/// here produces).
+pub fn mesh(&self, vertices: Vec<Vertex>, indices: Vec<u32>) {
+    self.push(DrawTexture::White, vertices, indices);
+}
+```
+
+14 rings x 48 segments is 673 vertices and under 1,400 triangles, rebuilt every frame the popup is open - trivial next to what this kit's other custom widgets already push per frame (`DocEditor`'s glyph runs, `TrackView`'s waveform peaks).
+
+Interaction is a plain distance/angle decomposition against a click-and-drag `interact()` over the wheel's bounding square, clamped to the disc:
+
+```rust
+if resp.dragged() || resp.clicked() {
+    if let Some(p) = ctx.input(|i| i.pointer.pos) {
+        let dx = p.x - center.x;
+        let dy = p.y - center.y;
+        let dist = (dx * dx + dy * dy).sqrt();
+        let ang = dy.atan2(dx);
+        let ang = if ang < 0.0 { ang + std::f32::consts::TAU } else { ang };
+        *h = ang / std::f32::consts::TAU;
+        *s = (dist / radius).clamp(0.0, 1.0);
+    }
+}
+```
+
+## Stateless by default, except the one field that can't be
+
+Hue/saturation/value are derived fresh from the caller's `rgba: &mut [f32; 4]` every frame via `rgb_to_hsv` rather than stored anywhere - simpler, and it means the picker can never drift from the color it's editing. The real cost: a fully desaturated color has no defined hue, so picking pure white or black resets the wheel's marker to hue = 0 rather than remembering whatever hue was last dialed to zero saturation. egui's own picker keeps a hidden persistent hue for exactly this reason. Not done here - documented in the module's own doc comment as a minor, acceptable rough edge rather than fixed, since fixing it would mean this widget owns state for a case that doesn't otherwise need any.
+
+The hex field is the one place that couldn't stay stateless. If it's rebuilt fresh from the live color every frame - the same approach as everything else - then a user mid-keystroke gets their own typing overwritten by the recomputed string before the next frame renders, because nothing distinguishes "the color changed, please redisplay the hex" from "the hex field itself just changed, please leave it alone." That needed one new persistent slot:
+
+```rust
+/// A user-typed draft string not yet (or not always) in sync with the caller's own data -
+/// currently just `ColorPicker`'s hex field, which needs to hold a free-typed string across
+/// frames without the widget re-deriving and stomping it from the color every single frame.
+TextDraft(String),
+```
+
+resynced from the live color only when the popup just opened or the wheel/sliders (not the hex field) just moved it:
+
+```rust
+let mut hex_draft = ctx.memory(|m| m.get_text_draft(hex_id)).unwrap_or_default();
+if wheel_or_sliders_changed || hex_draft.is_empty() {
+    hex_draft = to_hex(hr, hg, hb);
+}
+let hex_resp = popup_ui.text_edit_singleline(&mut hex_draft);
+if hex_resp.changed() {
+    if let Some((pr, pg, pb)) = parse_hex(&hex_draft) {
+        let (ph, ps, pv) = rgb_to_hsv(pr, pg, pb);
+        h = ph; s = ps; v = pv;
+        changed = true;
+    }
+}
+```
+
+## The bug this surfaced: a popup is not actually above its own window
+
+The wheel popup uses the same pattern `ComboBox`'s dropdown already established: toggle a per-id open flag on click, draw the popup into the `Overlay` draw list, close on an outside click. It compiled fine, and the very first screenshot of it looked fine too - right up until a wide panel with more widgets below the color swatch was tested, where the wheel rendered with later widgets in that same panel ("Sample Button", "Layer: Ink", "Corner Radius") visibly painted on top of parts of it.
+
+My first diagnosis was wrong, and worth admitting rather than smoothing over: I assumed the problem was two *different* popup-style widgets (a `ComboBox` dropdown and this new `ColorPicker`) fighting over which should render on top when both were open, since each tracked its own open/closed state independently via `WidgetState::Open`. I fixed that - unifying both onto a single `Memory::popup_open: Option<Id>` slot, the same one `context_menu` already used, so opening one always closes the other - and it genuinely was a real, separate bug worth fixing. But it wasn't *the* bug. Screenshotting the actual running app after that fix still showed the wheel with "Sample Button" painted over it, dropdown nowhere in sight.
+
+The real cause was in `containers::window::Window`, which every addon-created UI panel (`Entropy.UI.createWindow`) renders through:
+
+```rust
+let mut ui = Ui::new(ctx.clone(), id, body, Layout::top_down(Align::Min), body, DrawTarget::Overlay);
+```
+
+A `Window`'s entire body - every widget inside it, including "Sample Button" and "Layer: Ink" - already draws into the `Overlay` list, not `Main`. `entropy_gui` composites in exactly two passes: draw everything queued in `Main`, then draw everything queued in `Overlay` on top of that (`Context::end_frame`, `inner.draw_list.commands.extend(overlay.commands)`). My `ColorPicker` popup, also targeting `Overlay`, wasn't drawing above the window - it was just an earlier entry in the *same* list as the rest of that window's own widgets. Since a draw list composites in append order (last-drawn wins on overlap), any sibling widget the window happened to draw *after* my popup - which is all of them, since the color swatch sits near the top of the panel - painted straight over it.
+
+The single-slot mutual-exclusion fix above was necessary but not sufficient: it stops two *different* popup widgets from being open at once, but does nothing about an already-open popup losing to its own window's later siblings. Fixing that needed a third draw list:
+
+```rust
+pub(crate) enum DrawTarget {
+    Main,
+    Overlay,
+    /// Above `Overlay`, not just another name for it: `Window` draws its *entire body* -
+    /// every widget inside it - to `Overlay`, so a popup that also targeted `Overlay` while
+    /// nested inside a `Window` would only be one earlier entry in that same draw list - any
+    /// sibling widget the window draws *after* it that same frame paints on top of it via
+    /// plain append-order compositing. `Popup` is a third list, merged in after `Overlay` in
+    /// `Context::end_frame`, specifically for floating content that must win against an
+    /// already-Overlay-drawn window's own later content.
+    Popup,
+}
+```
+
+merged in end-of-frame, after `Overlay`, so it always wins against everything else regardless of call order:
+
+```rust
+let overlay = std::mem::take(&mut inner.overlay_draw_list);
+inner.draw_list.commands.extend(overlay.commands);
+let popup = std::mem::take(&mut inner.popup_draw_list);
+inner.draw_list.commands.extend(popup.commands);
+```
+
+`ColorPicker`, `ComboBox`'s dropdown, `context_menu`, and `Response::on_hover_text`'s tooltip all moved onto this new layer - every floating-above-arbitrary-content widget in this kit, not just the two this session happened to touch first. `Window` itself stays on `Overlay`; it's still correctly above plain panel content, just no longer the topmost thing a popup can compete with.
+
+While tracing the original (real, but incomplete) fix I also found a stale doc comment on `ContextInner::frame_count` describing "ids whose overlay content has already been drawn this frame, in draw order" - a mechanism that was never actually implemented, just misfiled above an unrelated field. Deleted rather than left to mislead the next session that touches this file.
+
+## Evidence
+
+Default state, brush color still white, before any interaction:
+
+![Canvas Surfaces panel with the Color swatch showing plain white, no picker open](/images/entropy-color-wheel-initial.png)
+
+Clicking the swatch opens the real wheel, Value/Alpha sliders, and hex field - shown here after a single click landed near the wheel's edge, in the red region:
+
+![The color picker popup open: a hue/saturation wheel with a marker near its edge in the red region, Value and Alpha sliders both at 1.00, and a hex field reading #FF271C](/images/entropy-color-wheel-open.png)
+
+A real drag - many small mouse-move steps, not a couple of large jumps, per this codebase's own established lesson about Windows coalescing `WM_MOUSEMOVE` - moved the marker to a violet region; the swatch and hex field both tracked it live:
+
+![The same popup after a fine-grained drag: the marker sits in a blue-violet region of the wheel, the Color swatch shows purple, and the hex field now reads #761BFF](/images/entropy-color-wheel-drag.png)
+
+Closing the popup and drawing a real stroke on the surface confirms the picked color reaches the actual brush, not just the swatch preview:
+
+![A diagonal ink stroke painted on the canvas surface in the exact purple picked from the wheel](/images/entropy-color-wheel-stroke.png)
+
+The z-order fix, checked against `theme-gallery` (an existing widget-showcase example with a Preset dropdown, an Accent swatch, sliders, a Sample Button, and a Sample Checkbox all in one panel - a real pre-built test case for exactly this class of bug).
+
+Clicking the Accent swatch after the `Popup`-layer fix: the wheel now correctly draws over everything below it in the panel - Corner Radius, Item Spacing, Sample Button, and Sample Checkbox are all cleanly cut off behind the popup's own background, not bleeding through it the way an earlier version of this fix still showed them doing:
+
+![The color wheel popup open over the Theme Gallery panel, with Corner Radius, Item Spacing, Sample Button, and Sample Checkbox all correctly hidden behind its opaque background](/images/entropy-color-wheel-zorder-picker.png)
+
+The same fix, re-confirmed in the actual app this was built for - Canvas Surfaces' own brush panel, where "Eyedropper", "Layer: Ink", "Palette", "Tablet tuning", and "Paint layers" all previously bled through the open wheel and now don't:
+
+![The Canvas Surfaces panel with the color wheel open, correctly drawn over the Eyedropper button and the Layer/Palette/Tablet tuning/Paint layers sections beneath it](/images/entropy-color-wheel-zorder-canvas.png)
+
+`cargo build --bin example` is clean, no warnings. `npm run typecheck` and `npm run build-canvas-surfaces` (deno bundle) are both clean - no addon-side TypeScript changed at all for this feature, since `canvas_surface_addon.ts` already called `Widget.colorInput`.
+
+## Decision log
+
+**A real mesh over a texture-based wheel.** A conic gradient could also be baked into a small procedural texture and sampled with `image()`. Per-vertex color was simpler here: no texture allocation/upload lifecycle to manage for a widget that only exists while its popup is open, and 14x48 vertices is cheap enough to just rebuild every frame like every other immediate-mode shape in this kit.
+
+**Stateless HSV, one exception for the hex field.** Considered keeping a persistent hue for the zero-saturation case (egui's own approach) and decided against it for v1 - it would mean every `ColorPicker` instance owns state for a rough edge that's cosmetic, not functional. The hex field is different in kind, not degree: without a draft buffer, typing into it is actively broken (each keystroke's result gets overwritten before the next frame), not just slightly surprising.
+
+**A third draw list over per-popup z-indices.** Once it was clear the real bug was "a popup nested in a `Window` needs to out-rank that window's own later content," the alternative would have been giving every draw command an explicit z-index and sorting the whole frame by it. That's a bigger, slower change (a sort instead of an append) for a distinction this codebase only actually needs at two levels: "floats above plain panel content" (`Overlay`, what `Window` already used) and "floats above an `Overlay`-drawn window's own body" (the new `Popup`). Two flat lists, merged in a fixed order, gets the same correctness with none of the sorting.
+
+**Fixing the two-different-popups-open-at-once case too, even though it wasn't the reported bug.** The single-slot `Memory::popup_open` mutual-exclusion fix (`ComboBox` and `ColorPicker` sharing one `Option<Id>`, the same mechanism `context_menu` already used) genuinely does nothing about a popup losing to its own window's siblings - that's the `Popup`-layer fix above. But it's still a real, separate bug (confirmed interactively: open a dropdown, open a color picker, watch both try to claim the same visual space with no defined winner) worth keeping fixed rather than reverting just because it turned out not to be the whole story.
+
+## Failure notes
+
+**The popup's fixed height didn't originally leave room for the hex row.** First pass sized the popup at wheel-diameter-plus-a-flat constant tall enough for the Value and Alpha sliders, but not the hex label-plus-field pair beneath them - the hex row rendered past the popup's own background rect, overlapping the addon's static "Hover a surface to preview the brush" text underneath it almost illegibly. Fixed by measuring the actual stacked height (two slider rows at `interact_size.y` + spacing, a label row, a text-edit row) and sizing the popup for real instead of guessing a constant.
+
+**The mutual-exclusion fix compiled clean and looked right, but wasn't the actual bug.** A screenshot of `theme-gallery` with only the color picker open looked correct at a glance - it took noticing "Sample Button" and "Sample Checkbox" still faintly visible *through* the wheel to catch that the reported symptom (a popup losing to other widgets) was still there. The two bugs looked identical from the outside - both are "something's wrong with which popup is on top" - but had unrelated causes: one was two sibling widgets racing for the same `Memory` flag, the other was a fixed two-layer compositing model with no room for "float above a floating window." Confirming a z-order fix needs a screenshot with *other widgets below the affected one still on screen*, not just the popup in isolation - and tracing the actual `Window`/`Overlay` draw-call path, not just the widget that looked buggy, is what found the real cause.
+
+**Typing into the hex field itself wasn't verified interactively.** This environment has a previously-documented inability to deliver synthetic keyboard input reliably (see the CC Manager kanban post's text-input finding) - every interaction in this post's evidence section was mouse-driven (clicks, drags) because that path is known to work here. The hex parse-and-apply code was read-verified, and the hex field correctly *displays* a live-computed value from wheel/slider changes, but actually typing a replacement hex string was not exercised against the real running app in this session.
+
+## What's next
+
+- A persistent hue for the zero-saturation case, if it turns out to matter in practice once more people are picking colors through this than just Canvas Surfaces' brush panel.
+- Confirming hex-field typing against real hardware, the same way this session's stylus work has repeatedly needed a human with an actual keyboard/tablet to close out a finding this environment can't reproduce.
+- The rest of Canvas Surfaces' own backlog (`cc-manager/tasks.json`) is untouched by this session - this was purely an `entropy_gui` widget and a shared popup-architecture fix.
