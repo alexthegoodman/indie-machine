@@ -1,0 +1,42 @@
+---
+title: "Product Hunt Pick: Weave Router 2.0, Where the Cache Is Part of the Routing Decision"
+date: 2026-09-16
+series: Product Hunt
+repo_link: https://github.com/weave-os/router
+---
+
+Today's #1 Product Hunt launch is [Weave Router 2.0](https://www.producthunt.com/products/weave), a model router built specifically for coding agents. Its pitch is straightforward: keep Claude Code, Codex, or Cursor as the client, place a proxy in front of it, and let that proxy choose a cheaper capable model for each turn. The unusually interesting bit is that it treats an agent session as a cache-bearing sequence, not a bag of unrelated prompts.
+
+## What it is
+
+Weave Router sits between an agent client and upstream model providers. It scores a turn's apparent complexity, selects from a configured model pool, and can escalate to a stronger model if the cheaper one is stalling, looping, or missing the task. It also says it can route across existing subscriptions, so a Codex session could use a Claude model, or a Claude Code session a GPT model, depending on the configured pool and remaining quota.
+
+That sounds like the usual model-router story until a session gets long. A naive per-request switch can discard a provider's prompt cache and force the full context to be billed again. Weave 2.0's routing policy includes that rebuild cost: it says it only changes models when the expected saving exceeds the cache cost. For coding agents, where a task can mean hundreds of related requests against the same repository, that is the decision a router actually needs to get right.
+
+The public repository is more substantial than a landing-page integration. It exposes Anthropic Messages, OpenAI Chat Completions, and Gemini-compatible endpoints, along with a route-preview endpoint, session-cost endpoint, and exportable routing-decision analytics. Its installer has specific paths for Claude Code, Codex, OpenCode, and pi; the Codex path documents the configuration it writes and the skills it installs. That is enough implementation detail to make the product feel like a real proxy rather than a dashboard promising future routing.
+
+## What's good about it
+
+- **It optimizes an actual coding-agent failure mode.** “Use a cheap model for easy work” is not enough if an early cheap call poisons the rest of a session, or if switching away from a warm context costs more than it saves. Cache-aware routing and escalation are the two features that make the approach plausible beyond a short demo.
+
+- **The client integrations are concrete.** The repository documents one-command installation for Claude Code, Codex, OpenCode, and pi, including project-scoped configuration and an on/off switch. That matters because a router that requires replacing the agent client has already lost much of its appeal.
+
+- **The company gives enough benchmark detail to interrogate the headline.** On Terminal-Bench 4.0, Weave reports 62.1% pass@2, $5.22 per trial, and 20.5 minutes per trial, compared with GPT-6 Astra's 60.6%, $10.03, and 44.1 minutes. On SWE-Atlas Codebase QnA, it reports the same 62.1% pass@2 versus Astra's 66.1%, at $2.31 versus $5.04. The results are not presented as a vague “better than frontier models” graph: task counts, attempts, costs, and confidence intervals are published.
+
+## What I'd push back on
+
+- **Those performance figures are vendor-run, small-sample, pass@2 results.** The company is commendably explicit that Terminal-Bench used 66 tasks, SWE-Atlas used 124, each task received two attempts, and the overlapping Wilson intervals mean the quality differences are not decisive. But pass@2 is not a leaderboard submission - their own announcement says Terminal-Bench requires at least five attempts for that. Treat the cost and speed claims as a useful experiment to reproduce, not settled evidence that any team's repository will be twice as fast or half as expensive.
+
+- **Product Hunt labels the launch “Open Source,” but the code is under Elastic License 2.0.** Weave's own site calls it “source-available,” which is the accurate term. ELv2 permits use, copying, distribution, and derivatives, but prohibits offering the software's substantial functionality as a hosted or managed service and prohibits bypassing license-key functionality. Self-hosting for your own team is supported; treating it as an unrestricted open-source router or building a competing hosted router around it is a different proposition.
+
+- **The public setup instructions disagree on the package name.** The marketing site and launch post show `npx @workweave/router`; the public repository documents `npx @weave-os/router`. That may be an ordinary package rename or alias, but an install command that edits local agent configuration deserves a single canonical answer. Check the current repository README before running either command.
+
+- **Subscription routing needs careful operational validation.** The repository says native Codex-family selections preserve the existing ChatGPT OAuth credential, while other selected models use Weave's deployment or a BYOK credential. That is a meaningful distinction from the simpler marketing idea of freely moving every subscription between every client. Teams with compliance, data-residency, or provider terms to satisfy should trace exactly which upstream receives each turn before putting real code through it.
+
+## Verdict
+
+Weave Router 2.0 is aimed at a real problem that generic model gateways tend to flatten away: a coding agent is a session with a growing context, tool calls, cache state, and opportunities for a weak model to waste a long trajectory. A router that can preserve a warm context, route routine work down, and escalate when the trajectory goes wrong has a defensible job to do.
+
+The right first test is narrow: put it in front of a representative non-sensitive coding workload, export the routing decisions and session costs, then compare completed tasks, wall-clock time, cache use, and all-in spend against the client and model setup you already run. The benchmark claims are promising, but the license label and package-name discrepancy are reasons to read the repository before treating the launch copy as the whole story.
+
+**Sources:** [Weave Router 2.0 launch, Product Hunt](https://www.producthunt.com/products/weave) · [Weave Router product page](https://weaveos.com/products/router) · [Weave Router 2.0 benchmark announcement](https://weaveos.com/blog/introducing-weave-router-2-0) · [weave-os/router repository](https://github.com/weave-os/router) · [Elastic License 2.0 in the repository](https://github.com/weave-os/router/blob/main/LICENSE)
