@@ -1,0 +1,249 @@
+---
+title: "From a Page Viewer to a Browser Loop: Non-Blocking Fetch and Addon-Owned Navigation in Entropy"
+date: 2026-09-17
+series: Entropy
+crate_versions:
+  unchanged:
+    - wgpu = "27.0.1"
+    - winit = "0.30.12"
+    - deno_core = "0.332.0"
+    - reqwest = "0.12.4"
+    - taffy = "0.14.0"
+    - scraper = "0.27.0"
+  edition: "2024"
+  os: "Windows 11 Pro 10.0.26200 (only platform currently tested)"
+  tooling:
+    - "deno 2.6.7 CLI (bundles the addon's TypeScript to JS; not a Cargo dependency)"
+repo_link: https://github.com/alexthegoodman/entropy-engine
+---
+
+The [HTML/CSS renderer post](/posts/entropy-html-css-taffy-render) got Entropy to the point of fetching one real page and laying it out through `taffy`. What it couldn't do was act like a browser: `Entropy.Net.getText` blocked the calling frame until the fetch finished, and every `<a>` it rendered used `hyperlink_to`, which launches the OS's own default browser - clicking a link inside the demo addon meant leaving the demo addon.
+
+This post turns that one-shot page viewer into an actual navigation loop, entirely inside the addon: a non-blocking fetch you poll from your own render callback, and links that hand their URL back to the addon instead of the operating system. The [previous post](/posts/entropy-browser-bdd-suite) covers how this is verified - a real BDD suite that injects the exact same events these features emit and captures the composited result - so this one stays on the feature work itself and leans on that suite's screenshots as its evidence.
+
+## What we're building
+
+- **`Entropy.Net.fetchText`/`pollText`/`cancelText`** - a non-blocking counterpart to the existing `getText`, backed by `op_http_fetch_text`/`op_http_poll_text`/`op_http_cancel_text` and a per-fetch `std::thread::JoinHandle` the addon polls instead of blocks on.
+- **`Entropy.UI.Widget.html`'s `onLinkClick` option**, plumbed through a new `handle_links: bool` field on `UiWidget::LayoutCanvas` and a new `id` so the rendered page itself has a stable target.
+- **`Ui::link`**, a new `entropy_gui` primitive extracted out of the existing `hyperlink_to` - draws and senses a link without deciding what happens on click.
+- **The demo addon rebuilt as a real browser loop**: URL bar, Go/back/forward, bookmarks, and a fetch-error state, all driven off the new non-blocking fetch and addon-owned link handling.
+
+## The work
+
+### Blocking fetch was never going to support back/forward
+
+`op_http_get_text` (from the prior post) does exactly one thing: spawn a thread, `reqwest::blocking::get`, `.join()` the thread, return the text. That's fine called once from `onInit`, which is what the original demo did. It cannot support a URL bar you can type into while a fetch for the *previous* URL is still in flight, because the call itself doesn't return until that fetch is done - the render loop, and therefore the whole UI, stalls for the duration of every navigation.
+
+The fix splits start from wait:
+
+```rust
+pub fn start_fetch_text(url: &str) -> std::thread::JoinHandle<Result<String, String>> {
+    let url = url.to_string();
+    std::thread::spawn(move || {
+        reqwest::blocking::get(&url)
+            .and_then(|r| r.error_for_status())
+            .and_then(|r| r.text())
+            .map_err(|e| e.to_string())
+    })
+}
+
+pub fn blocking_fetch_text(url: &str) -> Result<String, String> {
+    start_fetch_text(url)
+        .join()
+        .map_err(|_| "fetch thread panicked".to_string())?
+}
+```
+
+`blocking_fetch_text` becomes a thin wrapper over `start_fetch_text` so `op_http_get_text` (still used by other addons calling it once at startup) doesn't change behavior. The new op pair exposes the split directly:
+
+```rust
+#[op2]
+#[string]
+pub fn op_http_fetch_text(state: &mut OpState, #[string] url: String) -> String {
+    let id = format!("text_fetch_{}", Uuid::new_v4());
+    if let Some(ctx) = state.try_borrow_mut::<AddonContext>() {
+        ctx.net_text_fetches.insert(id.clone(), crate::deno::net::start_fetch_text(&url));
+    }
+    id
+}
+
+#[op2]
+#[serde]
+pub fn op_http_poll_text(state: &mut OpState, #[string] id: String) -> TextFetchStatus {
+    // ...
+    if !job.is_finished() {
+        return TextFetchStatus { done: false, text: None, error: None };
+    }
+    match ctx.net_text_fetches.remove(&id).expect("finished fetch was just found").join() {
+        Ok(Ok(text)) => TextFetchStatus { done: true, text: Some(text), error: None },
+        Ok(Err(error)) => TextFetchStatus { done: true, text: None, error: Some(error) },
+        Err(_) => TextFetchStatus { done: true, text: None, error: Some("fetch thread panicked".to_string()) },
+    }
+}
+```
+
+`ctx.net_text_fetches: HashMap<String, std::thread::JoinHandle<Result<String, String>>>` is the only new state this needed - one join handle per in-flight fetch, keyed by a UUID the JS side treats as an opaque job id. `JoinHandle::is_finished()` is a non-blocking check (it doesn't join), so `pollText` called every frame costs nothing while a fetch is still running. A finished job is removed from the map the moment it's observed as done, which is a deliberate one-shot contract worth stating plainly: call `pollText` again on an id you've already gotten a `done: true` result for, and you get `{done: true, error: "unknown or already-polled fetch id"}`, not the same result twice. The addon has to hold onto the text/error itself once it arrives, not re-ask for it.
+
+On the JS side, the addon's own poll function is now the entire navigation state machine:
+
+```js
+function loadPage(url: string, addToHistory: boolean) {
+    if (pendingFetch) Entropy.Net.cancelText(pendingFetch);
+    currentUrl = url;
+    urlInput = url;
+    fetchedHtml = null;
+    fetchError = null;
+    loading = true;
+    pendingFetch = Entropy.Net.fetchText(url);
+    pendingHistoryEntry = addToHistory;
+}
+
+function pollPageFetch() {
+    if (!pendingFetch) return;
+    const result = Entropy.Net.pollText(pendingFetch);
+    if (!result.done) return;
+    pendingFetch = null;
+    loading = false;
+    if (result.error) {
+        fetchError = result.error;
+        return;
+    }
+    fetchedHtml = result.text || "";
+    if (pendingHistoryEntry) {
+        history = history.slice(0, historyIndex + 1);
+        history.push({ url: currentUrl, html: fetchedHtml });
+        historyIndex = history.length - 1;
+    }
+    pendingHistoryEntry = false;
+}
+```
+
+`loadPage` cancelling any `pendingFetch` before starting a new one matters specifically for a URL bar: type a new URL and hit Go before the previous fetch resolves, and without the cancel, the old fetch's eventual result would land after the new one started, silently overwriting whatever the new navigation had already shown. `op_http_cancel_text` doesn't actually abort the in-flight `reqwest` call - a plain `std::thread::JoinHandle` has no cancellation mechanism, and the doc comment says so directly:
+
+```rust
+/// Drops an in-flight fetch result when an addon navigates away. Dropping a thread handle does
+/// not force-cancel reqwest, but it does release the addon's completed-result bookkeeping.
+```
+
+The HTTP request itself still runs to completion in the background; what's cancelled is the addon's own bookkeeping for it, which is enough to stop a stale response from ever being read back.
+
+### Links that navigate the addon, not the OS
+
+`hyperlink_to` existed before this session and does one job: draw underlined text, and on click, shell out to the OS's default browser. Every `<a>` `html_layout.rs` produced went through it, including links inside a *fetched* page - which meant clicking a link on `example.com`, rendered inside Entropy, opened Windows' actual default browser to follow it. Reasonable for hand-authored markup; wrong for anything meant to feel like an in-engine browser.
+
+The fix splits drawing-and-sensing from deciding-what-a-click-does:
+
+```rust
+/// Draw a link and return its interaction response without deciding what a click does.
+///
+/// Callers that render remote HTML use this instead of `hyperlink_to`: navigation belongs
+/// to the embedding addon, not to the operating system's default browser.
+pub fn link(&mut self, text: impl Into<WidgetText>) -> Response {
+    let text = text.into();
+    let font = FontId::proportional(DEFAULT_FONT_SIZE);
+    let size = Painter::measure_text(self.ctx(), font, &text.0.text);
+    let (rect, response) = self.allocate_response(vec2(size.x, size.y.max(font.size)), Sense::click());
+    // ...paint text + hover underline...
+    response
+}
+
+/// A normal application hyperlink, which opens its target in the host browser on Windows.
+pub fn hyperlink_to(&mut self, text: impl Into<WidgetText>, url: impl Into<String>) -> Response {
+    let url = url.into();
+    let response = self.link(text);
+    if response.clicked() {
+        #[cfg(target_os = "windows")]
+        { /* ...open in default browser... */ }
+    }
+    response
+}
+```
+
+`hyperlink_to` is now `link` plus the OS-open behavior, so every existing caller keeps working unchanged. The HTML render arm picks between the two based on a new per-canvas flag:
+
+```rust
+Some(crate::deno::html_layout::LayoutLeaf::Hyperlink { id: _, text, url }) => {
+    let mut child = ui.child_ui_at(box_rect, egui::Layout::top_down(egui::Align::Min), b.id_salt.as_str());
+    if *handle_links {
+        if child.link(text).clicked() {
+            events_to_push.push(format!("HTML_LINK|{}|{}", canvas_id, url));
+        }
+    } else {
+        child.hyperlink_to(text, url.as_str());
+    }
+}
+```
+
+`handle_links` comes from `Entropy.UI.Widget.html`'s new `onLinkClick` option:
+
+```js
+html: (windowId, html, options) => {
+    const id = nextWidgetId(windowId, "html", options?.id);
+    ops.op_ui_render_html(windowId, html || "", options?.baseUrl || "", options?.width || 0, !!options?.onLinkClick, id);
+    bindListener('_entropy_event_listeners', id, options?.onLinkClick
+        ? (event) => options.onLinkClick(event.split("|").slice(2).join("|"))
+        : null);
+}
+```
+
+No `onLinkClick` handler, and a rendered page's links behave exactly as before (open the host browser). Pass one, and every link inside that canvas instead emits `HTML_LINK|<canvas-id>|<url>` through the same `ui_events` channel every other widget event uses, which the demo addon wires straight back into its own `navigate`:
+
+```js
+Entropy.UI.Widget.html(win, fetchedHtml, {
+    id: "browser-page",
+    baseUrl: currentUrl,
+    onLinkClick: (url) => navigate(url)
+});
+```
+
+### The demo addon, now an actual loop
+
+With non-blocking fetch and addon-owned links in place, the demo addon's remaining work was ordinary application state: a `history: HistoryEntry[]` array with a `historyIndex`, back/forward as index moves that don't refetch (they replay the already-fetched HTML stored in the history entry itself), a `bookmarks: string[]`, and a `fetchError` string shown in place of the page when a fetch fails:
+
+```js
+function goHistory(index: number) {
+    const page = history[index];
+    if (!page) return;
+    historyIndex = index;
+    currentUrl = page.url;
+    urlInput = page.url;
+    fetchedHtml = page.html;
+    fetchError = null;
+}
+```
+
+Going back or forward is instant precisely because it never touches the network - it's a pure array-index move over pages already fetched this session, which is also what makes it safe to test purely at the model level in the fast Gherkin tier from the previous post, with no live fetch involved at all.
+
+## Evidence
+
+This feature set doesn't get its own screenshot pass - that's the point of building the BDD suite first. The [previous post's](/posts/entropy-browser-bdd-suite) live tier exercises exactly this code path (non-blocking fetch settling, following a rendered link, back/forward, bookmarking, a failed fetch) by injecting the real `browser-url`/`browser-go`/`HTML_LINK|browser-page|...`/`browser-back`/`browser-forward`/`browser-bookmark` events this addon emits, and its four captured PNGs are the actual evidence for this addon's behavior:
+
+![example.com fetched through the new non-blocking Entropy.Net.fetchText/pollText path and rendered via the existing HTML/CSS layout engine](/images/entropy-browser-bdd-example-com.png)
+
+![Having followed a rendered link through the new addon-owned onLinkClick path, then navigated back and forward through in-addon history with no network refetch](/images/entropy-browser-bdd-history.png)
+
+![The current page bookmarked, showing up as a clickable bookmark chip](/images/entropy-browser-bdd-bookmark.png)
+
+![A fetch to a nonexistent host surfacing as a visible "Fetch failed" state instead of a blocked frame or a silent failure](/images/entropy-browser-bdd-error.png)
+
+`cargo build --bin example` and `deno bundle` on `html_ui_demo_addon.ts` are both clean - confirmed as part of the same `cargo test --test browser_bdd` run in the previous post, which builds the real binary the live tier launches.
+
+Primary source checked directly: `std::thread::JoinHandle::is_finished`'s own documentation (doc.rust-lang.org) states it "does not block. To block while waiting on the thread to finish, use join," which is exactly the non-blocking-poll property `op_http_poll_text` depends on being true every frame.
+
+## Decision log
+
+**Poll a thread handle from the render loop, rather than adding a real async op layer.** `addon_ops.rs`'s own doc comments note there is no async op mechanism anywhere in this codebase's addon layer yet - every op is synchronous from JS's point of view. Building one just for this feature would have been a much larger change than the problem needed; a `HashMap` of join handles polled with a non-blocking check gets the same practical result (a UI that stays responsive during a fetch) with no new execution model to reason about.
+
+**Cancel-on-navigate clears bookkeeping, not the network request.** A real cancel would need either a cancellation-aware HTTP client or a shared atomic flag threaded into the spawned thread; neither existed here, and the actual failure mode this fixes (a stale response overwriting a newer navigation) only requires the addon to stop *looking at* the old result, not to stop the request from completing. Documented as a real limitation in the op's own doc comment rather than implied to be a full cancel.
+
+**`onLinkClick` is opt-in per canvas, not a global behavior change.** Every existing caller of `Widget.html` (the markup demo mode included, and any other addon using this widget) keeps launching the OS browser on link click unless it explicitly asks for addon-owned navigation. Changing the default would have been a silent behavior change for code that has no reason to expect it.
+
+## Failure notes
+
+**`addon.d.ts` was not updated for the new `Net` methods.** `examples/studio-bundle/src/addon.d.ts` still declares only `Net: { getText: (url: string) => string }` - `fetchText`, `pollText`, and `cancelText` are callable (the demo addon uses all three) but untyped from TypeScript's perspective. This exact file already has one prior instance of this same gap, left as its own comment: `Entropy.Video`'s ops shipped and were used by `media_player_addon.ts` before anyone noticed they weren't declared here either, because `deno bundle` doesn't type-check. This session repeated that gap rather than closing it - worth fixing before another addon tries to call `Entropy.Net.fetchText` and gets no autocomplete or type error to catch a typo'd argument.
+
+## What's next
+
+- Declare `fetchText`/`pollText`/`cancelText` in `addon.d.ts`, closing the gap above.
+- A real cancellation-aware fetch (an abortable client, or a shared cancellation flag read inside the spawned thread's loop) if a future addon actually needs the in-flight request itself to stop, not just the addon's interest in its result.
+- The still-open items from the HTML/CSS renderer post - real font metrics for text sizing, correctly sized checkbox/dropdown/button leaves, and reading `placeholder` - are all still true of the render path this navigation loop sits on top of, visible again in this session's own screenshots.

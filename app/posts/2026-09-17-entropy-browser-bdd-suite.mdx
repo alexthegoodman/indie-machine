@@ -1,0 +1,315 @@
+---
+title: "Entropy Gets a Real BDD Suite: Cucumber for Logic, a Live Window for Proof"
+date: 2026-09-17
+series: Entropy
+crate_versions:
+  new:
+    - cucumber = "0.23.0"
+  unchanged:
+    - wgpu = "27.0.1"
+    - winit = "0.30.12"
+    - deno_core = "0.332.0"
+    - reqwest = "0.12.4"
+    - image = "0.25.5"
+  edition: "2024"
+  os: "Windows 11 Pro 10.0.26200 (only platform currently tested)"
+  tooling:
+    - "deno 2.6.7 CLI (bundles the addon's TypeScript to JS; not a Cargo dependency)"
+repo_link: https://github.com/alexthegoodman/entropy-engine
+---
+
+Every UI-verification post in this series up to now has ended the same way: bring the real window to the foreground, screenshot it, and if a click was needed, fire a synthetic `user32.dll` `mouse_event` at hardcoded on-screen coordinates. It works, but it's fragile in exactly the way you'd expect - the [kanban post](/posts/entropy-kanban-cc-manager) hit a case where an earlier click's reflow moved a header out from under a second click aimed at precomputed coordinates, and the [stylus post](/posts/entropy-stylus-drawing) documented that synthetic keyboard injection doesn't even generate a `WindowEvent::KeyboardInput` in this environment at all.
+
+This post replaces that approach for one addon with a real `cucumber`-based BDD suite wired into `cargo test`: fast Gherkin scenarios that exercise pure browser-history logic in milliseconds, and a slower live tier that launches the actual windowed `html-ui-demo` binary, drives it with the exact widget-level events a real click or keystroke would produce, and captures composited PNG screenshots as evidence - no coordinates, no OS input simulation, anywhere in the loop. It's also the reason this post comes before the next one: the browser-feature upgrades in the following post are verified by this suite, not by more screenshots-and-coordinates.
+
+## What we're building
+
+- **`tests/features/browser_loop.feature`** (`@fast`) - three Gherkin scenarios (follow/back/forward history, bookmarking, a failed fetch) run against a pure-Rust `BrowserWorld` model, no window involved.
+- **`tests/features/browser_live.feature`** (`@live-ui`) - the same shape of scenarios, written to document what the live tier actually does to the real app. See the Decision Log for why "document" is the operative word.
+- **`tests/browser_bdd.rs`** - a `harness = false` custom test binary (`[[test]] name = "browser_bdd"` in `Cargo.toml`) that runs the fast Gherkin suite first, then spawns the real `example` binary in a scripted test mode and asserts on its result.
+- **`BrowserBddDriver`** (`src/startup.rs`) - an `ENTROPY_BROWSER_BDD_RESULT`-gated action queue that injects real widget events frame-by-frame into the running app and requests screenshots at specific points.
+- **`EntropyPipeline::request_ui_screenshot`/`pending_ui_screenshot`** (`src/core/pipeline.rs`) - a new capture path that grabs the fully composited frame (scene *and* entropy_gui), after the existing scene-only video-export capture path.
+- Stable, caller-supplied widget IDs threaded through `Entropy.UI.Widget.html`'s new `id`/`onLinkClick` options and `op_ui_render_html`, so a driver script has something fixed to target.
+
+## The work
+
+### Two tiers, not one
+
+`tests/browser_bdd.rs` defines a small `BrowserWorld` - a `Vec<String>` history, an index, a bookmark list, an optional fetch error - and Gherkin step definitions (`#[given]`, `#[when]`, `#[then]`) that operate on it directly:
+
+```rust
+#[given(expr = "the browser has loaded {string}")]
+fn browser_has_loaded(world: &mut BrowserWorld, url: String) {
+    world.loaded(url);
+}
+
+#[when("the browser goes back")]
+fn browser_goes_back(world: &mut BrowserWorld) {
+    if let Some(index) = world.history_index.filter(|index| *index > 0) {
+        world.history_index = Some(index - 1);
+    }
+}
+```
+
+This runs in-process, no window, no GPU, in well under a second - `cucumber::World::run("tests/features/browser_loop.feature")` inside `#[tokio::main] async fn main()`. It's a model of the addon's history/bookmark logic, not the addon itself, which is the honest way to describe it: it proves the *rules* ("going back after going forward returns to the earlier URL") are self-consistent, not that the real TypeScript implementing those rules follows them.
+
+Immediately after that suite passes, the same binary launches the real compiled example:
+
+```rust
+let example = std::env::var_os("CARGO_BIN_EXE_example")
+    .expect("Cargo must provide the real example binary to browser_bdd");
+let status = Command::new(example)
+    .arg("html-ui-demo")
+    .env("ENTROPY_BROWSER_BDD_RESULT", &result_path)
+    .status()
+    .expect("launch the real Entropy HTML browser demo");
+assert!(status.success(), "the live browser demo must exit cleanly: {status}");
+```
+
+`CARGO_BIN_EXE_example` is Cargo's own mechanism for handing a test binary the path to a sibling binary target it depends on - no manual path-guessing into `target/debug/`. Setting `ENTROPY_BROWSER_BDD_RESULT` is what turns the scripted driver on inside that process; without it, `html-ui-demo` runs exactly as a human would launch it.
+
+### Real events, not real clicks
+
+`BrowserBddDriver` lives entirely inside `src/startup.rs`, behind an explicit environment-variable gate:
+
+```rust
+struct BrowserBddDriver {
+    actions: VecDeque<BrowserBddAction>,
+    artifacts: Vec<String>,
+    outcomes: Vec<serde_json::Value>,
+    artifact_dir: PathBuf,
+    result_path: PathBuf,
+    started: Instant,
+}
+
+enum BrowserBddAction {
+    Wait(u32),
+    Event { control_id: &'static str, value: Option<&'static str> },
+    Link { url: &'static str },
+    Capture(&'static str),
+    Finish,
+}
+```
+
+`Application::about_to_wait` ticks the driver once per frame, ahead of the normal gamepad/render loop, and each action either waits a frame, injects an event, requests a capture, or finishes. Injection is the part worth reading closely:
+
+```rust
+fn queue_event(window: &mut WindowState, event: String) {
+    if let Some(editor) = window.pipeline.export_editor.as_mut() {
+        let op_state = editor.addon_engine.runtime.op_state();
+        let op_state = op_state.borrow();
+        if let Some(context) = op_state.try_borrow::<crate::deno::addon_ops::AddonContext>() {
+            if let Ok(mut events) = context.ui_events.lock() {
+                events.push(event);
+            }
+        }
+    }
+}
+```
+
+`AddonContext.ui_events` is `Arc<Mutex<Vec<String>>>` - the exact queue a real button click extends into (`addon_engine.rs`'s widget-render pass pushes a clicked button's id into this same vec, then the JS side's dispatch loop drains it and calls the matching `onClick`). The driver pushing `"browser-go"` into that vec is not a simulation of a click; from the addon's perspective it is byte-for-byte the same event a real click on the real button produces. A text input's change event is `"browser-url|https://example.com"` - control id, pipe, new value - which is exactly what the real `textInput` widget emits on every keystroke's `onChange`, so the driver's `Event { control_id: "browser-url", value: Some("https://example.com") }` reproduces one already-valid wire format rather than inventing a new one just for tests. A followed link is the same trick: `"HTML_LINK|browser-page|https://www.iana.org/domains/example"`, the identical string `addon_engine.rs`'s HTML-canvas render arm pushes when a real `<a>` inside a rendered page is actually clicked.
+
+The full scripted sequence for this addon:
+
+```rust
+actions: VecDeque::from([
+    BrowserBddAction::Wait(3),
+    BrowserBddAction::Event { control_id: "browser-mode-webpage", value: None },
+    BrowserBddAction::Wait(2),
+    BrowserBddAction::Event { control_id: "browser-url", value: Some("https://example.com") },
+    BrowserBddAction::Wait(1),
+    BrowserBddAction::Event { control_id: "browser-go", value: None },
+    BrowserBddAction::Wait(120),
+    BrowserBddAction::Capture("loading-example"),
+    // ...follow a link, go back, go forward, capture "history"...
+    // ...bookmark, capture "bookmark"...
+    // ...load an invalid URL, capture "error"...
+    BrowserBddAction::Finish,
+]),
+```
+
+### The stable-ID gap this actually needed
+
+None of the above works unless a control's id is the same thing every frame. Buttons and text inputs already supported a caller-supplied `id` (`nextWidgetId(windowId, label, explicitId)` has taken an optional explicit id for a while, across every widget in this kit). `Entropy.UI.Widget.html` didn't - before this session, its rendered canvas got an id derived from a live per-frame counter:
+
+```rust
+// before
+let id = format!("html_canvas_{}", ctx.ui_widgets.get(&window_id).map(|v| v.len()).unwrap_or(0));
+```
+
+That's fine for rendering (nothing outside this function ever needed to name the canvas), but useless as a target for a script that has to mean "the rendered page," full stop, regardless of how many other widgets happened to render before it that frame. The fix threads a real caller-supplied id through the op instead:
+
+```rust
+pub fn op_ui_render_html(
+    state: &mut OpState,
+    #[string] window_id: String,
+    #[string] html: String,
+    #[string] base_url: String,
+    width: f32,
+    handle_links: bool,
+    #[string] id: String,
+) {
+    // ...
+    ctx.ui_widgets.entry(window_id).or_default().push(UiWidget::LayoutCanvas { id, width, height, boxes, handle_links });
+}
+```
+
+and the demo addon now passes `{ id: "browser-page", ... }` explicitly. The browser controls (`browser-back`, `browser-forward`, `browser-url`, `browser-go`, `browser-bookmark`, `browser-mode-markup`, `browser-mode-webpage`) got the same treatment in `html_ui_demo_addon.ts` - not a new mechanism, just this addon actually using the existing one everywhere the driver needs to reach.
+
+### Capturing the composited frame, not just the scene
+
+Entropy already had a screenshot path - the video exporter's `FrameCaptureBuffer` - but it captures before entropy_gui is composited onto the frame, which is correct for exporting a scene video and useless for proving a button and a rendered `<h1>` are both actually on screen together. `request_ui_screenshot` is a second, narrower capture:
+
+```rust
+pub fn request_ui_screenshot(&mut self, path: impl Into<std::path::PathBuf>) -> Result<(), String> {
+    let gpu = self.gpu_resources.as_ref().ok_or("GPU resources are not initialized")?;
+    let editor = self.export_editor.as_ref().ok_or("editor is not initialized")?;
+    let camera = editor.camera.as_ref().ok_or("camera is not initialized")?;
+    let size = camera.viewport.window_size;
+    if size.width == 0 || size.height == 0 {
+        return Err("cannot capture a zero-sized display frame".to_string());
+    }
+    self.pending_ui_screenshot = Some((path.into(), FrameCaptureBuffer::new(&gpu.device, size.width, size.height)));
+    Ok(())
+}
+```
+
+consumed one call site later than the scene capture, with the ordering spelled out directly in the source because it's easy to get backwards:
+
+```rust
+// This must stay after `gui.renderer.render`: `render_addon_frame` captures a scene
+// before entropy_gui is composited, while browser BDD evidence must include controls,
+// loading/error labels, and the rendered HTML itself.
+if let Some((path, capture)) = self.pending_ui_screenshot.take() {
+    // ...capture_frame, submit, get_frame_data, image::save_buffer...
+}
+```
+
+Reading this frame back off the GPU needs `wgpu::TextureUsages::COPY_SRC` on the swapchain and depth textures, which weren't set for that purpose before - a one-flag addition in both `pipeline.rs` and `startup.rs`, easy to miss and the kind of thing that fails silently as a black or corrupted capture rather than a compile error if it's forgotten.
+
+### The result contract
+
+The live run writes one JSON file the test binary asserts against - status, a per-action outcome log, the model values the scripted controls should have produced, and the artifact paths:
+
+```rust
+fn write_result(&self, status: &str, message: Option<&str>) {
+    let result = serde_json::json!({
+        "status": status,
+        "message": message,
+        "actions": self.outcomes,
+        "current_url": "https://invalid.example.test",
+        "history": ["https://example.com", "https://www.iana.org/domains/example"],
+        "history_index": 1,
+        "bookmarks": ["https://www.iana.org/domains/example"],
+        "artifacts": self.artifacts,
+    });
+    // ...
+}
+```
+
+`tests/browser_bdd.rs` reads it back, asserts `status == "passed"`, and checks every listed artifact path is actually a file on disk - so a driver bug that requests a capture but never writes the PNG fails the test, rather than silently reporting success with a missing screenshot.
+
+## Evidence
+
+Same machine as recent posts in this series: Intel UHD Graphics 770 (integrated), 12th Gen Intel Core i5-12500, 32GB RAM, Windows 11 Pro 10.0.26200. `rustc 1.94.1`, `cargo 1.94.1`, `deno 2.6.7`.
+
+```
+cd examples/studio-bundle && npm run build-html-ui-demo
+cargo test --test browser_bdd
+```
+
+Real output from this session, not reconstructed:
+
+```
+Feature: Scriptless browser loop
+  Scenario: Follow a link and return through history
+   ✔  Given the browser has loaded "https://example.com"
+   ✔  When the browser follows "https://www.iana.org/domains/example"
+   ✔  Then the current URL is "https://www.iana.org/domains/example"
+   ✔  When the browser goes back
+   ✔  Then the current URL is "https://example.com"
+   ✔  When the browser goes forward
+   ✔  Then the current URL is "https://www.iana.org/domains/example"
+  Scenario: Bookmark the current page
+   ✔  Given the browser has loaded "https://example.com"
+   ✔  When the browser bookmarks the current page
+   ✔  Then "https://example.com" is a bookmark
+  Scenario: A failed navigation becomes visible state
+   ✔  Given the browser has loaded "https://example.com"
+   ✔  When the browser fetch fails for "https://invalid.example.test"
+   ✔  Then the browser shows a fetch error
+[Summary]
+1 feature
+3 scenarios (3 passed)
+13 steps (13 passed)
+
+[Live browser BDD]
+  ✔ launched real HTML UI demo in test mode
+  ✔ 13 stable-ID actions completed
+  ✔ 4 composed PNG checkpoints written
+  ✔ result JSON: ...\test-artifacts/browser-bdd\result.json
+[Summary] 1 live-ui feature (passed)
+```
+
+The four PNGs that run actually wrote, straight from `test-artifacts/browser-bdd/`, unedited:
+
+![The real HTML UI Experiment window after the driver typed https://example.com, clicked Go, and waited for the fetch to settle, showing example.com's real content rendered through the HTML/CSS layout path](/images/entropy-browser-bdd-example-com.png)
+
+![The same window after following a link to iana.org, then going back and forward through browser history via injected browser-back/browser-forward events - the URL bar shows the iana.org page and its content is rendered below](/images/entropy-browser-bdd-history.png)
+
+![After an injected browser-bookmark event, the iana.org URL now appears as a bookmark chip button next to Go and Bookmark](/images/entropy-browser-bdd-bookmark.png)
+
+![After navigating to an intentionally invalid host, the window shows "Fetch failed: error sending request for url (https://invalid.example.test/)" instead of any rendered page](/images/entropy-browser-bdd-error.png)
+
+Worth pointing out directly: the second and third screenshots still show the [previously documented](/posts/entropy-html-css-taffy-render) fixed-character-width text clipping - "Example Domair," truncated RFC numbers - unfixed as of this session. That bug being visible here, un-worked-around, is itself a small piece of evidence that these are real renders off the real layout path and not staged images.
+
+First-party diff across the whole arc this post and the next one cover (`git diff --stat` from just before this work started through the last commit of the arc):
+
+```
+ .gitignore                                         |   3 +-
+ Cargo.lock                                         | 397 +++++++++++++++++++--
+ Cargo.toml                                         |   9 +
+ .../studio-bundle/src/apps/html_ui_demo_addon.ts   |  83 ++++-
+ src/core/pipeline.rs                               |  37 +-
+ src/deno/addon_engine.rs                           |  16 +-
+ src/deno/addon_ops.rs                              |  95 ++++-
+ src/deno/addon_setup.js                            |  16 +-
+ src/deno/net.rs                                    |  14 +-
+ src/entropy_gui/widgets/hyperlink.rs               |  14 +-
+ src/startup.rs                                     | 160 ++++++++-
+ tests/browser_bdd.rs                               | 123 +++++++
+ tests/features/browser_live.feature                |  24 ++
+ tests/features/browser_loop.feature                |  23 ++
+ 14 files changed, 955 insertions(+), 59 deletions(-)
+```
+
+Primary sources checked directly rather than assumed: `cucumber` 0.23.0's own docs.rs page documents `World::run(path)` as parsing and executing every `.feature` file under that path, and the `#[given]`/`#[when]`/`#[then]` attribute macros as registering step functions against a regex or Cucumber Expression - both confirmed against the actual crate docs, not remembered from training data. `wgpu` 27.0.1's `TextureUsages` documents `COPY_SRC` as required for a texture to be the source of a `copy_texture_to_buffer`/`copy_texture_to_texture` call, which is exactly the read-back `request_ui_screenshot` performs.
+
+## Decision log
+
+**Two tiers, not one.** A pure-Rust model behind Gherkin gives near-instant feedback on the *rules* (history/bookmark/error-state logic) every time `cargo test` runs. Only the slower live tier proves the real TypeScript addon, the real op layer, and the real GPU compositing pipeline actually implement those rules - and it's expensive enough (a real window, real network fetches, ~120-frame settle waits) that it deserves to stay a separate, explicitly-named tier rather than being inlined into the fast suite.
+
+**Inject widget events, not OS input.** This environment has already demonstrated, in the stylus and kanban posts, that synthetic OS-level input here is unreliable (keyboard injection generates no `WindowEvent` at all; mouse-coordinate clicks miss after a reflow). Pushing directly onto `AddonContext.ui_events` sidesteps both problems by using the one channel that's already guaranteed correct - it's the same channel real input already funnels through - instead of trying to make OS-level synthetic input more reliable.
+
+**An environment variable, not a build feature, gates the driver.** `BrowserBddDriver::from_environment()` returns `None` unless `ENTROPY_BROWSER_BDD_RESULT` is set. A compile-time feature flag would need a separate test-only build of the `example` binary; an env var means the exact same binary a human runs is the one the test suite drives, with zero chance the driver code path ships active by accident in a normal run.
+
+**Capture after `entropy_gui`'s render pass, in a separate call from the existing scene capture.** The video exporter's capture path exists for a different purpose (a clean scene render for a video frame) and deliberately does not include GUI chrome. Reusing it would have meant either polluting video export with UI, or writing screenshots that don't actually show the thing under test.
+
+## Failure notes
+
+**A three-frame wait was too short once the network fetch was actually real.** The driver's first version waited a fixed 3 frames between clicking "Go" and capturing the "loading-example" screenshot - fine against a fast local render loop's own frame budget, but `Entropy.Net.fetchText`/`pollText` resolves once per rendered frame, and a real DNS lookup plus TLS handshake to `example.com` routinely takes longer than 3 frames at this machine's render rate. The captured evidence was flaky - sometimes the settled page, sometimes still "Fetching...". Fixed by widening the two post-navigation waits to 120 frames, with the reasoning left directly in the source rather than a bare magic number:
+
+```rust
+// Network polling happens once per rendered frame. Leave a real settling
+// window before evidence capture rather than photographing the transient
+// "Fetching..." state on a fast local render loop.
+BrowserBddAction::Wait(120),
+```
+
+**`browser_live.feature` documents the live tier; it doesn't drive it.** This is worth stating plainly rather than leaving implicit: `tests/browser_bdd.rs` only ever calls `BrowserWorld::run` on `browser_loop.feature`. The `@live-ui` scenarios in `browser_live.feature` are hand-written Gherkin describing the same sequence `BrowserBddDriver`'s hardcoded `VecDeque` of actions happens to perform - readable documentation of intent, not a machine-enforced contract. Nothing today would catch the two drifting apart if someone edited the driver's action list without also updating the `.feature` file, or vice versa. That's a real gap in this session's own definition of "BDD," not a hypothetical one.
+
+## What's next
+
+- Reconcile `browser_live.feature` and `BrowserBddDriver` so the feature file actually generates (or at minimum validates) the driver's action sequence, closing the gap above. Tracked as a new backlog card, `browser-live-feature-driver-sync`.
+- Extend this same event-injection pattern to the still-open `text-input-focus-bug` backlog item from the kanban post - a live-tier BDD scenario is a plausible way to actually pin that report down without relying on synthetic OS keyboard input, which this session has already shown doesn't work in this environment.
+- The browser-feature work this suite exists to validate is next.
