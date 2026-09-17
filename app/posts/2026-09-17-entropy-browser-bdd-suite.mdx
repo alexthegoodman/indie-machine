@@ -5,6 +5,7 @@ series: Entropy
 crate_versions:
   new:
     - cucumber = "0.23.0"
+    - gherkin = "0.16.0"
   unchanged:
     - wgpu = "27.0.1"
     - winit = "0.30.12"
@@ -25,7 +26,7 @@ This post replaces that approach for one addon with a real `cucumber`-based BDD 
 ## What we're building
 
 - **`tests/features/browser_loop.feature`** (`@fast`) - three Gherkin scenarios (follow/back/forward history, bookmarking, a failed fetch) run against a pure-Rust `BrowserWorld` model, no window involved.
-- **`tests/features/browser_live.feature`** (`@live-ui`) - the same shape of scenarios, written to document what the live tier actually does to the real app. See the Decision Log for why "document" is the operative word.
+- **`tests/features/browser_live.feature`** (`@live-ui`) - the actual source of the live tier's action sequence: `src/startup.rs` parses this file with the `gherkin` crate at startup, rather than a hand-written list that merely resembles it.
 - **`tests/browser_bdd.rs`** - a `harness = false` custom test binary (`[[test]] name = "browser_bdd"` in `Cargo.toml`) that runs the fast Gherkin suite first, then spawns the real `example` binary in a scripted test mode and asserts on its result.
 - **`BrowserBddDriver`** (`src/startup.rs`) - an `ENTROPY_BROWSER_BDD_RESULT`-gated action queue that injects real widget events frame-by-frame into the running app and requests screenshots at specific points.
 - **`EntropyPipeline::request_ui_screenshot`/`pending_ui_screenshot`** (`src/core/pipeline.rs`) - a new capture path that grabs the fully composited frame (scene *and* entropy_gui), after the existing scene-only video-export capture path.
@@ -84,9 +85,9 @@ struct BrowserBddDriver {
 
 enum BrowserBddAction {
     Wait(u32),
-    Event { control_id: &'static str, value: Option<&'static str> },
-    Link { url: &'static str },
-    Capture(&'static str),
+    Event { control_id: String, value: Option<String> },
+    Link { control_id: String, url: String },
+    Capture(String),
     Finish,
 }
 ```
@@ -109,23 +110,72 @@ fn queue_event(window: &mut WindowState, event: String) {
 
 `AddonContext.ui_events` is `Arc<Mutex<Vec<String>>>` - the exact queue a real button click extends into (`addon_engine.rs`'s widget-render pass pushes a clicked button's id into this same vec, then the JS side's dispatch loop drains it and calls the matching `onClick`). The driver pushing `"browser-go"` into that vec is not a simulation of a click; from the addon's perspective it is byte-for-byte the same event a real click on the real button produces. A text input's change event is `"browser-url|https://example.com"` - control id, pipe, new value - which is exactly what the real `textInput` widget emits on every keystroke's `onChange`, so the driver's `Event { control_id: "browser-url", value: Some("https://example.com") }` reproduces one already-valid wire format rather than inventing a new one just for tests. A followed link is the same trick: `"HTML_LINK|browser-page|https://www.iana.org/domains/example"`, the identical string `addon_engine.rs`'s HTML-canvas render arm pushes when a real `<a>` inside a rendered page is actually clicked.
 
-The full scripted sequence for this addon:
+### The feature file is the source, not a description of it
+
+The obvious way to build the above is a hardcoded `VecDeque` of actions, hand-written to match whatever `browser_live.feature` says in prose. That was this feature's first version, and it's a trap: nothing then stops the two from drifting apart the first time either one gets edited alone. The actual implementation instead parses the `.feature` file itself, with the `gherkin` crate `cucumber` already depends on, and turns its steps directly into the same `BrowserBddAction` values:
 
 ```rust
-actions: VecDeque::from([
-    BrowserBddAction::Wait(3),
-    BrowserBddAction::Event { control_id: "browser-mode-webpage", value: None },
-    BrowserBddAction::Wait(2),
-    BrowserBddAction::Event { control_id: "browser-url", value: Some("https://example.com") },
-    BrowserBddAction::Wait(1),
-    BrowserBddAction::Event { control_id: "browser-go", value: None },
-    BrowserBddAction::Wait(120),
-    BrowserBddAction::Capture("loading-example"),
-    // ...follow a link, go back, go forward, capture "history"...
-    // ...bookmark, capture "bookmark"...
-    // ...load an invalid URL, capture "error"...
-    BrowserBddAction::Finish,
-]),
+const BROWSER_LIVE_FEATURE_SOURCE: &str = include_str!("../tests/features/browser_live.feature");
+
+fn browser_bdd_actions_from_feature() -> VecDeque<BrowserBddAction> {
+    let feature = gherkin::Feature::parse(BROWSER_LIVE_FEATURE_SOURCE, gherkin::GherkinEnv::default())
+        .expect("tests/features/browser_live.feature must be valid Gherkin");
+    let mut actions: VecDeque<BrowserBddAction> = feature
+        .scenarios
+        .iter()
+        .flat_map(|scenario| scenario.steps.iter())
+        .filter_map(|step| browser_bdd_action_from_step(&step.value))
+        .collect();
+    actions.push_back(BrowserBddAction::Finish);
+    actions
+}
+```
+
+`step.value` is the step's text with its `Given`/`When`/`Then`/`And` keyword already stripped by `gherkin`'s parser - `I click "browser-go"`, not `When I click "browser-go"`. `browser_bdd_action_from_step` matches a handful of fixed shapes against that text and extracts their quoted arguments by splitting on `"` rather than pulling in a second parsing crate just for this:
+
+```rust
+fn browser_bdd_action_from_step(text: &str) -> Option<BrowserBddAction> {
+    if text == "the real browser demo is running in test mode" {
+        return None;
+    }
+    let quoted: Vec<&str> = text.split('"').skip(1).step_by(2).collect();
+
+    if let Some(rest) = text.strip_prefix("I advance ") {
+        let count = rest.trim_end_matches(" frames").trim_end_matches(" frame")
+            .parse::<u32>()
+            .unwrap_or_else(|_| panic!("browser_live.feature: not a frame count in {text:?}"));
+        return Some(BrowserBddAction::Wait(count));
+    }
+    if text.starts_with("I set ") && quoted.len() == 2 {
+        return Some(BrowserBddAction::Event { control_id: quoted[0].to_string(), value: Some(quoted[1].to_string()) });
+    }
+    if text.starts_with("I click ") && quoted.len() == 1 {
+        return Some(BrowserBddAction::Event { control_id: quoted[0].to_string(), value: None });
+    }
+    if text.starts_with("I capture ") && quoted.len() == 1 {
+        return Some(BrowserBddAction::Capture(quoted[0].to_string()));
+    }
+    if text.starts_with("I follow the HTML link through ") && quoted.len() == 2 {
+        return Some(BrowserBddAction::Link { control_id: quoted[0].to_string(), url: quoted[1].to_string() });
+    }
+    panic!("browser_live.feature: no driver action recognized for step {text:?}");
+}
+```
+
+Two details worth calling out. First, `include_str!` rather than a runtime `std::fs::read_to_string`: it makes cargo track the `.feature` file as a build dependency (edit it, rebuild, the new content is what runs) without needing to resolve a path relative to whatever directory the process happens to be launched from - the live tier is a subprocess launched by `tests/browser_bdd.rs`, so "current directory" isn't something to lean on. Second, the opening `Given the real browser demo is running in test mode` step is recognized and deliberately maps to `None` - a real precondition with nothing for the driver to do - while every other unrecognized string panics rather than being silently skipped. That distinction is the entire point: a typo in the feature file has to fail loudly, or parsing it would be theater. Confirmed by deliberately inserting a garbage step and rerunning: `thread 'main' panicked at src\startup.rs:...: browser_live.feature: no driver action recognized for step "I deliberately typo a step to verify the driver panics on it"`, which correctly failed `tests/browser_bdd.rs` too (`the live browser demo must exit cleanly: exit code: 101`) - not something left to trust blind, actually triggered and observed this session, then reverted.
+
+The feature file itself now reads as a real spec, not prose paraphrasing a separate implementation:
+
+```gherkin
+Scenario: Load example.com
+  Given the real browser demo is running in test mode
+  When I click "browser-mode-webpage"
+  And I advance 2 frames
+  And I set "browser-url" to "https://example.com"
+  And I advance 1 frames
+  And I click "browser-go"
+  And I advance 120 frames
+  Then I capture "loading-example"
 ```
 
 ### The stable-ID gap this actually needed
@@ -267,8 +317,8 @@ First-party diff across the whole arc this post and the next one cover (`git dif
 
 ```
  .gitignore                                         |   3 +-
- Cargo.lock                                         | 397 +++++++++++++++++++--
- Cargo.toml                                         |   9 +
+ Cargo.lock                                         | 398 +++++++++++++++++++--
+ Cargo.toml                                         |  13 +
  .../studio-bundle/src/apps/html_ui_demo_addon.ts   |  83 ++++-
  src/core/pipeline.rs                               |  37 +-
  src/deno/addon_engine.rs                           |  16 +-
@@ -276,14 +326,14 @@ First-party diff across the whole arc this post and the next one cover (`git dif
  src/deno/addon_setup.js                            |  16 +-
  src/deno/net.rs                                    |  14 +-
  src/entropy_gui/widgets/hyperlink.rs               |  14 +-
- src/startup.rs                                     | 160 ++++++++-
+ src/startup.rs                                     | 189 +++++++++-
  tests/browser_bdd.rs                               | 123 +++++++
- tests/features/browser_live.feature                |  24 ++
+ tests/features/browser_live.feature                |  54 +++
  tests/features/browser_loop.feature                |  23 ++
- 14 files changed, 955 insertions(+), 59 deletions(-)
+ 14 files changed, 1019 insertions(+), 59 deletions(-)
 ```
 
-Primary sources checked directly rather than assumed: `cucumber` 0.23.0's own docs.rs page documents `World::run(path)` as parsing and executing every `.feature` file under that path, and the `#[given]`/`#[when]`/`#[then]` attribute macros as registering step functions against a regex or Cucumber Expression - both confirmed against the actual crate docs, not remembered from training data. `wgpu` 27.0.1's `TextureUsages` documents `COPY_SRC` as required for a texture to be the source of a `copy_texture_to_buffer`/`copy_texture_to_texture` call, which is exactly the read-back `request_ui_screenshot` performs.
+Primary sources checked directly rather than assumed: `cucumber` 0.23.0's own docs.rs page documents `World::run(path)` as parsing and executing every `.feature` file under that path, and the `#[given]`/`#[when]`/`#[then]` attribute macros as registering step functions against a regex or Cucumber Expression - both confirmed against the actual crate docs, not remembered from training data. `wgpu` 27.0.1's `TextureUsages` documents `COPY_SRC` as required for a texture to be the source of a `copy_texture_to_buffer`/`copy_texture_to_texture` call, which is exactly the read-back `request_ui_screenshot` performs. `gherkin` 0.16.0's source (`Feature::parse`/`Step.value`, read directly rather than assumed) confirms `value` is the step text with its keyword already stripped and trimmed, which is what `browser_bdd_action_from_step`'s exact-text matching depends on.
 
 ## Decision log
 
@@ -294,6 +344,8 @@ Primary sources checked directly rather than assumed: `cucumber` 0.23.0's own do
 **An environment variable, not a build feature, gates the driver.** `BrowserBddDriver::from_environment()` returns `None` unless `ENTROPY_BROWSER_BDD_RESULT` is set. A compile-time feature flag would need a separate test-only build of the `example` binary; an env var means the exact same binary a human runs is the one the test suite drives, with zero chance the driver code path ships active by accident in a normal run.
 
 **Capture after `entropy_gui`'s render pass, in a separate call from the existing scene capture.** The video exporter's capture path exists for a different purpose (a clean scene render for a video frame) and deliberately does not include GUI chrome. Reusing it would have meant either polluting video export with UI, or writing screenshots that don't actually show the thing under test.
+
+**Parse the feature file with a small hand-rolled step mapper, not `cucumber`'s own step-execution engine.** The fast tier already proves `cucumber` itself can drive a `World` correctly; the live tier's `World` would have to be the running windowed app, and winit wants to own its event loop on a single thread in a way that doesn't compose cleanly with an async `cucumber::World`'s step functions without a real channel-based bridge between the two. `gherkin::Feature::parse` plus a plain `match`-shaped translator gets the load-bearing property this feature actually needed - the `.feature` file, not a hand-written list, decides what the live run does - without redesigning how the live tier's process is driven. Worth being precise about the distinction: `cucumber` doesn't execute `browser_live.feature`'s scenarios here, a small parser does; only `browser_loop.feature`'s fast tier gets cucumber's real step-execution engine.
 
 ## Failure notes
 
@@ -306,10 +358,10 @@ Primary sources checked directly rather than assumed: `cucumber` 0.23.0's own do
 BrowserBddAction::Wait(120),
 ```
 
-**`browser_live.feature` documents the live tier; it doesn't drive it.** This is worth stating plainly rather than leaving implicit: `tests/browser_bdd.rs` only ever calls `BrowserWorld::run` on `browser_loop.feature`. The `@live-ui` scenarios in `browser_live.feature` are hand-written Gherkin describing the same sequence `BrowserBddDriver`'s hardcoded `VecDeque` of actions happens to perform - readable documentation of intent, not a machine-enforced contract. Nothing today would catch the two drifting apart if someone edited the driver's action list without also updating the `.feature` file, or vice versa. That's a real gap in this session's own definition of "BDD," not a hypothetical one.
+**`browser_live.feature` documented the live tier; it didn't drive it - until reconciling the two surfaced real drift between them.** The first version of this suite had exactly the gap the rest of this post has already fixed: `tests/browser_bdd.rs` only ever ran `BrowserWorld::run` on `browser_loop.feature`, and `browser_live.feature`'s `@live-ui` scenarios were hand-written Gherkin describing what `BrowserBddDriver`'s separately hand-written `VecDeque` happened to do. Actually wiring the feature file up as the driver's real input (rather than just asserting the intent to do so) meant first making the two agree, and they didn't: the feature file said `And I advance 3 frames` after clicking "Go," while the driver's own code - fixed earlier this session, after the timing failure noted above - actually waited 120 frames; and the feature file never mentioned clicking into "webpage" mode at all, an action the driver always performed first. Both were silent drift, caught only because closing the gap required reading both sources side by side instead of trusting either one. The corrected feature file's frame counts and steps are the ones quoted earlier in this post, and `cargo test --test browser_bdd` re-run after the fix produced the byte-for-byte same `result.json` and the same four PNGs as before - the parser change is load-bearing for *how* the sequence is produced, not a behavior change in what it does.
 
 ## What's next
 
-- Reconcile `browser_live.feature` and `BrowserBddDriver` so the feature file actually generates (or at minimum validates) the driver's action sequence, closing the gap above. Tracked as a new backlog card, `browser-live-feature-driver-sync`.
 - Extend this same event-injection pattern to the still-open `text-input-focus-bug` backlog item from the kanban post - a live-tier BDD scenario is a plausible way to actually pin that report down without relying on synthetic OS keyboard input, which this session has already shown doesn't work in this environment.
+- A real `cucumber::World` driving the live tier directly (see the decision log above) remains the more architecturally correct version of this, if a future session decides the channel-based bridge to winit's event loop is worth building.
 - The browser-feature work this suite exists to validate is next.
