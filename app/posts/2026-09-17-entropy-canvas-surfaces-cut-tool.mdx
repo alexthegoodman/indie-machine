@@ -1,0 +1,154 @@
+---
+title: "Canvas Surfaces, Part 4: Cutting Real Holes with a Painted Alpha Mask"
+date: 2026-09-17
+series: Entropy
+crate_versions:
+  unchanged:
+    - wgpu = "27.0.1"
+    - winit = "0.30.12"
+    - transform-gizmo = "0.8.0"
+    - deno_core = "0.332.0"
+  edition: "2024"
+  os: "Windows 11 Pro 10.0.26200 (only platform currently tested)"
+  tooling:
+    - "deno 2.6.7 CLI (bundles the addon's TypeScript to JS; not a Cargo dependency)"
+repo_link: https://github.com/alexthegoodman/entropy-engine
+---
+
+[Part 3](/posts/entropy-canvas-surfaces-shapes) made Canvas Surfaces paintable planes, boxes, cylinders, and spheres. That still left a very physical limitation: ink could decorate a surface, but it could not remove one. A hand-drawn window in a wall was still an opaque rectangle with darker pixels in its middle.
+
+This pass adds Cut mode. Draw a loop on a surface and it removes those canvas pixels from the render, then makes the input ray pass through the same missing pixels. It is deliberately an alpha-mask cut, not a Boolean mesh operation. That distinction is what kept it an addon feature rather than a new geometry system.
+
+## What changed
+
+- Cut is the third interaction mode beside Draw and Move.
+- It uses the existing screen-to-surface triangle raycast, so the path follows a plane, bent plane, box face, cylinder, or sphere in the same UV space as painting.
+- A closed path gets an even-odd scanline fill. The fill zeroes alpha in a persistent `cutMask`.
+- The fragment shader discards samples below alpha 0.5, leaving a depth-correct hole rather than a tinted transparent patch.
+- The raycast consults the same alpha result. Painting, selection, and later cuts pass through an existing hole instead of hitting invisible geometry.
+- Scene save/load already serializes the mask, so no new persistence format was necessary.
+
+The implementation remains in `examples/studio-bundle/src/apps/canvas_surface_addon.ts`. Build and run it with:
+
+```text
+cd examples/studio-bundle
+npm run build-canvas-surfaces
+cd ../..
+cargo run --bin example -- canvas-surface-demo
+```
+
+## One mask, three consumers
+
+The important decision is that this is not three similar systems for rendering, hit testing, and persistence. It is one byte per canvas pixel:
+
+```typescript
+interface Surface {
+    canvas: Uint8Array;  // derived RGBA texture upload
+    layers: PaintLayer[];
+    cutMask: Uint8Array; // 255 = surface exists, 0 = cut away
+    // ...
+}
+```
+
+`compositeLayers` combines visible paint layers with the cut mask into `canvas`; when Cut mode fills a polygon, it writes zero to both the canonical mask and the derived composite alpha. The derived write makes the visible update immediate. The mask is the source that survives later recomposition, undo/redo, and a saved scene.
+
+The scene format did not need a version bump. Version 2 already stores the paint layers and `cutMaskBase64`; loading an older scene without a mask reconstructs one from the old RGBA canvas alpha. That is a useful compatibility property here: a hole is artwork state, not a special mesh type.
+
+## A cut path is just paint input with a different output
+
+Part 2 replaced the original ray-plane shortcut with `raycastSurfaceMesh`. It tests the cached, world-space triangles, interpolates their UVs, and returns a canvas-space hit. Cut mode deliberately reuses that exact route:
+
+```typescript
+function continueCut(x: number, y: number): void {
+    if (!cutTarget || cutPath.length === 0) return;
+    const ray = Entropy.Camera.screenToWorldRay(x, y);
+    const hit = raycastSurfaceMesh(cutTarget, ray.origin, ray.direction);
+    if (!hit) return;
+
+    const point = { px: hit.px, py: hit.py };
+    paintCutGuideSegment(cutTarget, cutPath[cutPath.length - 1], point);
+    cutPath.push(point);
+
+    if (cutPath.length >= CUT_MIN_POINTS &&
+        Math.hypot(point.px - cutPath[0].px, point.py - cutPath[0].py) <= CUT_CLOSE_DISTANCE) {
+        finishCut(cutTarget, cutPath);
+        cutTarget = null;
+        cutPath = [];
+    }
+}
+```
+
+The guide is a thin red brush stroke. It is feedback only. It uses an explicit `CUT_GUIDE_BRUSH`, rather than the active user brush, so cutting cannot quietly change a painter's selected tool or layer.
+
+Closing precisely with a stylus is an unnecessarily strict requirement, so pointer-up is also a valid finish. If a path has at least three points, `finishCut` joins the last point to the first with an implicit straight segment and fills it. A near-return to the start instead auto-finishes after eight recorded points. The thresholds are `16` canvas pixels and `8` points at the current 768x768 canvas resolution.
+
+## Even-odd fill is enough
+
+The polygon lives in canvas pixels already. There is no reason to triangulate it, modify the surface mesh, or ask the GPU to build geometry. For each scanline, the fill finds its edge intersections, sorts them, and fills pairs:
+
+```typescript
+function floodFillCutAlpha(s: Surface, path: CutPoint[]): void {
+    for (let y = y0; y <= y1; y++) {
+        const yc = y + 0.5;
+        const xs: number[] = [];
+        for (let i = 0; i < path.length; i++) {
+            const a = path[i], b = path[(i + 1) % path.length];
+            if ((a.py <= yc && b.py > yc) || (b.py <= yc && a.py > yc)) {
+                xs.push(a.px + ((yc - a.py) / (b.py - a.py)) * (b.px - a.px));
+            }
+        }
+        xs.sort((m, n) => m - n);
+        for (let i = 0; i + 1 < xs.length; i += 2) {
+            for (let x = Math.max(0, Math.round(xs[i])); x <= Math.min(CANVAS_RES - 1, Math.round(xs[i + 1])); x++) {
+                s.cutMask[y * CANVAS_RES + x] = 0;
+                s.canvas[(y * CANVAS_RES + x) * 4 + 3] = 0;
+            }
+        }
+    }
+    s.dirty = true;
+}
+```
+
+This gives ordinary even-odd behavior for a hand-drawn loop, including a self-crossing path. It also bounds work to the path's Y extent, not the whole 768x768 texture.
+
+## `discard` makes the missing pixels real to the renderer
+
+The shader samples the composite texture before lighting and throws away a cut pixel:
+
+```wgsl
+let sampled = textureSample(surface_texture, surface_sampler, in.tex_coords);
+if (sampled.a < 0.5) {
+    discard;
+}
+```
+
+WGSL specifies that `discard` is a fragment-stage operation which prevents that fragment output from being processed downstream in the render pipeline. [The WGSL specification's discard section](https://www.w3.org/TR/WGSL/#discard-statement) is the relevant primary source. That is materially different from returning a low-alpha color in this forward pipeline: no surface fragment is emitted for the masked pixel, so whatever is behind the surface can render normally.
+
+The CPU-side raycast must agree with the shader or interaction becomes nonsensical. A visually empty region that still captures paint input is worse than an opaque surface. The common threshold is checked immediately after UV interpolation:
+
+```typescript
+function isCanvasAlphaCut(s: Surface, px: number, py: number): boolean {
+    const x = Math.min(CANVAS_RES - 1, Math.max(0, Math.round(px)));
+    const y = Math.min(CANVAS_RES - 1, Math.max(0, Math.round(py)));
+    return s.canvas[(y * CANVAS_RES + x) * 4 + 3] < 128;
+}
+```
+
+`raycastSurfaceMesh` rejects a triangle hit at that UV and keeps looking. On stacked planes this means the next surface behind the hole wins, which is the interaction model the image implies.
+
+## Decision log
+
+- **Alpha mask instead of Boolean geometry.** A mesh Boolean would need topology changes, cap faces, UV decisions for those newly exposed faces, and new behavior for every existing shape. The addon already owns a persistent canvas texture, so a mask gives the intended plane-level cut with no engine change.
+- **Reuse `raycastSurfaceMesh`.** A cut tool that uses a separate projection would drift from paint on bends and curved primitives. UV coordinates from the existing triangle raycast make it another canvas operation.
+- **One mask for rendering and picking.** Rendering the hole but continuing to hit-test it violates the tool's own visual contract. A single alpha threshold prevents that split-brain state.
+- **Pointer-up closes an incomplete loop.** Auto-close makes stylus use forgiving without sacrificing a visible guide path. An open cut would otherwise look like it worked while silently doing nothing.
+
+## Limits
+
+- This is a masked hole, not a tunnel. On a box, cylinder, or sphere, cutting a front face does not generate interior walls or remove the opposite face. Those meshes remain single-sided and backface-culled, so the view continues to whatever is behind the object.
+- The GLB export path has not been changed to declare an alpha mask material. A canvas cut is preserved in the addon's own saved scene, but exported GLB transparency is a separate follow-up.
+- The raycast samples the alpha mask nearest-neighbor at 768x768. That matches the existing canvas resolution and keeps the test cheap, but it is not subpixel analytic geometry.
+
+## What's next
+
+Canvas Surfaces now has paint, layers, transformation, bend, four primitive forms, and non-destructive-looking cutout composition. It can rest here. The next Canvas Surfaces feature should be the existing backlog item for addon-owned surface/stroke grouping and nested groups, but not immediately.
