@@ -1,0 +1,259 @@
+---
+title: "Canvas Surfaces, Part 5: Groups, Pivots, and Keyframed Clips"
+date: 2026-09-18
+series: Entropy
+crate_versions:
+  unchanged:
+    - wgpu = "27.0.1"
+    - winit = "0.30.12"
+  used_this_pass:
+    - gherkin = "0.16"
+    - serde_json = "1"
+  edition: "2024"
+  os: "Windows 11 Pro 10.0.26200 (only platform currently tested)"
+  tooling:
+    - "deno 2.6.7 CLI (bundles the addon's TypeScript to JS; not a Cargo dependency)"
+    - "vitest 4.1.11 (fast BDD tier, pool=threads)"
+repo_link: https://github.com/alexthegoodman/entropy-engine
+---
+
+[Part 4](/posts/entropy-canvas-surfaces-cut-tool) left Canvas Surfaces as a set of independent, paintable primitives: plane, box, cylinder, sphere, each with its own bend, its own cut mask, no relationship to any other surface in the scene. A hand-drawn character was still a pile of unrelated boxes. There was no way to say "this hand belongs to this arm," and nothing that could move over time at all.
+
+This pass adds an addon-owned hierarchy - groups, pivots, parenting - and named animation clips that key any node's transform or any stroke's reveal progress. None of it touches the engine. It is TypeScript matrix math plus a JSON scene format, sitting entirely inside `examples/studio-bundle/src/apps/canvas_surfaces/`.
+
+## What changed
+
+- A `Group` is just an id, a name, a parent, and a pivot-aware `Transform`. Surfaces and groups both parent onto groups.
+- `canvas_animation.ts` (102 lines, no dependencies) owns the math: 4x4 row-major matrices, `transformMatrix`, `groupWorld` (walks a node's ancestors and composes their matrices), and `animatedTransform` (samples a clip's keyframe tracks on top of a node's base transform).
+- Reparenting a node preserves its exact world-space pose, including shear inherited from a scaled ancestor, by solving for a correction matrix rather than decomposing and reapplying position/rotation/scale.
+- A `Clip` holds `Track`s keyed by `(targetId, channel)`. A target is either a group/surface (position, rotation, scale channels) or an individual retained stroke (`progress`, `visible`).
+- Strokes are now retained as replayable stamp lists, not just baked pixels, so a stroke's own reveal can be keyframed independently of everything else on its surface.
+- The scene format bumps to version 3: groups, clips, and per-stroke identity round-trip through save/load. `validateScene` gained `validateAnimation`, which rejects parent cycles, dangling target ids, and out-of-range keys before any of it reaches the live scene.
+- Preview (scrubbing or playing a clip) never touches editing state. Stopping playback restores the exact pre-preview pixels and pose, and the scene's dirty flag is untouched by scrubbing alone.
+
+Build and run it:
+
+```text
+cd examples/studio-bundle
+npm run build-canvas-surfaces
+cd ../..
+cargo run --bin example -- canvas-surface-demo
+```
+
+## The hierarchy is four functions, not a scene graph
+
+`canvas_animation.ts` doesn't introduce a scene graph type on the engine side. `Entropy.Model.createMesh` still has no transform of its own; every surface is still repositioned by recomputing world-space vertices and pushing them with `Entropy.Mesh.updateVertices`, exactly as it has since Part 1. What's new is that "the surface's own transform" is now composed with its ancestors' transforms before that push happens:
+
+```typescript
+export function transformMatrix(t: Transform): Matrix {
+    const [x, y, z] = t.rotation, [cx, cy, cz] = [Math.cos(x), Math.cos(y), Math.cos(z)], [sx, sy, sz] = [Math.sin(x), Math.sin(y), Math.sin(z)];
+    const rx = [1,0,0,0, 0,cx,-sx,0, 0,sx,cx,0, 0,0,0,1];
+    const ry = [cy,0,sy,0, 0,1,0,0, -sy,0,cy,0, 0,0,0,1];
+    const rz = [cz,-sz,0,0, sz,cz,0,0, 0,0,1,0, 0,0,0,1];
+    const scale = identity(); scale[0] = t.scale[0]; scale[5] = t.scale[1]; scale[10] = t.scale[2];
+    const m = multiply(multiply(multiply(ry, rx), rz), scale);
+    const offset = point(m, t.pivot);
+    for (let i = 0; i < 3; i++) m[i * 4 + 3] = t.position[i] + t.pivot[i] - offset[i];
+    return m;
+}
+
+export function groupWorld(groups: Group[], id: string | null, clip: Clip | null = null, time = 0, seen = new Set<string>()): Matrix {
+    if (!id) return identity();
+    if (seen.has(id)) throw new Error("Groups cannot contain themselves.");
+    seen.add(id);
+    const g = groups.find(g => g.id === id);
+    if (!g) throw new Error("Parent group is missing.");
+    return multiply(groupWorld(groups, g.parentId, clip, time, seen), multiply(g.frame, transformMatrix(animatedTransform(g, g.id, clip, time))));
+}
+```
+
+A surface's final world matrix is `groupWorld(parent) * frame * transformMatrix(animatedTransform(self))` - the addon computes this fresh every time geometry needs rebuilding:
+
+```typescript
+function surfaceMatrix(s: Surface): Matrix {
+    const clip = preview ? currentClip() : null;
+    return multiply(groupWorld(groups, s.parentId, clip, playhead), multiply(s.frame, transformMatrix(animatedTransform(surfaceTransform(s), s.id, clip, playhead))));
+}
+```
+
+`clip` is only non-null while `preview` is true. Outside of preview, `animatedTransform` samples nothing and every surface renders its plain editing-pose transform. That single ternary is the entire boundary between "animation system" and "editor."
+
+## A pivot move that doesn't visually move the object
+
+Setting a pivot changes where rotation happens, but an artist doesn't want the object to jump when they drag the pivot slider. The fix is to measure the position delta a pivot change would introduce and cancel it out immediately:
+
+```typescript
+slider(`node_pivot_${axis}`, `Pivot ${axis}`, node.pivot[index], -20, 20, value => {
+    beginEdit("Set pivot");
+    const before = transformMatrix("yaw" in node ? surfaceTransform(node) : node);
+    node.pivot[index] = value;
+    const after = transformMatrix("yaw" in node ? surfaceTransform(node) : node);
+    for (let i = 0; i < 3; i++) node.position[i] += before[i * 4 + 3] - after[i * 4 + 3];
+    refreshGeometry();
+});
+```
+
+`transformMatrix`'s own pivot-offset math (`m[i*4+3] = position[i] + pivot[i] - offset[i]`) already guarantees the object doesn't move when the pivot is set fresh on an object at rest; this slider handler just applies the same correction on every incremental drag so the object stays visually anchored while the pivot point itself walks across it.
+
+## Reparenting without decomposing
+
+The one function in this file I was most careful about is `reparentFrame`. Grouping and ungrouping mid-scene must not visibly move anything, even when an ancestor is scaled (a plain "recompute local transform from new-parent-relative position/rotation" approach loses shear introduced by a non-uniform-scaled ancestor). So `reparentFrame` doesn't decompose anything - it solves for a raw correction matrix that makes `new_parent_world * frame == old_world` hold exactly:
+
+```typescript
+export function reparentFrame(groups: Group[], id: string, oldParent: string | null, parent: string | null, frame: Matrix): Matrix {
+    let cursor = parent;
+    while (cursor) {
+        if (cursor === id) throw new Error("Groups cannot contain themselves.");
+        const g = groups.find(g => g.id === cursor);
+        if (!g) throw new Error("Parent group is missing.");
+        cursor = g.parentId;
+    }
+    return multiply(inverse(groupWorld(groups, parent)), multiply(groupWorld(groups, oldParent), frame));
+}
+```
+
+The cycle check walks the candidate parent's own ancestor chain first and throws before any matrix work happens, which is what makes "a parent cannot become a child of its descendant" a caught, recoverable error (surfaced to the artist as a status label) instead of infinite recursion inside `groupWorld`.
+
+## Visibility is a hold, not a fade
+
+`Track.channel` includes `"visible"`, used to key a stroke fully on or off (a smile that shouldn't exist until a character opens its eyes, for instance). Every other channel interpolates linearly between keys; `visible` deliberately does not:
+
+```typescript
+export function sample(track: Track, time: number): number {
+    const keys = track.keys;
+    if (!keys.length) throw new Error("Animation track has no keys.");
+    if (time <= keys[0].time) return keys[0].value;
+    for (let i = 1; i < keys.length; i++) if (time < keys[i].time) {
+        const a = keys[i - 1], b = keys[i];
+        return track.channel === "visible" ? a.value : a.value + (b.value - a.value) * (time - a.time) / (b.time - a.time);
+    }
+    return keys[keys.length - 1].value;
+}
+```
+
+A stroke's `progress` channel still interpolates (it drives how many of its recorded stamps get replayed, giving a stroke that draws itself in over time), but `visible` holds the previous key's value until the next one, exactly the behavior a boolean-shaped property should have. This one branch is the entire distinction, and it's covered directly by a BDD scenario ("Stroke visibility holds until its next key instead of fading") rather than left as an assumption.
+
+## Preview reuses the exact production render path, and never writes back
+
+The riskiest property of this feature is also the one most worth getting right: scrubbing a clip must never leave the scene in a different state than before scrubbing started. `previewAt` snapshots every layer's pixels once, on entry into preview, then replays strokes into that same buffer at whatever progress/visibility the sampled tracks say for the current playhead:
+
+```typescript
+function previewAt(time: number): void {
+    finishStroke(); resetGesture(); history.commit();
+    if (!preview) for (const s of surfaces) for (const layer of s.layers) editingPixels.set(layer.id, layer.pixels);
+    preview = true; playhead = Math.max(0, Math.min(currentClip()?.duration ?? 1, time));
+    if (activeGizmoId) { Entropy.Gizmo.hide(activeGizmoId); activeGizmoId = null; }
+    for (const s of surfaces) {
+        const tracks = (currentClip()?.tracks ?? []).filter(t => s.strokes.some(st => st.id === t.targetId));
+        if (!tracks.length) continue;
+        const key = JSON.stringify(tracks.map(t => [t.targetId, t.channel, sample(t, playhead)]));
+        if (previewArtworkKeys.get(s.id) === key) continue;
+        previewArtworkKeys.set(s.id, key); replayArtwork(s);
+    }
+    refreshGeometry();
+}
+
+function stopPreview(): void {
+    if (!preview) return;
+    preview = false; playing = false; previousTime = null;
+    for (const s of surfaces) {
+        let changed = false;
+        for (const layer of s.layers) if (editingPixels.has(layer.id)) {
+            changed ||= layer.pixels !== editingPixels.get(layer.id);
+            layer.pixels = editingPixels.get(layer.id)!;
+        }
+        if (changed) composeSurface(s);
+    }
+    editingPixels.clear(); previewArtworkKeys.clear(); refreshGeometry();
+}
+```
+
+No group, surface, or stroke field is ever mutated by preview. `surfaceMatrix` and `replayArtwork` only *read* `yaw`/`pitch`/`roll`/`position`/`progress` through `animatedTransform`/`sample`, which take a clip and a time and return a new value without writing it anywhere. `stopPreview` restores the exact pre-preview `Uint8Array` references. This is also why scrubbing doesn't dirty the scene (`sceneIsDirty` compares saved state against live state, and live state literally hasn't changed) - a real, load-bearing consequence of the read-only design, not a separate flag someone has to remember to clear.
+
+## Testing: two tiers, one of them reused wholesale from the browser BDD work
+
+[The browser BDD post](/posts/entropy-browser-bdd-suite) built a `BrowserBddDriver` in `src/startup.rs` that parses a `.feature` file with the `gherkin` crate and replays each step as a widget-level event string onto the real running app, capturing composited-frame PNGs along the way. This pass needed the same capability for the canvas demo (`cargo run --bin example -- canvas-surface-demo`) and reused that driver directly rather than writing a second one. The change is small: a `canvas: bool` field selects which environment variable, which embedded `.feature` file, and which timeout to use.
+
+```rust
+fn browser_bdd_actions_from_feature(source: &str) -> VecDeque<BrowserBddAction> {
+    let feature = gherkin::Feature::parse(source, gherkin::GherkinEnv::default())
+        .expect("tests/features/browser_live.feature must be valid Gherkin");
+    // ...
+}
+```
+
+`gherkin::Feature::parse<S: AsRef<str>>(input: S, env: GherkinEnv) -> Result<Feature, ParseError>` is `gherkin` 0.16.0's own public signature (confirmed against the crate's source at `~/.cargo/registry/src/.../gherkin-0.16.0/src/lib.rs:233`), and it doesn't care which feature file's text it's handed - the only reason this generalized so cleanly is that the driver was already parameterized on the parsed action queue rather than hardcoded to browser step text.
+
+`tests/features/canvas_live.feature` drives an entire session against the real, on-screen app: name a scene, group a surface, set its pivot, key a rotation at two times, capture a screenshot, return to the editing pose, capture again, save, reload, scrub to the animated frame, capture again, then repeat the same save/load/scrub/capture sequence against the built-in "Drawn character" example. `tests/canvas_bdd.rs` spawns the compiled binary as a real subprocess, waits for it to exit, then asserts on both the six resulting PNGs and the actual JSON the addon persisted to disk - not just that the driver's queued events all ran.
+
+The second tier, `examples/studio-bundle/tests/canvas_animation_bdd.test.ts`, is a fast, no-window vitest suite that parses `tests/features/canvas_animation.feature` with a small hand-rolled Gherkin-subset reader and drives the addon's real, unmodified `onInit`/`onRender`/`onUpdatePlus` callbacks against a fake `Entropy` global (in-memory meshes, textures, buffers, UI widgets, `Entropy.IO`/`Entropy.GameState` persistence). Eleven scenarios cover grouping, pivots, reparenting, cycle rejection, stroke identity across save/load, undo/redo of every action above, and the "preview is not an edit" property directly:
+
+```typescript
+"the scene is still saved": () => { render(); expect(labels).toContain("Untitled scene"); expect(labels).not.toContain("Untitled scene *"); },
+"the preview advances to its end": () => { update(10); update(11); update(12); render(); expect(sliders.get("clip_time")!.value).toBe(2); expect(captions.get("clip_play")).toBe("Play"); },
+```
+
+Ran this session, against the pinned toolchain, with no edits to the tests:
+
+```text
+$ tsc --project tsconfig.canvas.json --noEmit
+(clean)
+
+$ vitest run tests/canvas_animation_bdd.test.ts --pool=threads
+ Test Files  1 passed (1)
+      Tests  11 passed (11)
+   Duration  4.26s
+
+$ cargo test --release --test canvas_bdd
+test canvas_live_feature ... ok
+test result: ok. 1 passed; 0 failed; finished in 6.95s
+```
+
+## Evidence
+
+The live-tier test writes its six captured PNGs and the addon's actual persisted `GlobalGameState_*.json` files to `test-artifacts/canvas-bdd-<pid>/`. I inspected both this session.
+
+Playhead at the keyed rotation, the single grouped plane swung up around its pivot:
+
+![A single white plane surface rotated up and to the right around a pivot point, mid-wave](/images/entropy-canvas-surfaces-p5-arm-wave.png)
+
+Clicking "Return to editing pose" lands the same surface back at the identical flat, unrotated position - the exact geometry check `tests/canvas_bdd.rs` makes in code (`group["rotation"] == [0, 0, 0]` after `animation_stop`, with the comment "preview must not overwrite the editing pose") is visible directly in the screenshot pair:
+
+![The same plane surface back at its flat, upright editing pose after Return to editing pose was clicked](/images/entropy-canvas-surfaces-p5-editing-pose.png)
+
+The built-in "Drawn character" example at `clip_time = 0`: a blank face, a resting arm overlapping the torso.
+
+![A blocky drawn character with an unmarked face and its right arm resting against its side](/images/entropy-canvas-surfaces-p5-character-before.png)
+
+At `clip_time = 1`, the arm has swung up and the smile and eyes are now inked in. Two independent tracks - `arm.roll` and `smile.progress` - driven by one clip, changing two unrelated things (a rigid rotation and a stroke reveal) at once, which is the entire point of keying a group's transform and a stroke's progress off the same timeline:
+
+![The same character with its arm raised in a wave and a smiling face now drawn in](/images/entropy-canvas-surfaces-p5-character-wave-smile.png)
+
+After Save Scene, Load Scene, and setting `clip_time` back to `1`, the reloaded scene reproduces the identical waving-and-smiling pose:
+
+![The character reloaded from a saved scene file, showing the identical waving pose and smiling face](/images/entropy-canvas-surfaces-p5-character-reloaded.png)
+
+The persisted JSON backs this up directly - `tests/canvas_bdd.rs` asserts the reloaded `Drawn character` scene has exactly 6 surfaces, 2 groups (with the second group's `parentId` pointing at the first), a clip named `"Wave and smile"` with 2 tracks, and a `Face` surface with 3 strokes (two eyes, one smile) - all read back from disk, not from the driver's own memory of what it queued.
+
+## Decision log
+
+- **Hand-rolled row-major matrices, no `glam`/`nalgebra`.** The rest of Canvas Surfaces (raycasting, patch geometry, quaternion bridge to `Entropy.Gizmo`) already works this way; a second math convention living only in the animation module would be a worse trade than 102 dependency-free lines.
+- **A correction matrix for reparenting instead of decompose/recompose.** Decomposing a matrix into position/rotation/scale and rebuilding it loses shear from a non-uniformly-scaled ancestor. Solving `inverse(newParentWorld) * oldWorld` preserves whatever the old pose actually was, sheared or not, with no special case.
+- **`visible` holds, everything else lerps.** A boolean-shaped property that fades has no well-defined "half true" state a renderer can act on; holding avoids inventing one.
+- **Preview never writes to live state.** The alternative - apply sampled values directly to `s.yaw`/`s.position`/etc. and restore them on stop - needs a second, parallel "what was it before preview" tracking mechanism that duplicates what a snapshot already gives for free, and it risks a lost restore on a crash or an early return leaving the scene silently animated.
+- **Reused the browser BDD driver instead of writing a canvas-specific one.** The driver's actual behavior (spawn the compiled example, feed the JS runtime widget-event strings, request composited PNG captures, write a `result.json`) has nothing browser-specific about it once the step-to-action mapping and the feature source are parameters. Two demos now share one proven, already-debugged event-injection path instead of two paths that could silently drift apart.
+
+## Failure notes
+
+Both tiers passed on the first run this session, and the diff introducing this feature carries no leftover debug `println!`/`console.log` calls or reverted instrumentation, unlike several earlier phases of this series. The one real, load-bearing rough edge is visible directly in the code rather than caught by an assertion: `Entropy.Gizmo`'s translate handles only understand a flat `position` field, so `syncGizmoToSelection` explicitly disables the gizmo for any surface that is grouped or has a non-identity `frame` (`s.parentId || JSON.stringify(s.frame) !== JSON.stringify(identity())`), and for edge-snapping the same guard applies to `setSurfacePosition`. A grouped part is repositioned with the Local x/y/z sliders under "Groups & animation," not the 3D gizmo, until the gizmo is taught to drag through a parent's world matrix.
+
+## Limits
+
+- The gizmo/snapping gap above is real and currently permanent, not a TODO with no owner - it's an explicit `if` guard, not a missing feature that silently misbehaves.
+- Bend and the cut mask (Part 2 and Part 4) are still per-surface state, not animatable. A cut hole or a bend amount can't be keyed on a clip's timeline.
+- A clip's tracks are flat: there's no clip-within-clip composition or blending between two clips. `playCanvasClip` switches a single active clip outright.
+- `validateAnimation` caps groups, clips, and tracks per scene at 128 each and strokes per surface at 10,000 - generous for a hand-authored scene, but a hard ceiling, not a soft warning.
+
+## What's next
+
+Canvas Surfaces now has paint, layers, four primitive shapes, bend, a cut tool, and an addon-owned hierarchy with keyframed clips - everything the original Part 1 backlog named except the gizmo/hierarchy gap noted above. The next candidate is closing that gap: teaching the gizmo to drag a grouped or reparented node through its accumulated parent matrix instead of only ever writing a flat position.
