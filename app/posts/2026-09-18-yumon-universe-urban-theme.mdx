@@ -1,0 +1,101 @@
+---
+title: "Yumon Universe: A Downtown Simulation Grounded in What the Model Trained On"
+date: 2026-09-18
+series: Yumon
+crate_versions:
+  unchanged:
+    - burn = "0.20.1" (features: autodiff, wgpu, cuda)
+    - cubecl = "0.9.0" (features: wgpu, cuda)
+    - three-d = "0.17.1" (features: egui-gui; renders via glow/glutin - OpenGL, not wgpu)
+    - clap = "4.5.60" (features: derive)
+  edition: "2024"
+  os: "Windows 11 Pro (64-bit), build 10.0.26200"
+  backend: "Rendering: OpenGL via three-d's own glow/glutin stack. Inference: burn's Wgpu backend. Two separate backends in one process, not one shared GPU path."
+repo_link: https://github.com/alexthegoodman/yumon-pet
+---
+
+Yumon Universe (`src/universe.rs`, `src/bin/yumon_universe.rs`) drops ten Yumons into a seeded procedural world and lets them decide what to do next from a plain-text reply their own checkpoint generates. No prior post has covered it, so this one does two things: explains why it works the way it does, and covers today's addition - a second, business-district variation of the same world, `--theme urban`.
+
+## The world, and why it only needs a Language checkpoint
+
+Every object in the world - a house, a tree, a bench - is a `Place` with a `Kind`. Each tick, a Yumon standing near one gets asked something like:
+
+```
+The ball is east. Would you like to play with it?
+```
+
+That string goes straight to the checkpoint as a prompt. Whatever comes back - "Yes, let's play!", "No thanks", "I'll water it" - gets parsed by `infer_reply` (`src/universe.rs`), a hand-written phrase matcher: a fixed list of refusal words returns rest immediately, a fixed list of verbs maps to a `Behavior`, and the target `Place` has to be both nearby and compatible with that behavior (`Play` only ever resolves against a `Kind::Ball`, `Tend` only against a `Kind::Garden`, and so on). No target, no compatible verb, or any hint of refusal, and the Yumon just rests. This is a heuristic bridge, not a trained classifier - the repo's `TrainingStage::Language` checkpoints were never trained on this schema at all, they just generate plain sentences (`src/brain/samples.rs`: `Language, // phase 1: plain sentence -> sentence`).
+
+That's the interesting part. This repo already has a second stage, `Structured` (`// phase 2: sentence -> JSON`), built for exactly this kind of use case - the [previous post](/posts/2026-09-10-yumon-loss-vs-quality) ran checkpoints trained on it, generating `{"action": ..., "emotion": ..., "reply": ...}`. Universe doesn't use it. Every question and reply in Universe stays plain text, and the "structure" - which object, which verb, whether it's grounded in something actually nearby - happens entirely in Rust after generation, not in the model's output.
+
+The reason is context length. I measured it directly rather than assuming it: encoding the same message and reply as a `Structured`-shaped JSON blob versus as plain Language-stage text, with the repository's own tokenizer (`yumon_bpe`, loaded via `BpeTokenizer::load`):
+
+```rust
+let structured = serde_json::to_string(&serde_json::json!({
+    "memories": Vec::<serde_json::Value>::new(),
+    "message": "The budget is east. Would you like to maintain it?",
+    "action": "maintain",
+    "emotion": "content",
+    "reply": "Sure, I'll maintain it.",
+}))?;
+let language = "The budget is east. Would you like to maintain it? Sure, I'll maintain it.";
+```
+
+Run as a throwaway test this session (`cargo test --lib universe::tests::temp_measure_structured_vs_language_token_cost -- --nocapture`, then deleted - it isn't part of the repo, just how the number below was produced):
+
+```
+structured tokens: 61 | language tokens: 20
+```
+
+Same message, same reply, same intent - three times the tokens once it's wrapped in `{"memories":[],"message":...,"action":...,"emotion":...,"reply":...}` quoting and keys. Universe's default checkpoint (`256h_16l_4a_32len_b8_Moe_e4_k1_Language`) has a 32-token context window; at the Structured stage's overhead, that budget mostly goes to punctuation before it reaches any actual content. Getting the same downstream benefit - a concrete action, tied to a concrete object, out of a short context window - by parsing plain language on the Rust side instead of training the model to emit a schema is the whole design bet Universe makes, and it's why it can only load `TrainingStage::Language` checkpoints (`brain_worker` in `yumon_universe.rs` rejects anything else with an explanation in the sidebar).
+
+## Two towns, one world model
+
+Today's work was a second theme for the same simulation: `--theme urban`, a downtown business district standing next to the existing suburban neighborhood. The constraint going in was that it be thematic all the way through - not just re-skinned buildings, but the actual nouns and verbs sent to the Yumon as prompts.
+
+The world has nine `Kind`s, and every suburban object maps onto exactly one downtown counterpart:
+
+| Slot | Suburban | Urban | Verb offered |
+|---|---|---|---|
+| House (anchor) | house | business | visit |
+| Shop (anchor) | shop | market | visit |
+| Tree | tree | debt | look at |
+| Flowers | flowers | money | collect |
+| Bench | bench | coffee | rest by |
+| Ball | ball | product | play with |
+| Garden | garden | budget | maintain (was: tend) |
+| Mailbox | mailbox | deal | look at |
+| Pond | pond | brand | look at |
+
+`Kind::radius`, the layout algorithm, and `infer_reply`'s behavior-compatibility rules (`Play` only resolves against `Kind::Ball`, etc.) never change between themes - only `Kind::noun` and, for one slot, the verb, differ. A test (`urban_theme_renames_every_kind_without_changing_behavior`) confirms every `Kind` gets a distinct urban noun and that the `Garden`/budget slot still resolves to `Behavior::Tend` even with a different verb; another (`seeded_world_is_varied_and_safe`) diffs a suburban and an urban world generated from the same seed and asserts they produce the identical sequence of `Kind`s - same town, two labels.
+
+The urban nouns aren't invented office vocabulary. They're picked by literal word frequency in `archive/synthetic/business.txt` - the actual file this checkpoint's Language stage trains on (`load_stage_data` in `src/brain/train.rs` loads it directly, alongside `bible.txt` and, confusingly, a file named `universe.txt` that's generic astronomy Q&A and has nothing to do with this simulation despite the name):
+
+```
+business: 613 occurrences   budget: 48
+market:   126               deal:    31
+debt:     132                brand:  115
+money:    141                coffee:  3
+product:  142
+```
+
+`coffee` is the one outlier - three occurrences against everything else in the 31-613 range - kept anyway because nothing else in the corpus fits "rest by" as well as a coffee break does; the `yumon-universe-coffee-noun-frequency` backlog card tracks re-checking that call once a checkpoint exists to test against. Every other pick is both the behaviorally-correct noun for its slot (`money` for "collect", `budget` for "maintain") and one of the most common nouns in the file the model was actually trained on. A permanent test, `urban_nouns_are_present_in_the_training_corpus`, reads `business.txt` at test time and fails if any urban noun stops appearing in it - so a future rename can't quietly drift back to a word the checkpoint has no real grounding in.
+
+## Evidence
+
+Same seed (`--seed 7`), same layout, two themes, both actually launched and screenshotted on this machine:
+
+![Yumon Universe's suburban neighborhood at seed 7 - green lawns, pitched-roof houses, a pond at the center, trees, benches, and mailboxes arranged in a 4x4 grid of streets, with a sidebar listing ten resting Yumons](/images/yumon-universe-suburban-neighborhood.png)
+
+![The same seed under --theme urban - the window title reads "Yumon Universe — Downtown," the same 4x4 street grid now holds glass office towers and market stalls with red awnings, a plaza medallion sits where the pond was, and small red notice-board flags and bar-chart shapes replace trees and gardens](/images/yumon-universe-urban-downtown.png)
+
+The sidebar in both shots shows `Could not load checkpoints/brain/256h_16l_4a_32len_b8_Moe_e4_k1_Language: The system cannot find the path specified. (os error 3)`. That's the documented fallback, not a bug - no trained Language checkpoint is installed in this environment, and Universe is built to still render and let you look around without one; only autonomous decisions need a working checkpoint. Every Yumon in both screenshots is idle ("resting") for that reason. The layout match between the two screenshots - same tower/stall positions, same plaza-medallion/pond placement - is the visual confirmation that only the skin changed, matching what `seeded_world_is_varied_and_safe` checks in code.
+
+`scenery()` (`src/bin/yumon_universe.rs`) gives each urban slot its own primitives rather than recoloring the suburban ones: a flat-roofed glass tower with window bands and a rooftop utility block for `business`; the shop's exact awning shape, just cooler-toned, for `market` (a market stall's awning already reads correctly, no new geometry needed); a red notice board on a post for `debt`; two stacked bills and a coin for `money`; the bench's own counter shape recolored with a cup on top for `coffee`; a labeled crate for `product`; three ascending bars on a base plate for `budget`; a signing-podium folder for `deal`; and two concentric discs standing in for a plaza logo medallion where the pond was.
+
+## Decision log
+
+- **One `Kind` enum, not a theme-specific object model.** Adding a second, parallel enum of urban-only object types would have doubled the surface area of `infer_reply`'s compatibility rules and the layout algorithm for no real benefit - the slots are structurally identical between themes, only their labels and rendering differ. `Kind::noun(self, theme)` and a small `verb_and_behavior` match keep both themes on one tested code path.
+- **Frequency in the actual training file, not semantic guessing.** A checkpoint has no real representation for a word it has near-zero exposure to during training. Picking urban nouns by their count in `business.txt` - the file `load_stage_data` actually feeds the Language stage - checks that grounding directly instead of assuming a plausible-sounding office word would work just as well.
+- **`market` reuses the shop's exact geometry.** A market stall and a small retail shop share a real-world silhouette (a low building with a visible awning); building a second bespoke shape would have been pure duplication for a slot where the existing one was already correct.
+- **Theme lives in `universe.rs`, not the CLI layer.** `Neighborhood::generate` needs to know the theme to pick tints and nouns during generation itself, so `Theme` derives `clap::ValueEnum` directly in the world-model module (`clap` is already an unconditional dependency of this crate) rather than being a bin-only wrapper type that gets translated at the CLI boundary.
