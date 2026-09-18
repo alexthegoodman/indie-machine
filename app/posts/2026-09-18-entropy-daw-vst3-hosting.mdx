@@ -1,0 +1,224 @@
+---
+title: "Hosting Real VST3 Plugins in Entropy's DAW: Vital, Massive, and Maschine 3"
+date: 2026-09-18
+series: Entropy
+crate_versions:
+  added:
+    - vst3-host = "0.9.0" (vendored in vendor/vst3-host with two patches, default-features = false)
+  used_this_pass:
+    - vst3 = "0.3.0" (transitive, vst3-host's COM bindings)
+    - windows = "0.58" (two new features: Win32_Graphics_Gdi, Win32_Storage_Xps)
+  unchanged:
+    - rodio = "0.21.1"
+    - cucumber = "0.23.0"
+    - gherkin = "0.16"
+    - winit = "0.30.12"
+    - deno_core = "0.332.0"
+  edition: "2024"
+  os: "Windows 11 Pro 10.0.26200 (only platform currently tested)"
+  hardware: "Intel Core i5-12500 (6 cores / 12 threads), 32 GB RAM, Realtek Audio output"
+  toolchain: "rustc 1.94.1"
+  plugins_tested:
+    - "Vital (Vital Audio), Massive (Native Instruments), Maschine 3 (Native Instruments), MIDI Guitar 3 (Jam Origin, scanned only). Plugin versions were not recorded."
+  tooling:
+    - "deno CLI (bundles the addon's TypeScript to JS; not a Cargo dependency)"
+repo_link: https://github.com/alexthegoodman/entropy-engine
+---
+
+[The last DAW post](/posts/entropy-daw-mixing-bus) gave every track a persistent mixing bus with live gain, mute, solo, and a delay/reverb chain. Every sound on those buses still came from the same place: a handful of `fundsp` oscillators and drum voices baked into the engine. This post replaces that on a per-track basis with real VST3 plugins. A track can now be Vital, Massive, or Maschine 3, play through its own bus like any built-in voice, open the plugin's own editor window, and come back with the same patch after a restart.
+
+## What we're building
+
+- `src/audio/vst3.rs` (new) - scanning, loading, a `Vst3Source` that is a `rodio::Source` pulling blocks out of a plugin, MIDI note-on/note-off, state save and restore, editor window control, parameters.
+- `src/audio/vst3_capture.rs` (new) - screenshots of a plugin's native editor window, because the engine's own screenshot path reads back the composited wgpu frame and a plugin editor is a separate Win32 window that never appears in it.
+- `Entropy.Vst3` (new, `src/deno/vst3_ops.rs`) - `scan`, `load`, `noteOn`, `openEditor`, `pollState`, `setParameter`, and friends, typed in `addon.d.ts`.
+- The DAW addon: an Instrument panel per track, notes routed to the plugin instead of the built-in voice, drum rows mapped to General MIDI notes, project save and restore, and two chat tools (`daw_list_vst3_plugins`, `daw_set_track_instrument`).
+- Two BDD tiers: a headless one that renders real audio from the installed plugins, and a live one that drives the real DAW binary twice and screenshots the plugin editors.
+
+Not in this post: Jam Origin's MIDI Guitar 3. It is on this machine, the scan sees it, and it is deliberately not hosted yet. It is an audio effect that emits MIDI, which needs an audio input stream and MIDI routing between tracks that instruments do not.
+
+## The work
+
+### Choosing what to build on
+
+Three options showed up on crates.io. `vst3` 0.3.0 is raw generated bindings for the whole API: writing the loader, the host application object, the event lists, the parameter-change queues, the plug frame, and the component handler myself. `rack` 0.4.8 hosts VST3 and Audio Units, but its package excludes `rack-sys/external/vst3sdk/` and it has a native `rack-sys` component with a build script; I did not try it. `vst3-host` 0.9.0 is pure Rust on top of `vst3`, roughly 28,000 lines including all of the above, plus a Win32 editor window.
+
+I ran a short probe before committing to it. It loaded Vital and Massive and produced real audio (peaks 0.357 and 0.247 for a middle C), which settled it. Its README also says "Windows/Linux window code compiles but isn't yet runtime-verified", which turned out to be worth taking seriously. See the failure notes.
+
+### Three threads, each with one job
+
+A plugin is not one object you can pass around. Loading Maschine 3 on a worker thread and then calling into it from the main thread died with `STATUS_ACCESS_VIOLATION` (0xc0000005) in the probe. Loaded and used on one thread, the same code was fine. So the design pins things:
+
+- **Main thread**: load, unload, editor window, state, parameters. The registry of loaded instruments is a `thread_local!` in `audio::vst3`, not a global, so the affinity is in the type of storage rather than a comment.
+- **Audio thread**: `Vst3Source::next` renders one 512-frame block at a time. It only ever `try_lock`s.
+- **Shared**: a small struct of atomics and one command queue.
+
+The plugin sits in an `Arc<Mutex<Plugin>>` because `vst3-host`'s `PluginWindow` needs exactly that. The audio side treats the lock as a hint, not a right:
+
+```rust
+// src/audio/vst3.rs
+let plugin = self.plugin.as_ref().expect("source used after release");
+let Ok(mut p) = plugin.try_lock() else {
+    self.carry = cmds;
+    self.out.iter_mut().for_each(|s| *s = 0.0);
+    self.shared.skipped_blocks.fetch_add(1, Ordering::Relaxed);
+    return;
+};
+```
+
+If the main thread holds the lock (opening a big editor can take a few hundred milliseconds), that block is silence and the pending note commands carry over to the next block. The audio thread never waits.
+
+The source is added to the track's existing `TrackBus` mixer through a new `AudioEngine::add_track_source`. That is the whole integration with the mixing bus from the last post: gain, mute, solo, and the delay/reverb chain apply to a plugin with no extra code, because the plugin is just another source in that track's `rodio::mixer::Mixer`. A `Vst3Source` never reports itself finished, so it also avoids the empty-mixer wrinkle that post described.
+
+### Notes
+
+The DAW's sequencer fires `Vst3.noteOn(trackId, { note, velocity, duration })`. The note-on is queued and applied at offset 0 of the next block. The note-off is different: the duration is converted to frames, counted down in the audio thread, and sent at its exact sample offset inside the block where it falls due, sorted, since the VST3 event list is expected in ascending `sampleOffset` order.
+
+Synth tracks send the row's pitch. Drum tracks send a General MIDI drum map (Kick 36, Snare 38, Hihat 42, Clap 39, Tom 45), which is also where Maschine's pads start by default.
+
+### Tearing down on the right thread
+
+Unloading has an ordering problem. The main thread holds one `Arc` to the plugin and the audio thread holds another (inside the source). Whoever drops last runs the plugin's teardown, and it must not be the audio thread.
+
+```rust
+// src/audio/vst3.rs
+impl Drop for Vst3Source {
+    fn drop(&mut self) {
+        self.plugin.take();
+        self.shared.source_released.store(true, Ordering::Release);
+    }
+}
+```
+
+`Vst3Instrument::unload` clears `alive`, waits up to 750 ms for `source_released`, then drops its own `Arc` on the main thread. If the audio thread never lets go, it leaks the plugin and says so, on the reasoning that a leak is survivable and a teardown crash is not. `unload_all` runs from winit's `exiting` hook so nothing is left to a thread-local destructor at process exit.
+
+### The editor, and getting its pixels
+
+`vst3-host`'s `PluginWindow` creates a top-level Win32 window and attaches the plugin's `IPlugView` to it. Winit's message loop already pumps the thread, and the editors paint under it; a per-frame `service_all()` hook handles the deferred resize and DPI work and notices when the user closes the window.
+
+Screenshots of it use `PrintWindow(PW_RENDERFULLCONTENT)` into a bitmap, saved as PNG, with a screen-copy fallback if the result has fewer than 8 distinct colours. `PrintWindow` was enough for all three plugins; the fallback has not been exercised.
+
+### State, so a patch survives a restart
+
+A plugin's sound lives inside the plugin. The DAW stores the blob `save_state` returns, base64, on the track (`track.instrument.state`). It is captured when the editor closes and after a parameter edit has been left alone for a second, and the addon collects it each frame with `pollState`. On load it is handed back to the plugin before processing starts.
+
+This needed two fixes to the DAW that had nothing to do with plugins, both found by the live test below: the standalone `daw` example had no data directory, so `Entropy.IO.save` and `load` silently did nothing, and the addon never called `IO.load` at startup in the first place. It does now, clearing the saved effect ids first since they are per-session handles into the effect registry.
+
+## Evidence
+
+### Headless tier
+
+`tests/vst3_bdd.rs` (`harness = false`, cucumber, one scenario at a time on one thread) pulls `Vst3Source` exactly as the audio thread would, with no audio device and no window, against the real installed plugins. `tests/features/vst3_host.feature`:
+
+```gherkin
+Scenario Outline: A plugin parameter changes what comes out
+  Given I load the VST3 plugin "<plugin>"
+  When I play MIDI note 60 at velocity 100 for 0.5 seconds
+  And I render 1 seconds of audio
+  And I remember the peak as "default"
+  And I set the parameter "<parameter>" to 0.2
+  And I render 0.1 seconds of audio
+  And I play MIDI note 60 at velocity 100 for 0.5 seconds
+  And I render 1 seconds of audio
+  Then the peak is below 0.6 times the remembered peak "default"
+```
+
+`cargo test --release --test vst3_bdd -j 2`: 12 scenarios, 69 steps, all passing, three consecutive runs. It covers the scan (Vital, Massive, Maschine 3 as instruments; MIDI Guitar 3 as an effect with MIDI output), note-to-audio with a decaying tail, a parameter changing the output, a state round trip into a fresh instance, unloading while another thread is pulling audio, and speed.
+
+| Plugin | Peak, middle C, velocity 100 | Volume parameter at 0.2 | State size | 10 s of audio rendered in | Realtime factor (3 runs) |
+|---|---|---|---|---|---|
+| Vital | 0.357 | 0.062 | 178,889 bytes | 47.6 / 51.6 / 50.6 ms | 210x / 194x / 198x |
+| Massive | 0.242 | 0.043 (see below) | 2,752 bytes | 42.2 / 43.2 / 43.1 ms | 237x / 231x / 232x |
+| Maschine 3 | 0.000 (no kit loaded) | n/a | 68,843 bytes | 107.2 / 105.4 / 99.4 ms | 93x / 95x / 101x |
+
+Same machine and command for every row; the timings are one `take(10 s of samples)` on the test thread with a note held for 2 seconds. They are correctness-adjacent numbers on my hardware, not a claim about other machines. The spread across runs is within 10 percent, so no run was discarded.
+
+### Live tier
+
+`tests/vst3_live.rs` launches the real `example daw` binary twice against a clean data folder. The first run is scripted by `tests/features/vst3_live.feature` through the same Gherkin-driven in-engine driver the browser and canvas suites use: scan, put Vital on the Bass track, Massive on a new synth track, Maschine on the Drums track, open each editor, play notes, run the transport for 2.5 seconds. Two new driver steps were needed: `I wait N milliseconds` (plugin audio is rendered by the audio thread in wall-clock time, not per app frame) and `I capture the plugin editor "name"`.
+
+The assertions read three independent things. First, the audio thread's own counters, which the driver writes into `result.json`:
+
+| Plugin | Blocks rendered | Blocks skipped (lock held) | Notes received | Lifetime peak |
+|---|---|---|---|---|
+| Vital | 1461 | 3 | 6 | 0.3631 |
+| Massive | 1079 | 7 | 1 | 0.2595 |
+| Maschine 3 | 608 | 21 | 15 | 0.0000 |
+
+Second, the project the addon persisted to `DAW.json`: each track holds its plugin's name and a non-trivial state blob (Vital 238,516 base64 characters, Massive 3,660, Maschine 3 91,792). Third, the screenshots. The second run starts a fresh process with the same data folder and the assertion is that all three plugins load themselves back, Vital plays again, and its editor opens.
+
+The three plugin editors, captured from their own windows:
+
+![Vital's editor in its own Win32 window titled Vital - VST3, showing the oscillator, envelope, LFO and filter panels of the Init Preset](/images/entropy-daw-vst3-vital-editor.png)
+
+Captured at 1916x1152 with 3,421 distinct colours.
+
+![Massive's editor with three oscillators, two filters, the master section and the macro control panel, preset field reading NO PRESET LOADED](/images/entropy-daw-vst3-massive-editor.png)
+
+1214x890.
+
+![Maschine 3's editor showing its Welcome dialog over the kit library list](/images/entropy-daw-vst3-maschine-editor.png)
+
+1283x716. This is a fresh Maschine instance: its first thing to show is the Welcome dialog, and the reason Maschine's peak above is 0.0 is visible behind it, a library of kits and none loaded. Getting sound out of it means choosing a kit here, which is what the saved state then carries.
+
+The DAW with Vital on the Bass track, mid-note. The meter is the addon reading `Vst3.takePeak`, and -9.8 dB is consistent with the 0.3631 lifetime peak above:
+
+![The DAW's mixer and Instrument panels with Vital selected on the Bass track, status line reading Vital loaded in 204ms with 2983 parameters, and the output level reading -9.8 dB](/images/entropy-daw-vst3-vital-playing.png)
+
+And the transport running with Maschine on the Drums track and its playhead in the piano roll, load time on the status line (1217 ms):
+
+![The DAW with Maschine 3 selected on the Drums track, status line reading Maschine 3 loaded in 1217ms with 2225 parameters, and the drum piano roll with its playhead near the start](/images/entropy-daw-vst3-transport-playing.png)
+
+`cargo test --release --test vst3_live -j 2 -- --nocapture`: 1 test, 35.5 seconds. `canvas_bdd` and `browser_bdd` were re-run after the shared driver changed and still pass.
+
+## Decision log
+
+**`vst3-host` over raw bindings.** The alternative was owning the whole host side of the API. `vst3-host` already had the pieces I would have written badly first: event lists, parameter queues, the state streams, the Win32 window with DPI handling. The cost is that Windows was the least-tested target, and it showed. I ended up vendoring it.
+
+**`Arc<Mutex<Plugin>>` with `try_lock`, not its lock-free `RealtimePluginRunner`.** The runner takes ownership of the plugin on the audio thread and exposes MIDI, parameter, and tempo commands over a ring buffer. It does not expose the editor or state, and `PluginWindow` wants the shared mutex anyway. The price is that opening an editor can cost the audio thread a few silent blocks; the live run recorded 3 to 21 skipped blocks per plugin, and I have not listened to whether they are audible.
+
+**The plugin's audio is a source in the track's bus, not a separate output.** This is what makes gain, mute, solo and the effect chain work for free, and it is why the plugin's lifetime is tied to a `TrackBus`: `load` fails if the track has no bus yet.
+
+**Note-off in frames on the audio side, note-on at the block boundary.** Counting the hold time in rendered frames keeps note lengths exact even when the audio thread hiccups. Note-on could have used the same machinery but the sequencer still lives in the JS frame loop, so it would be exact to the block and still wrong by the frame jitter. Block-quantizing it honestly is less misleading than pretending. It is on the board.
+
+**Vendoring `vst3-host` instead of forking on GitHub.** Two small changes, tracked in `vendor/VENDORED.md`, wired in with `[patch.crates-io]`. The point is to be able to delete the directory once upstream has an equivalent fix.
+
+**`thread_local!` registry.** The crash above is a property of how these plugins behave, so the storage should refuse to be reached from another thread rather than rely on convention.
+
+## Failure notes
+
+**The scan found nothing.** `Vst3Host::discover_plugins()` on this machine returned zero plugins, and `scan_plugin_paths()` returned an empty list, with `C:\Program Files\Common Files\VST3` in its default paths. Every plugin there is a single `.vst3` DLL file, not a bundle directory, and the crate's directory walk did not pick them up. I did not chase the exact line. `audio::vst3::scan_plugins` does its own walk (files or directories ending in `.vst3`, one subfolder deep) and calls `get_plugin_info` on each path, which works: Vital 140 ms, Massive 141 ms, Maschine 3 1.94 s, MIDI Guitar 3 86 ms.
+
+**Massive and Maschine 3 would not open their editors.** The DAW's status label read `editor failed to open: Failed to get view size` for Massive; Maschine 3 also failed to open (I did not capture its message). `vst3-host`'s `open_editor` calls `getSize` before `attached` and aborts if it errors. The `IPlugView` header in Steinberg's `pluginterfaces` describes `getSize` as returning "the size of the platform representation of the view", and describes `attached` as the call where that representation is created. So an error beforehand is defensible plugin behavior, and the host has to tolerate it. The patch keeps a default rect when the early call fails, and `PluginWindow::open` re-reads the size from the attached view and resizes the window. Massive attached at 1214x890, Maschine at 1283x716. That is the whole difference between two of three plugins working and all three.
+
+**Loading Maschine on another thread crashed.** Described above. I did not investigate why, only that it reproduces (`0xc0000005`) and that loading and using it on one thread does not. The consequence is that loading blocks the frame for as long as the plugin takes: Vital 204 ms in the live run, Maschine 3 1217 ms, and MIDI Guitar 3 took 10.35 s to load in the probe. There is no loading state yet.
+
+**Massive smooths parameter changes, so ordering in the test mattered.** My first version of the parameter scenario set `MASTER-VOLUME` to 0.2 and struck the next note in the same block. The peak barely moved (0.2403 to 0.2354) and the scenario failed. In a probe:
+
+| Change delivered before the note | Peak after setting 0.2 (was 0.257 to 0.274 at 0.5) |
+|---|---|
+| Same block | 0.2368 |
+| 1 block earlier | 0.1416 |
+| 4 blocks earlier | 0.0427 |
+
+I expect this is the plugin's own smoothing rather than anything in the host, but I did not confirm that. The state round-trip scenario failed for a related reason: Massive read back 0.5 after a save and reload because no block had been processed between the parameter set and the save, and I expect a parameter change reaches Massive's processor only through `process`. Both scenarios now render 0.1 seconds after the change, which is what the running app always does anyway. Vital showed neither problem.
+
+**The DAW transport had never run in the standalone app.** The live counters showed one note per plugin after 2.5 seconds of transport, all of them from the preview button. `addon.onUpdate` registers under the addon's own name, and the frame loop ticks whichever single name is current: `"DAW"` inside Studio's DAW workspace, but `"Global"` in a standalone `EntropyApp` (`render_addon_frame.rs`). A plain `onUpdate` never fires there. The keyframe-editor post found this once already. The addon now registers its tick under both names, which cannot double-fire since only one name is current on a given frame. After that, Vital received 6 notes and Maschine 15 in the same feature.
+
+**`#[op2]` does not like a type named `Value`.** Returning `serde_json::Value` failed with `Invalid return type`; the macro treats a type literally named `Value` as a V8 value. A `type Json = serde_json::Value;` alias fixed it.
+
+**Linking every bin in parallel hit `LNK1318` (PDB limit).** `cargo test --test <name>` builds all of the crate's binaries, and one of them (`ml_graph_bench`) failed to link on the first attempt with `Unexpected PDB error; LIMIT (12)`. Unrelated to this change; `-j 2` avoids it.
+
+**Two things I saw and did not chase.** Massive prints `cannot resolve resource: resources_ENG` and Maschine `cannot resolve resource: lib_ENG` to stdout when they load; audio and editors were fine. And in the screenshots, the Mixer and Instrument headers, which I pinned open with an id and `defaultOpen`, draw their titles almost fully faded, while the closed Transport and Effects headers are crisp. It is on the board, undiagnosed.
+
+## What is not done
+
+- Loading blocks the frame, and the scan runs in-process, so a plugin that crashes during its own init takes the DAW with it. `vst3-host` has an isolated probe for this; it is not wired in.
+- WAV export skips VST3 tracks and says so in the status line.
+- Note-ons are block-quantized (11.6 ms at 44.1 kHz), on top of the sequencer's per-frame jitter.
+- Maschine 3 is only tested as far as loading, opening, being driven, and saving state. Its BDD peak is 0.0 because nothing is loaded in it.
+- Closing an editor with its own title-bar X is handled in the code (`closed_by_user`) but not exercised by either test tier; the tests close editors with the DAW's button. The debounced state capture after a parameter edit is likewise untested: the saved states in the live run were all captured on editor close.
+
+## What's next
+
+MIDI Guitar 3 is the next plugin: an audio input stream into its input bus, and its output MIDI routed into another track's instrument, which needs the load time addressed first. Before that, a Maschine kit saved as a fixture so the BDD can assert real audio from a General MIDI kick, and sample-accurate scheduling so a pattern's timing is decided on the audio thread rather than in the JS frame loop.
