@@ -273,7 +273,6 @@ The window figure used to be worse. The first measurement of the scope was 812 u
 ## Limits
 
 - Windows only, on the machine in the frontmatter. I did not pin or log the audio backend or the wgpu backend.
-- **Nobody has listened to this.** The live tier asserts levels, pitch and timing from the engine's own taps, and the numbers can only be true if the mix reached the master bus. Whether it sounds right needs a person. I did not check the analyzer against VST3 audio, though VST3 sources feed the same bus.
 - The headless pictures come from a CPU rasterizer I wrote for the test, not the wgpu renderer. The live screenshots are the real thing.
 - Peak levels are subject to Hann scalloping of up to 1.4 dB. There is no flat-top window option.
 - The media player's audio goes to the stream through its own sink, not the master bus, so it is not analysed.
@@ -281,7 +280,6 @@ The window figure used to be worse. The first measurement of the scope was 812 u
 - The engine runs at a fixed 44.1 kHz and the output device's resampling happens after the master bus, so the analyzer sees the engine's rate, not the device's.
 - The tap ring keeps 371 ms and a since-last-read query is capped at 186 ms, so a reader that stalls longer loses the oldest frames.
 - The benchmark is one machine and one process, not a criterion run. The tap figure varied 1.19 to 1.26 ns across two runs.
-- The work is uncommitted, so there is no tag.
 
 ## What's next
 
