@@ -1,0 +1,51 @@
+---
+title: "Product Hunt Pick: Termphin, an SSH Client That Leaves Your Shell on the Server"
+date: 2026-09-21
+series: Product Hunt
+repo_link: https://github.com/Termphin/termphin-agent
+---
+
+[Termphin](https://www.producthunt.com/products/termphin) is an Android SSH client that finished #6 on Product Hunt on September 20 with 123 upvotes. The tagline is "SSH client with sessions that never drop." The mechanism behind it is more interesting than the tagline: a small Rust helper, uploaded to your server over the same SSH connection, that owns the shell so your phone doesn't have to.
+
+## What it is
+
+The app is Flutter, Android-only, free, with no ads or in-app purchases. It bundles a terminal, SFTP with an editor, key management, snippets, port forwarding, ProxyJump chains, TOTP prompts and host key pinning. iOS and desktop are listed as in progress. The app itself is closed source.
+
+The helper is `termphin-agent`, and it is open source. As of September 21 it is v0.11.0, MIT-licensed, Rust edition 2024, with `libc` and `vt100` as its only Unix dependencies (`windows-sys` on Windows). It holds one PTY open and replays what the shell wrote. It is deliberately not a multiplexer: no panes, no status bar, no copy mode.
+
+The README documents what it does to your machine, which is the part you'd want before running anything on a box you care about:
+
+- No network listener. Access goes through a Unix socket at `~/.cache/termphin/sessions/<name>/control.sock`, mode `0600` in a `0700` directory. On Windows it is a named pipe restricted by ACL.
+- Runs as your user. No setuid, no service unit, no cron entry.
+- The last 2000 rows of scrollback live in memory, plus a periodic snapshot so a reboot can restore them.
+- Hard limits: 16 concurrent connections, 30 seconds to identify, and a client more than 8 MiB behind gets disconnected instead of stalling the session.
+
+The reattach logic changed materially in 0.10.0. The first version replayed raw output bytes into a fresh terminal, which scattered spinners and progress bars across the screen, because relative cursor movement assumes a starting position the new terminal doesn't have. It now feeds the whole session stream through a `vt100` emulator and replays reconstructed state: scrollback as plain text, then the exact current screen with colors, cursor and input modes. Alternate-screen apps like vim and htop replay their current frame directly.
+
+## What's good about it
+
+- **The security posture is written down and checkable.** The README says about 1400 lines of one file for the Unix side. `src/unix.rs` is 1,386 lines, and `Cargo.toml` lists exactly `libc` and `vt100` (plus `cc` as a build dependency). The repository has 24 test functions across `main.rs` and `unix.rs`. I counted them; I did not run them.
+
+- **The maker's blog doesn't oversell the mechanism.** The September 16 post says that walking into a lift or changing networks kills the socket no matter who schedules the process, and that the helper exists so a dead connection stops mattering. It also says, plainly, that anyone already running tmux or screen should keep doing so. The app attaches to a shell whether it started it or not.
+
+- **The 43x post shows its work.** Every SFTP transfer ran at exactly 1.2 MB/s, which the author correctly read as local work per byte rather than a network. A cipher benchmark (32 KB payload, 256 iterations, one machine) put `aes-128-gcm` and `aes-256-gcm` both at 1.2 MB/s, `chacha20-poly1305` at 51.0 and `aes-256-ctr` at 37.4. The deduction is neat: if doubling the key size changes nothing, AES isn't the cost, GHASH is. I checked the premise against the library. dartssh2 4.1.0's default cipher list in `lib/src/ssh_algorithm.dart` does lead with `aes256gcm` and `aes128gcm`, with `chacha20poly1305` third. The fix is to send an explicit preference: ChaCha20-Poly1305, then AES-CTR, GCM last.
+
+## What I'd push back on
+
+- **"Never drop" describes the shell, not the session.** The connection drops constantly; it's the process on the server that survives. Their own blog says so. The tagline is marketing, and the blog is the accurate document.
+
+- **The site's GitHub links don't resolve.** The homepage and FAQ link to `github.com/mbadyl/termphin-agent` and `github.com/mbadyl/terminal_view`. That account has zero public repositories and both URLs return 404. The code is real and MIT, but it lives at `github.com/Termphin/termphin-agent` and `github.com/Termphin/terminal_view`. "Is any of this open source? Yes" is true; the links to prove it were wrong when I checked.
+
+- **The helper is five weeks old.** The repository was created August 1, v0.11.0 shipped August 28, and it has no stars. The 0.11.0 changelog is worth reading before trusting it with a long-running job: one fix is that an unreachable control socket used to count as a missing master, which deleted a live session's directory and started a second master under the same name. Another is that a stale second writer could overwrite the master's snapshot. Both are fixed, and both are the kind of bug that loses the work this product exists to protect.
+
+- **Platform coverage is narrower than the FAQ reads.** The FAQ lists Linux, macOS, BSD and Windows servers, "no helper required for basic sessions." The v0.11.0 release ships Linux x86_64 and aarch64 (542,216 and 488,112 bytes), macOS x86_64 and aarch64, and Windows x86_64. No BSD binary. On BSD you get a plain SSH session, which is exactly the thing the tagline says you won't have. On Windows the README says persistence depends on breaking away from Win32-OpenSSH's job object; if that job doesn't allow breakaway, the session just doesn't outlive the connection.
+
+- **I didn't run the app.** Everything here comes from the Product Hunt listing, the site, the blog, the privacy policy and the repositories. The privacy claims (analytics opt-in, PostHog EU, no relay server) are the policy's words, not something I observed on the wire. The README also says the shipped binaries come from a pinned, reproducible docker build with a checksum manifest; I didn't reproduce it.
+
+## Verdict
+
+If you already run long jobs or coding agents on a VPS and want to check on them from a phone, this is a reasonable thing to try, and the helper is small enough to read in an afternoon. What you're getting over tmux is not persistence. It's zero setup on the server and a replay path built for a client that was suspended, and the client sending its own cipher list is a good sign about the care in the rest of it.
+
+Before you use it on a server you care about, read `src/unix.rs` and the changelog, and compare the uploaded binary's checksum against the repository's manifest. Use it for something you can afford to lose first. It's young.
+
+**Sources:** [Termphin on Product Hunt](https://www.producthunt.com/products/termphin) · [termphin.dev](https://termphin.dev/) · [Why your SSH session dies when you lock the screen](https://blog.termphin.dev/posts/keeping-a-session-alive) · [A library default cost me 43x throughput](https://blog.termphin.dev/posts/library-default-43x-throughput) · [Termphin/termphin-agent](https://github.com/Termphin/termphin-agent) · [Termphin/terminal_view](https://github.com/Termphin/terminal_view) · [Termphin privacy policy](https://termphin.dev/privacy) · [dartssh2 `ssh_algorithm.dart`](https://github.com/TerminalStudio/dartssh2/blob/main/lib/src/ssh_algorithm.dart)
