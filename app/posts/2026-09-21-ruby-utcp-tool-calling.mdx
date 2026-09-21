@@ -1,0 +1,52 @@
+---
+title: "Product Hunt Pick: Ruby UTCP, Calling Tools Directly Instead of Through an MCP Server"
+date: 2026-09-21
+series: Product Hunt
+repo_link: https://github.com/universal-tool-calling-protocol/ruby-utcp
+---
+
+[Ruby UTCP](https://www.producthunt.com/products/utcp) is a Ruby client for the Universal Tool Calling Protocol, and it's on Product Hunt with 95 upvotes and a #9 day rank. The tagline is "The scalable, secure alternative to MCP for tool calling." The idea underneath is simple and worth a look: instead of putting a server between an agent and each tool, publish a JSON "manual" that says how to call the tool, and let the client call it over its own protocol.
+
+## What it is
+
+UTCP splits tool calling in two. A manual lists tools with their input schemas, and each tool carries a `tool_call_template` naming the transport (`http`, `cli`, `grpc`, ...) and the details. The client fetches the manual, registers the tools as `manual_name.tool_name`, and calls them directly. There is no proxy process in the request path.
+
+The gem implements UTCP 1.1, is MIT-licensed, and the README claims Ruby 2.6 or newer. It ships 12 transports: HTTP, SSE, Streamable HTTP, CLI, WebSocket, gRPC, GraphQL, TCP, UDP, WebRTC, MCP and text. I counted the README's transport table and it does list twelve, plus a `file` extension. gRPC and WebRTC need optional gems (`grpc`, and `webrtc-ruby` with `libdatachannel` on Ruby 3.1 or newer). An HTTP, text or file manual can also be an OpenAPI 3 or Swagger 2 document, which is converted into tools automatically.
+
+There is also Code Mode: a multi-step workflow written in a constrained Ruby subset runs as one call, with tools exposed through a `codemode` object. The README says it is interpreted without `eval` and has no filesystem, process, reflection or direct network access.
+
+## What's good about it
+
+- **The security defaults are specific.** UTCP 1.1 adds `allowed_communication_protocols`. The spec's migration page states the default: a manual can only register and call tools that use its own protocol type, so an HTTP manual can't quietly register a CLI tool. The Ruby client says it checks this at registration and again on every call. Remote HTTP must be HTTPS, plain HTTP is loopback-only, and credentials are stripped on cross-origin redirects, including OAuth2 token requests.
+
+- **CLI tools are handled with some care.** Argument values are passed through environment variables rather than spliced into the command, so a value can't inject shell syntax, and the child gets a small environment allow-list unless you widen it.
+
+- **Limits are on by default.** `max_response_bytes` is 100 MiB on every transport except file, CLI and text. SSE and Streamable HTTP also cap event size (1 MiB) and item count (10,000). Code Mode caps source at 64 KiB, logs at 1 MiB, and values at 30 MiB.
+
+- **The "no wrapper server" claim holds for one common case.** If you already have an HTTP API with an OpenAPI document, you don't need to build an MCP server to make it callable. That is the strongest version of the pitch, and it is real.
+
+- **The tests look like they were written by someone worried about the right things.** The suite covers the auth matrix at transport boundaries, response limits, network failure, streaming limits, and soak runs that fail on post-GC growth in RSS, heap, objects, threads and file descriptors. CI covers Ruby 2.6 through 4.0 with coverage gates of 80% of lines and 60% of branches. The README is candid that the soak numbers are "sampled, post-GC measurements, not a continuous peak-RSS measurement or proof that no leak can occur." I read all of this; I did not install the gem or run any of it.
+
+## What I'd push back on
+
+- **"Alternative to MCP" is only half true.** The gem includes an MCP transport (stdio and Streamable HTTP, with sessions, pagination and resources). It is a client that can call MCP servers as well as skip them. That is useful, but it means this is not a replacement for MCP so much as a router that treats MCP as one of twelve options.
+
+- **"No wrapper servers" has a floor.** Something still has to serve a manual. The quick-start points at `https://weather.example.com/utcp`. For gRPC the reference service is `GetManual`, `CallTool` and `CallToolStream`. For WebRTC it's a `POST /connect` and `POST /candidate` signaling contract. For plain HTTP that can be a static file, which is much lighter than a wrapper server. For the socket and gRPC transports it is not nothing.
+
+- **The latency claim has no numbers behind it.** utcp.io advertises "Zero Latency Overhead" and contrasts direct calls with MCP's "double hop." The page I read gave no benchmark or adoption figures. The Ruby README's only measurements are soak-test memory gates, not latency. "Scalable" in the tagline is unsupported by anything I found.
+
+- **"Secure" is a set of defaults, not a boundary.** The allow-list stops cross-protocol surprises. It does not change the fact that a manual is a document from someone else telling your process what to call. The README says it directly: "Only register CLI tools from manuals you trust: the command template itself is executable code." The auth table also shows CLI, TCP, UDP, WebRTC and MCP stdio have no built-in `auth`, and for WebRTC "signaling authentication is not implemented."
+
+- **Code Mode is a hand-written interpreter, and it has been tightened repeatedly.** Interpreting a Ruby subset without `eval` is a reasonable design, but it puts the sandbox in the project's own code. The changelog shows 1.1.2 bounding integer powers and products, and 1.1.4 changing the value budget and counting hash keys, within four days of the first release. That is what fixing looks like, and it is also a reason not to point it at untrusted code yet.
+
+- **It is very young.** The repository was created September 3. RubyGems shows eight versions, 1.1.0 through 1.1.7, between September 3 and 6, and 5,421 total downloads, with 1.1.0 and 1.1.1 accounting for 1,529 and 1,580 of them. The repo has 4 stars and almost every commit is from one author. The org's Python implementation has 652 stars and its `code-mode` repository has 1,571, so the protocol has traction; this port doesn't yet. Of the five most recent CI runs on main, the two oldest (September 10) failed and the three since passed.
+
+- **"Official" needs a footnote.** The repository describes itself as the official Ruby implementation, and it lives in the protocol's GitHub organization. The utcp.io page I read lists Python, TypeScript and Go as its official SDKs and refers to other implementations in the org.
+
+## Verdict
+
+If you write Ruby agent glue and your tools are already HTTP APIs with OpenAPI documents, this is worth an afternoon. That is the case where "call it directly" removes real work, and the HTTPS, redirect and response-limit defaults are the right ones.
+
+Start with HTTP and OpenAPI only. Leave `allowed_communication_protocols` at its default, don't register CLI manuals you didn't write, and pin the gem version, because eight releases in four days means the surface is still moving. Treat Code Mode as an experiment, and measure latency yourself before believing the "zero overhead" line.
+
+**Sources:** [Ruby UTCP on Product Hunt](https://www.producthunt.com/products/utcp) · [ruby-utcp repository (README, CHANGELOG, tests, CI)](https://github.com/universal-tool-calling-protocol/ruby-utcp) · [ruby-utcp on RubyGems](https://rubygems.org/gems/ruby-utcp) · [utcp.io](https://www.utcp.io) · [UTCP v1.0 to v1.1 migration guide](https://www.utcp.io/migration-v1.0-to-v1.1) · [UTCP organization on GitHub](https://github.com/universal-tool-calling-protocol)
