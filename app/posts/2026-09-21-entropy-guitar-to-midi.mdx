@@ -1,0 +1,249 @@
+---
+title: "Guitar-to-MIDI in Entropy's DAW: Length-Adaptive YIN, an Octave Fix That Buys Latency, and WASAPI's 10 ms Floor"
+date: 2026-09-21
+series: Entropy
+crate_versions:
+  added:
+    - cpal = "0.16" (resolves to 0.16.0, the version rodio already uses)
+    - rtrb = "0.3" (resolves to 0.3.5)
+  unchanged:
+    - realfft = "3.5" (resolves to 3.5.0; rustfft 6.4.1 underneath)
+    - rodio = "0.21.1"
+    - cucumber = "0.23.0"
+    - gherkin = "0.16.0"
+  edition: "2024"
+  rustc: "1.94.1"
+  os: "Windows 11 Pro 10.0.26200 (only platform currently tested)"
+  audio_backend: "WASAPI (shared mode) through cpal. ASIO is an opt-in cargo feature that was never built."
+  hardware: "Intel Core i5-12500 (6 cores, 12 threads)"
+  tooling:
+    - "node v24.11.1, vitest 4.0.18"
+repo_link: https://github.com/alexthegoodman/entropy-engine
+---
+
+[The last DAW post](/posts/entropy-daw-analyzer) let you see what a mix sounds like. This one lets a guitar play it.
+
+Plug a guitar into an audio interface, open the Guitar Input panel in Entropy's DAW, and each picked note becomes a Note On with a velocity, held while the string rings, bent while you bend, released when it dies or you mute it. The notes drive a built-in voice, a hosted VST3 instrument (Vital and Massive were tried), or get recorded as a take on a new synth track.
+
+Read this before the numbers: **every figure below comes from a synthetic string, not a guitar.** I wrote it to have a known pitch at every instant, and the capture path was opened on real input devices with nothing played into them. I have since played the feature on a real guitar, and it feels real-time. That is one player's impression. Nothing was recorded or measured in that session, and nothing in this post rests on it. The working tree is uncommitted, so there is no hash or tag to point at.
+
+## What got built
+
+- **`src/guitar/`, the engine core.** No UI, no audio backend, no allocation after `new`. It takes buffers of mono samples and returns note events, so the same code runs on the audio thread and in an offline replay.
+- **`src/guitar_live/`, the live layer.** A `cpal` input stream, a lock-free event queue (`rtrb`), a router thread, a sustained and bendable `GuitarVoice`, a `Recorder`, and calibration that runs on the audio thread.
+- **`Vst3Sender`.** A handle that lets a thread other than the main one queue held notes and pitch bend for a hosted plugin.
+- **`Entropy.Guitar`,** the addon API, and a floating **Guitar Input** window in the DAW (device, channel, target, response mode, gate, bend range, calibration, diagnostics).
+- **Tests in five tiers**, listed near the end.
+
+## The detector: one FFT, six window lengths
+
+A pitch detector needs about two periods of the note. For a high E4 that is 6 ms of signal. For a low E2 it is 24 ms. A single window long enough for E2 makes every note pay for E2, so the engine keeps several window lengths and tries them short to long, using only the signal since the pick.
+
+YIN and McLeod's MPM both start from the autocorrelation of the newest samples. `TierDetector` computes it once per window with a real FFT (`realfft`, the difference function built from the autocorrelation and running energies), and then YIN and MPM are two different things to do with the same arrays:
+
+```rust
+for tau in 1..=tau_max {
+    let e1 = self.prefix[w + tau] - self.prefix[tau];
+    let d = (e0 + e1 - 2.0 * self.acf[tau]).max(0.0);
+    running += d;
+    self.curve[tau] = if running > 0.0 { d * tau as f32 / running } else { 1.0 };
+}
+```
+
+That is YIN's cumulative mean normalized difference. The first dip under 0.15 is the period, refined with a parabola through the three lags around it.
+
+The engine builds its windows from two knobs, `tier_step` (how far each window reaches below the last, 1.35) and `window_ratio` (the integration window as a fraction of the longest lag, 0.8). At 48 kHz the defaults give six windows:
+
+```text
+tier_step 1.35 window_ratio 0.8  windows [262, 354, 478, 644, 871, 1234]
+```
+
+Samples, so 5.5 ms up to 25.7 ms. An A2 at 110 Hz has a 436-sample period and lands in the 871-sample window, which is 18.1 ms of signal before the detector can say anything. Keep that number in mind for the latency table.
+
+## Octave errors
+
+A string whose fundamental is weak and whose odd partials are weaker repeats at half its period almost as well as at the whole one. YIN's first dip is then at the octave. The note is played an octave high, confidently.
+
+Two fixes exist in the engine, and I ran the case with each on and off. The signal is the hard one in the bench: fundamental at 0.2 of normal, odd partials at 0.1, every note E2 to E6, two seeds each. The command is `guitar_bench fixes`, release build.
+
+| `subharmonic_check` | `verify_below_confidence` | Low E2-G#2 | Mid A2-D#4 | Latency p50 / p95, mid |
+| --- | --- | --- | --- | --- |
+| off | 0 (off) | 0.0% correct | 44.7% | 18.7 / 70.7 ms |
+| on | 0 (off) | 30.0% | 60.5% | 18.7 / 41.3 ms |
+| off | 0.94 | 100% | 100% | 17.3 / 24.0 ms |
+| on | 0.94 | 100% | 100% | 14.7 / 22.7 ms |
+
+The high register is 100% in all four rows.
+
+The two fixes do different jobs, and only one of them is about correctness here:
+
+- **Verify.** An estimate less sure than 0.94 confidence is re-read with the shortest window that holds two periods of it. If that window has not got enough signal yet, there is no answer and the note waits.
+- **Subharmonic check.** A first dip that is shallow (above 0.06) gives way to a clearly deeper dip near 2, 3 or 4 times its lag.
+
+```rust
+if self.curve[at] < YIN_THRESHOLD && self.curve[at] < shallow * SUBHARMONIC_DEPTH_RATIO {
+    return Some(at);
+}
+```
+
+On this signal the verify step alone gets every note right. What the subharmonic check adds is speed: with both on, the mid register's p50 drops from 17.3 to 14.7 ms and the low register's p95 from 36.0 to 30.7 ms. I expect that is because the deeper dip often lets a short window answer correctly without waiting for a longer one, but I did not instrument it. The subharmonic check on its own turns 0% into 30% on the low strings, which is still wrong most of the time.
+
+The BDD suite pins the correctness half. With both fixes disabled in the config defaults, three scenarios fail: E2, A2 and D3 with a weak fundamental are reported as MIDI 52, 57 and 62, each an octave up. B3 passes without the fixes, so the scenario passing would not have told you the fixes were doing anything on their own.
+
+## The tracker: a state machine with opinions
+
+A pitch estimate never becomes an event directly. It goes through Silent, Attack, Playing, Release, and a Note On needs both an onset and a pitch that held still for the mode's stability window (1 ms Fast, 2.7 ms Balanced, 8 ms Accurate). The tracker is a pure state machine. It sees one `HopInput` per 64-sample hop (1.33 ms) and knows nothing about buffers or FFTs, so most of its tests feed it numbers. Hop size is why the latencies below are all multiples of 1.33 ms.
+
+A few of its rules came from what broke.
+
+**The level window.** An onset is a rise of 6 dB in the level over its recent minimum. The level is an RMS over a window, and the length of that window matters more than it looks:
+
+```rust
+/// Length of the RMS window that defines level, milliseconds. Must span a full period of the lowest
+/// note (14.3 ms at 70 Hz): shorter, and a low string with weak fundamental ripples by more than the
+/// onset threshold within every cycle and looks like a new pick each time.
+const LEVEL_WINDOW_MS: f32 = 15.0;
+```
+
+It started at 8 ms. With that value put back, the scenario "a low string with a weak fundamental is not re-triggered by its own ripple" fails for E2 and F2. The E2 recording, one pluck over 2 seconds, produced 33 Note Ons. The first two were 144 ms apart, then roughly every 45 to 90 ms as the note decayed. The third example in that scenario, A2 at another phase seed, passed at 8 ms, which is why the feature runs three notes and not one.
+
+**A re-pick versus a slap.** A pick over a ringing note of the same pitch only replaces it if, 35 ms after the onset, the level is still 3 dB over what it was before the pick. A fret-hand slap reads as an onset and then falls back to the old level, and the ringing note should not be played again. A pick of a different pitch needs no such wait. The cost is a limit stated in the spec: a re-pick that adds less than 6 dB over a still-ringing string of the same pitch is not heard.
+
+**Bends are not new notes.** Inside the configured range (plus 30 cents of overshoot, because a whole-tone bend on a +-2 semitone range lands exactly on the edge) a pitch change is a bend. Outside it, without a fresh pick, the new pitch must hold still for 25 ms to become the next note, so a slide commits a note where it slows down.
+
+**A gate under the room's noise floor leaves notes hanging.** The gate opens at -46 dBFS and closes at -54 dBFS, on the 15 ms RMS. In a room with hum at -38 dBFS and hiss at -44 dBFS the level of a decayed string never falls below the close threshold, so the release never starts. The engine plays no notes from noise, since noise has no stable pitch, but a note that was really played does not end. Two scenarios pin it as a pair, in the offline tier and again on the real device: the first shows one Note On and no Note Off until the stop at the end, and the second calibrates the gate on 1 to 2 seconds of the same room and the note ends. In the live run calibration put the gate at -28.7 dBFS.
+
+## Real-time rules
+
+The audio callback follows three rules from the spec: no allocation, no locks, no panic.
+
+`tests/guitar_no_alloc.rs` counts allocations through a global allocator while `process` runs, for all three modes:
+
+```text
+fast: 120 events, 0 allocations (0 bytes) in process
+balanced: 100 events, 0 allocations (0 bytes) in process
+accurate: 52 events, 0 allocations (0 bytes) in process
+```
+
+Events leave the callback on a bounded `rtrb` queue. When it fills, bends are the first thing to go, and a note event is never dropped for a bend's sake:
+
+```rust
+let droppable = matches!(e.kind, GuitarEventKind::PitchBend { value } if value != BEND_CENTER);
+if droppable && self.producer.slots() < EVENT_QUEUE / 4 {
+    self.shared.dropped_bends.fetch_add(1, Ordering::Relaxed);
+    return;
+}
+```
+
+A quarter of the queue is kept back for notes and for the bend that recentres before one. A router thread wakes on each push, pops events and dispatches them to the voice, the plugin queue and the recorder.
+
+`Vst3Sender` exists because the plugin registry is a `thread_local`, reachable only from the main thread, and the router is not on it. A sender is a clone of the plugin's command queue behind an `Arc`, taken on the main thread and handed to the router. Getting it wrong is silent, which is the first failure note below.
+
+## What WASAPI does with your buffer size
+
+The spec's reference conditions are 48 kHz and a 128-sample buffer, 2.67 ms. On this machine WASAPI shared mode does not deliver that. `guitar_device_live` opens the default input three times, asking for 128, 256 and 512 frames. The stream builds with no error and reports `buffer Some(128)`. The callbacks are 480 frames, 10.00 ms, every time:
+
+```text
+asked for 128 frames: WASAPI / Microphone (USB Audio) at 48000 Hz, 1 ch, F32, buffer Some(128)
+    199 callbacks of 480 frames (10.00 ms each), mean 38.0 us, max 132 us, overruns 0, stream errors 0, level -60.1 dBFS
+asked for 256 frames: ... 199 callbacks of 480 frames (10.00 ms each), mean 50.9 us, max 332 us
+asked for 512 frames: ... 199 callbacks of 480 frames (10.00 ms each), mean 49.5 us, max 113 us
+```
+
+That is the second input device on which it does. An earlier run against a webcam microphone at 16 kHz gave callbacks of 160 frames, also exactly 10 ms. I expect this is the shared-mode engine period of the audio stack. I did not check Microsoft's documentation for it and did not try exclusive mode. What I can say is that the requested size did not change it. The panel therefore reports what it measured (`Asked for 128 frames, the driver gives 480 (10.0 ms): its own period`) and not what it asked for.
+
+![The DAW with the Guitar Input window open on the right, status "listening", the line "Asked for 128 frames, the driver gives 480 (10.0 ms): its own period", an input meter at -41.4 dBFS, Fast/Balanced/Accurate buttons with Balanced selected, sensitivity and gate sliders, two calibrate buttons and a diagnostics block reading "Note: no note, state: silent"](/images/entropy-guitar-input-panel.png)
+
+A composited frame from the running DAW at 1800x1000, on the default input, with nothing played into it. The meter reads what a quiet input reads.
+
+Device formats need care too. A device lists several, the first is often the worst, and an 8-bit one turned up first on the webcam microphone. Formats are ranked (F32, then I32, F64, I16, and so on down to U8) before one is picked.
+
+## Results
+
+The synthetic corpus: additive strings with harmonics that fall in weight and decay faster, a little stiffness so partials are not exact multiples, and a burst of filtered noise for the pick. Deliberately not Karplus-Strong. Here the pitch at every instant is exactly what the test said, which is what an accuracy claim needs. `guitar_bench sweep`, release build, 48 kHz, 147 notes per mode (E2 to E6, three seeds), peak -14 dBFS. Latency is from the pick to the emitted Note On, engine only.
+
+| Register | Balanced correct | Balanced p50 / p95 | Spec target (p95) | Fast correct | Fast p50 / p95 | Accurate p50 / p95 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Low E2-G#2 | 100% | 30.7 / 32.0 ms | 40 ms, met | 93.3% | 28.0 / 28.0 ms | 34.7 / 36.0 ms |
+| Mid A2-D#4 | 100% | 14.7 / 22.7 ms | 20 ms, **missed by 2.7 ms** | 100% | 12.0 / 28.0 ms | 18.7 / 26.7 ms |
+| High E4-E6 | 100% | 9.3 / 9.3 ms | 15 ms, met | 100% | 6.7 / 6.7 ms | 13.3 / 13.3 ms |
+
+The mid-register miss is the bottom of the register. A2 needs the 871-sample window (18.1 ms), and the pick-click skip, the stability window and rounding up to the next hop are added on top. It is a measurement of the design, not noise. Fast reads sooner and, on the low strings, reads one note of fifteen wrong.
+
+CPU, from `guitar_bench cpu`: 4,125 callbacks of 128 samples (2,667 us of audio each) over an 11 second recording with 40 plucks. Mean 18.4 us (0.7% of the period), p99 23.5 us, p99.9 76.9 us (2.9%), max 246.2 us. The spec asks for a mean under 10% and a p99.9 under 50%. The tail moves from run to run: the last session's runs put p99.9 between 2.2% and 6.5%.
+
+On the real output device, with the recording fed through the real pipeline, router and voice (`guitar_live_bdd`, 19 scenarios):
+
+| Measurement | Value |
+| --- | --- |
+| Track pitch for E2, A2, D3, E4, E5 | 82.57, 110.19, 147.08, 330.00, 659.73 Hz (+3.5, +2.9, +2.9, +1.9, +1.2 cents) |
+| A 200 cent bend over 300 ms | 246.94 Hz read from the track |
+| Vibrato, 50 cents at 6 Hz | 1 note found; 240 events routed, 240 emitted offline, 0 dropped |
+| Hosted Vital / Massive, A3 | 220.37 / 219.83 Hz |
+| Pick to sound in a track, 8 trials | 8.7 to 18.0 ms, median 16.5 ms |
+| Audio-thread callback, 1,163 calls | mean 14.4 us, max 313 us, budget 2,667 us |
+| A take of E3, A3, D4 | each note recorded within 0.0 ms of its pick; 91 bend points on D4 |
+
+Read the first two rows with care. The track's pitch is read with the engine's own YIN detector over 4,096 samples of the track's tap. The built-in voice plays exactly the frequency of the note it was told, so those cents are the reading detector's resolution, and what the row proves is that the right note reached the speakers. It is not a pitch accuracy figure for the guitar engine. Pick to sound is a lower bound: the capture and output devices' own buffers are not in it. The earlier run of the same scenario gave 9.4 to 16.6 ms with a median of 14.1, so the median moves by a couple of milliseconds between runs.
+
+## Testing
+
+Every tier below was run in this session, release build.
+
+1. **Unit tests.** `cargo test --release --lib`: 96 pass, 50 of them in the guitar modules.
+2. **Offline replay** (`guitar_engine_bdd`): 36 scenarios, 224 steps in Gherkin. A synthetic recording goes through the engine and the events are asserted on. No device.
+3. **Invariants** (`guitar_invariants`): 80 random recordings with random configs (28,461 events this run) plus hostile inputs (NaN, infinities, DC, Nyquist, clipping, denormals). The event stream must always be well formed: no Note On while one is active, every Note On gets a Note Off, the bend is centred before a new note, timestamps never run backwards. Seeded, so a failure names the seed.
+4. **Live** (`guitar_live_bdd`, 19 scenarios, 169 steps; `guitar_device_live`, 3 tests; `daw_guitar_live`, which drives the real DAW panel and writes four PNGs). "Live" here means the real output device, the real router and voice, and real Vital and Massive. The audio going into the pipeline is still a synthetic recording. `guitar_device_live` opens the real default input and checks that it runs and stops cleanly, and it asserts nothing about pitch.
+5. **Addon** (vitest, `daw_guitar_bdd`): 12 tests for the panel's pure logic (take to pattern, device memory, the quiet-signal hint). Together with the arrangement and rack suites, 87 pass.
+
+### Do the tests fail when they should
+
+| Mutation | What caught it |
+| --- | --- |
+| Level window 15 ms to 8 ms | 2 scenarios (E2 played as 33 notes, F2 as 30) |
+| Both octave fixes off in the defaults | 3 scenarios (E2, A2, D3 read an octave high) |
+
+Both were reverted and I checked the file hashes matched afterwards. An earlier session also ran a third mutation, removing the re-pick checks, which failed one scenario each. I did not repeat that one for this post.
+
+### The corpus cannot tell most choices apart
+
+With the fixes on, every one of the 96 register rows in `guitar_bench stress` (two algorithms, guard on and off, eight signal variants, three registers) reads 100.0% correct. That includes YIN and MPM on every variant. So the sweep is good at catching a regression, since a single bad note drops a percentage, and no use for choosing between two working designs on accuracy. The choices below rest on latency and on the one place accuracy did move.
+
+## Decision log
+
+**YIN over MPM as the default.** They tie on the clean corpus and on every stress variant with the fixes on. The difference in `guitar_bench compare` is the mid register's p95, 22.7 ms for YIN against 28.0 ms for MPM, and the subharmonic check only exists for YIN. That is a small, single-corpus reason, and a real guitar could reverse it.
+
+**Window spacing 1.35, not 1.25.** A finer spacing means more windows and a closer fit to each note's period, and in `guitar_bench tiers` it was faster on the low register (p50 25.3 against 30.7 ms at ratio 0.8). It also dropped the mid register from 100% to 94.7% at all three window ratios. My reading is that a period sitting at a window's largest lag leaves no room to interpolate. It is a reading, since I did not instrument it.
+
+**Window ratio 0.8, unresolved.** At 0.65 the same sweep gave a faster mid register (13.3 / 21.3 ms against 14.7 / 22.7) with the same accuracy on the three variants I ran it on, and a slower low p95 (36.0 against 32.0 ms). Nothing in the synthetic data prefers 0.8. A shorter window is a less certain one, and how much that matters is a question for a recording of a real string, so the default stays where it was set.
+
+**A hop of 64 samples.** Level, onset and pitch are evaluated once per hop. A smaller hop lowers the rounding cost on latency and, I expect, raises CPU in rough proportion. At 0.7% mean CPU there is room, but I did not sweep it.
+
+**Synthetic strings first.** A recorded, labelled corpus is the right fix and needs a guitar. The synthetic one made every claim above repeatable before anyone plugged in, at the price above.
+
+## Failure notes
+
+**The router failed silently on the plugin registry.** The first router reached for the VST3 registry from its own thread. The registry is a `thread_local` on the main thread and the router is not on it. The router failed silently, with no error to read, and the live tier's plugin scenario caught it. It is why `Vst3Sender` exists. `GuitarSession::play_vst3` now says `(or this is not the main thread)` in its error, because that is one of two ways the track lookup returns nothing.
+
+**A note in the first samples of the stream was not a pick.** The onset detector measures a rise over recent history, and at the start of a stream there is no history, so a note that begins in the very first hop was never an onset. The history now starts as if silence came before the first sample, and a scenario covers it.
+
+**`reset()` zeroed the sample counter.** After a stop and start, event timestamps went backwards. `Ring::clear` now zeroes the samples and keeps counting, and the invariants test runs an engine through a restart and checks that timestamps never run backwards.
+
+**A silent buffer request.** Asked for 128 frames, WASAPI accepted it and delivered 480. See above: no error, no warning, only measurement shows it.
+
+**A test world that could not find its window.** The DAW rack test found its floating window as the last one created, and adding the Guitar Input window broke that assumption. It finds it by title now.
+
+## Limits
+
+- **No real guitar in any number here.** It has been played by hand and felt real-time, but none of that is measured: not a pickup's harmonic balance, not a pick attack, not a sympathetic string. The 100% results are on strings whose model I wrote. The spec's own targets (a labelled recorded corpus, median 5 cents sustained pitch error) are not measured.
+- **The 10 ms floor is the WASAPI shared-mode period on this machine, on two devices.** The spec's 35 ms end-to-end target for mid and high registers is a number nobody has measured: no loopback rig was used, and the pick-to-sound figure above leaves out both devices' buffers. ASIO would lower the floor. It was never built here, needs the Steinberg SDK at build time, and its licence against Entropy's MIT is unresolved.
+- **The mid register misses its 20 ms p95 target by 2.7 ms.** The window at 110 Hz is 18.1 ms by itself.
+- **Monophonic.** Two strings ringing together confuse it. There is no legato handling: a hammer-on within the bend range is a fast bend, and a fast slide can split into two notes.
+- **Soft picks under about -37 dBFS play nothing** until calibrated, on the default gate.
+- **Bends are not stored in a DAW pattern,** since note cells have no bend field. The recorder keeps them, the take drops them.
+- **A VST3 instrument's bend range is its own setting.** The panel reminds you to match it; the built-in voice is kept in sync.
+- **Not run:** the 2-hour soak, an external loopback measurement, any non-Windows platform, and audible playback in these runs (the checks read the audio through taps; the by-hand session above is the only time it was listened to, and it has no numbers). The regression suites for VST3, the analyzer and the canvas were not re-run for this post.
+
+## What's next
+
+The board has the follow-ups: a real-guitar corpus (the one thing that would tell 0.65 from 0.8), an ASIO backend, the soak and loopback runs, storing bends in patterns, legato and polyphony, and a guard against the speaker feeding the microphone.
