@@ -7,6 +7,8 @@ repo_link: https://github.com/universal-tool-calling-protocol/ruby-utcp
 
 [Ruby UTCP](https://www.producthunt.com/products/utcp) is a Ruby client for the Universal Tool Calling Protocol, and it's on Product Hunt with 95 upvotes and a #9 day rank. The tagline is "The scalable, secure alternative to MCP for tool calling." The idea underneath is simple and worth a look: instead of putting a server between an agent and each tool, publish a JSON "manual" that says how to call the tool, and let the client call it over its own protocol.
 
+UTCP, the Universal Tool Calling Protocol, is an open specification for how an AI agent finds and calls tools. A tool is anything the agent might invoke: a REST endpoint, a command-line program, a gRPC service. UTCP doesn't put a new server in front of those. It defines a manual, a JSON document that lists each tool, its inputs, and the details of how to call it (a URL and HTTP method, a command template, and so on). The agent's client reads the manual, then calls the tool over the tool's own protocol. MCP, the better-known standard, works the other way: a tool is exposed through an MCP server that the agent connects to. The UTCP specification is Apache-2.0, maintained in the UTCP GitHub organization, and this Ruby gem is one of several client implementations.
+
 ## What it is
 
 UTCP splits tool calling in two. A manual lists tools with their input schemas, and each tool carries a `tool_call_template` naming the transport (`http`, `cli`, `grpc`, ...) and the details. The client fetches the manual, registers the tools as `manual_name.tool_name`, and calls them directly. There is no proxy process in the request path.
