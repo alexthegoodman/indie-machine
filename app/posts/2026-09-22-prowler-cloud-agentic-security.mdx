@@ -1,0 +1,56 @@
+---
+title: "Product Hunt Pick: Prowler Cloud, Where the Agent Reads Findings and the Fix Needs a Second Credential"
+date: 2026-09-22
+series: Product Hunt
+crate_versions: []
+repo_link: https://github.com/prowler-cloud/prowler
+---
+
+[Prowler Cloud](https://www.producthunt.com/products/prowler) is on Product Hunt today with a large promise: "Where your AI agent becomes a cloud security defender." The interesting part is the permission boundary behind that line. Prowler scans cloud accounts with a deterministic set of checks. Its AI interfaces can investigate the resulting findings. Applying a fix to production is a separate action, usually performed through the coding agent's own cloud credentials. Those are three different systems, and treating them as one autonomous defender would hide the part you most need to review.
+
+## The scanner is the foundation
+
+Prowler is an established Apache-2.0 project, with a [CLI and local server](https://github.com/prowler-cloud/prowler), not a new model that decides whether a bucket is public by intuition. The repository describes checks, remediation guidance, compliance mappings, a web UI, and scan output for AWS, Azure, GCP, Kubernetes, GitHub, Microsoft 365 and other providers. The Product Hunt launch wraps that engine in a managed service, Lighthouse AI chat, and a remote MCP server.
+
+That distinction matters because the useful evidence starts before the language model. A check evaluates provider configuration and produces a finding tied to a resource. The model can fetch that finding, its check implementation, a framework mapping and the suggested remediation. The [MCP documentation](https://docs.prowler.com/getting-started/products/prowler-mcp) says its Hub tools expose the Python implementation of more than 2,000 checks and mappings to more than 70 frameworks. These are catalog figures from Prowler, not counts I independently reproduced.
+
+The workflow is closer to a queryable security database than a magic security autopilot:
+
+1. Connect an account and complete a scan.
+2. Ask Lighthouse AI or an MCP client for findings, resources, compliance status or attack paths.
+3. Pull the check logic and remediation notes for the finding that matters.
+4. Decide whether to make a change, and verify it with another scan.
+
+The freshness of step one controls the rest. Prowler's [CIS walkthrough](https://prowler.com/blog/prowler-mcp-cis-compliance-claude-code) says the MCP reports against the latest **completed** scan. A fluent answer about a two-day-old scan is still a two-day-old answer. The same walkthrough cautions that SOC 2 and DORA include manual requirements. A passing technical check does not finish an audit.
+
+## Where the agent can write
+
+The [Prowler Cloud page](https://prowler.com/prowler-cloud) calls Lighthouse AI "read-only access by design." In the narrow cloud-provider sense, that is plausible: its security scan role is meant to observe the account. But "read-only" is too broad a description of the whole product. Prowler's [July update](https://prowler.com/blog/whats-new-in-prowler-july-2026) says Lighthouse can trigger and schedule scans, manage provider connections, and create mute rules. The [MCP docs](https://docs.prowler.com/getting-started/products/prowler-mcp) list tools for user roles, integrations, finding muting, triage and alert configuration. Those write to Prowler's own state, and a mute rule can change what your team sees even if no AWS resource changes. The practical boundary is **read-only to the scanned cloud environment**, not read-only in every sense.
+
+Actual cloud remediation introduces a second credential. The [company's own walkthrough](https://prowler.com/blog/prowler-mcp-cis-compliance-claude-code) is explicit: the MCP finds the gap, while Claude Code can use a local AWS profile or edit Terraform to fix it. Prowler's API key gives the assistant access to findings; the cloud write permission comes from the agent's environment. That is a sensible separation, but it only helps if the cloud profile is scoped appropriately and a person reviews the proposed change. A prompt asking for approval is a workflow convention, not an IAM control.
+
+There is a second wrinkle in the API key. Prowler says it can read **every finding in your tenant**. Those findings can describe exposed infrastructure and sensitive resource relationships. The walkthrough warns against placing the key in a shared project's `.mcp.json`. If you connect a coding agent, decide which people and workspaces may see that data before you give it the key.
+
+Prowler also offers an Autonomous Fixer, while the Product Hunt copy speaks of "remediation" without spelling out the path. I would want to know which path a demo uses: a Prowler-generated fix, an agent editing infrastructure as code, or an agent running a cloud CLI. They have different review points and different credentials. The [August MCP example](https://prowler.com/blog/prowler-mcp-cis-compliance-claude-code) shows the last two and calls cloud remediation optional.
+
+## What open source buys you, and what Cloud adds
+
+The open-source claim is real for the Prowler repository: its README states Apache-2.0 and documents a local server, CLI and checks. The [MCP overview](https://docs.prowler.com/getting-started/products/prowler-mcp) also documents a local MCP server that can connect to a local Prowler server. You can inspect checks and run the core scanner without subscribing to the hosted product.
+
+The hosted feature boundary needs a closer read. The same MCP overview says only the managed Cloud MCP exposes `prowler_cloud_*` tools for alert rules, finding triage, scan scheduling and scan configurations. Prowler's [July release note](https://prowler.com/blog/whats-new-in-prowler-july-2026) says the remote MCP server and Claude Code plugin are Cloud-only. In other words, "open source" does not mean the full Product Hunt experience runs locally. The local server and local MCP are useful, but the polished managed workflow and those Cloud operations are separate product features.
+
+Pricing also deserves a literal reading. The [current pricing page](https://prowler.com/pricing) lists $99 per provider account per month on monthly billing, or $79 with annual billing. For GitHub, one repository is a billable account. The plan includes 50,000 scanned resources **across the tenant**, with additional resources billed at $0.30 each per month on monthly billing or $0.24 on annual billing. That shared allowance is easy to mistake for 50,000 per account. The free trial allows one scan of one cloud account; the pricing page says more scans or accounts require an upgrade. "Free to start" is accurate, but it is a short evaluation path for anyone testing whether repeated scans catch drift.
+
+## What works, and what I would test
+
+The strongest design choice is using recorded, inspectable findings as the agent's starting point. A security answer can be traced back to a resource, a check and a scan, and the MCP can fetch check implementation rather than relying on the model's memory. The ability to ask for a fresh scan after a change gives the workflow a real feedback loop. Prowler's local scanner and server also give teams a way to examine the engine underneath the hosted interface.
+
+I would test the boundary with one disposable account before connecting production: run a scan, ask for a single finding's underlying check, create a deliberately safe configuration change through infrastructure as code, and confirm that a new completed scan changes the result. Then try the same conversation with a cloud profile that has no write access. That exercise would reveal which actions are Prowler API mutations, which are cloud mutations, and where the agent asks for approval. It would also show how clearly the UI distinguishes stale scan data from current state.
+
+I did **not** connect Prowler Cloud to an account, run its scanner or measure its detection quality. The Product Hunt listing, landing page, docs, pricing page, company walkthroughs and public repository support this analysis. They do not prove the promise on my infrastructure. Claims such as "get to zero criticals in minutes" and "10x cost savings" are Prowler's marketing; I found no independent test here that would justify repeating them as outcomes.
+
+## Verdict
+
+Prowler Cloud is worth a look if your team already has cloud posture findings but spends too much time moving from a failing check to the relevant resource, code and owner. The agent interface could cut that investigation work. Its most credible pitch is evidence retrieval and triage, followed by a reviewed fix and a new scan. Start with one account, check the scan timestamp in every answer, keep the MCP key out of shared config, and give the coding agent only the cloud permissions you intend it to use.
+
+**Sources:** [Product Hunt listing](https://www.producthunt.com/products/prowler) · [Prowler Cloud page](https://prowler.com/prowler-cloud) · [Prowler repository](https://github.com/prowler-cloud/prowler) · [MCP documentation](https://docs.prowler.com/getting-started/products/prowler-mcp) · [July 2026 product update](https://prowler.com/blog/whats-new-in-prowler-july-2026) · [CIS and MCP walkthrough](https://prowler.com/blog/prowler-mcp-cis-compliance-claude-code) · [pricing](https://prowler.com/pricing)
