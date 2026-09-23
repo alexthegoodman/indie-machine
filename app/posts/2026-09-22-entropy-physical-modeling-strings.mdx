@@ -1,0 +1,97 @@
+---
+title: "A Bowed String in Entropy's DAW: A Delay Loop That Keeps Singing, and a Bow You Can Move"
+date: 2026-09-22
+series: Entropy
+crate_versions:
+  added: []
+  unchanged:
+    - rodio = "0.21.1"
+    - realfft = "3.5 (resolves to 3.5.0)"
+    - wgpu = "27.0.1"
+    - cucumber = "0.23.0"
+    - deno_core = "0.332.0"
+  edition: "2024"
+  rustc: "1.94.1"
+  os: "Windows 11 Pro 10.0.26200"
+  hardware: "Intel Core i5-12500; default audio output device"
+repo_link: https://github.com/alexthegoodman/entropy-engine
+---
+
+[The wavetable instrument](/posts/entropy-wavetable-terrain-synth) lets us draw the waveform a note reads. This instrument starts somewhere else: with a string that loses energy on every trip around a delay loop, and a bow that keeps feeding energy back in.
+
+The first phase of Entropy's physical modeling synth is in the DAW now. A synth track can play a bowed-string voice from MIDI, switch between violin, viola, cello and bass tunings, and expose bow force, speed, contact position, vibrato, damping and body color while a note sounds. The editor draws four strings, highlights the active one and lets a drag change the bow position and force. The sound is synthesized, with no string samples to load.
+
+This is an *electronic bowed string*. It models a vibrating loop and its energy loss, then uses regenerative sustain to keep it moving. It does not solve the stick-slip friction of bow hair against a real string, and it does not yet model a bridge or wooden body as physical structures. The distinction matters when judging how far the first phase has gone.
+
+The synth source is at local commit `de99920`; it has not been pushed or tagged yet, so the linked public repository cannot reproduce this phase today. I ran the Rust voice tests, offline BDD suite and live DAW BDD against this implementation for this post. The live screenshot is from the current working tree, which also contains an unrelated, uncommitted sample-song loader visible at the top of the DAW.
+
+## One loop, several ways to change it
+
+The core is `src/audio/physmod.rs`. Each note owns a fixed-capacity ring buffer. A fractional read behind its write head sets the round-trip time, so pitch starts with `sample_rate / frequency`. A one-pole filter loses more energy at higher frequencies, and a DC blocker keeps the sustain from finding a cheap, near-zero-frequency resting place. A small noise seed gives the loop something to amplify at note-on.
+
+That delay-and-loss structure follows the extended Karplus-Strong string described by [Jaffe and Smith](https://musicweb.ucsd.edu/~trsmyth/papers/KSExtensions.pdf). Their paper treats the delay line and filter as a feedback loop whose length sets the period and whose filter shapes harmonic decay. Entropy's continually driven bow and body coloration are choices made on top of that foundation, not implementations from the paper.
+
+The key part of the voice is short enough to show. `amp_est` tracks the loop's running amplitude. When it falls below the bow's target, the feedback gain rises; when it reaches the target, the gain eases off:
+
+```rust
+let target_amp = (0.12 + bow_force.clamp(0.0, 1.0) * 0.55)
+    * (0.4 + 0.6 * bow_velocity.clamp(0.0, 1.0)) * self.env;
+let sustain = ((target_amp - self.amp_est) * SUSTAIN_STRENGTH).clamp(-0.03, 0.03);
+let g_eff = (g_base + sustain).clamp(0.0, 1.01);
+let reflected = g_eff * filtered;
+```
+
+That is the sustain mechanism, not a claim that the bow is exerting a physically calibrated force. Force also drives a `tanh` saturation each trip around the loop, changing its harmonic content. Bow position reads a second point on the string and subtracts part of it from the **output**. Keeping that comb read outside the feedback path makes position audible without asking it to stabilize the oscillator.
+
+```rust
+let bow_tap = (bow_position.clamp(0.02, 0.5) * self.len)
+    .clamp(2.0, self.len - 2.0);
+let comb_ref = self.loop_buf.read_back(bow_tap);
+let combed = new_val - 0.4 * comb_ref;
+```
+
+Finally, three peaking filters color the result as a resonating body. Their center frequencies move down as `body_size` rises. The coefficients use the [Audio EQ Cookbook's peaking-filter equations](https://www.w3.org/TR/audio-eq-cookbook/). The frequencies are illustrative and scaled by ear; they were not fitted to a measured violin or bass. The violin, viola, cello and bass presets set open-string tunings and a starting body size. Each note chooses the highest open string below its requested pitch, with a small brightness offset for that string. Four separate coupled strings and a modeled bridge are future work.
+
+## The same held note hears the control
+
+A note is a `rodio::Source` on the track's audio bus. Its bow force, velocity, position and vibrato depth can be read from atomics while it sounds. The DAW's knobs, the bow drag in the editor and the `daw_physmod` tool ultimately update those live values. A latched note makes the effect easy to hear without repeatedly pressing a key.
+
+The audio thread publishes a 48-point snapshot of its current loop cycle every 512 samples. The view reads that snapshot through `PhysModShared` and draws the active string's displacement. It is a picture of the oscillator's state, with the displacement enlarged for legibility. The bow gesture is a 2D projection onto the active string's bowing zone. Orbiting the camera is available, but there is no ray-picked instrument mesh or direct editing of string material yet.
+
+![The running Bowed String editor with C4 held: the active string and key glow, the bow crosses the string, and the DAW analyzer shows the output.](images/entropy-physical-modeling-string-live.png)
+
+The DAW also routes arrangement notes through the voice and includes them in offline WAV export. A saved track keeps its preset and controls; unlike the wavetable, there is no editable sample table to serialize.
+
+## What the tests actually measured
+
+I ran `cargo test --lib audio::physmod --release`: all nine voice tests passed. Then `cargo test --release --test physmod_synth_bdd` passed 14 scenarios and 83 steps. The BDD renders real `PhysModVoice` output offline and analyzes it with an FFT, so these are properties of the generated samples, not descriptions of how they sounded to a listener.
+
+| Check | Measured result |
+| --- | --- |
+| Bow force, 220 Hz note | Spectral centroid rose from 496.3 Hz at force 0.15 to 1385.7 Hz at force 0.95. |
+| Bow position, 220 Hz note | Moving the contact from 0.45 toward the bridge at 0.04 changed the centroid from 715.0 to 1072.4 Hz. |
+| Body size, 220 Hz note | Energy below 250 Hz rose from 71.8% with the violin-size body to 75.5% with the bass-size body. |
+| Vibrato, 330 Hz note | With a deliberately large 200-cent test depth, the measured peak moved from 366.1 to 279.9 Hz between two windows; the flat control remained at 323.0 Hz. |
+| Timed note | A 0.1-second hold plus 0.05-second release produced 0.150 seconds of samples. |
+
+The pitch scenario has a misleading name: it says the *strongest partial* is within 3% of each requested note, but its assertion actually checks that energy near the requested fundamental is within 18 dB of the largest FFT bin. Its 110 Hz render had a 215.33 Hz peak, with the 110 Hz bin 9.6 dB below it; its 880 Hz render had an 850.56 Hz peak, with the requested bin 11.7 dB below. Those results pass the implemented test, but they do not establish accurate strongest-partial tuning across the register. I would not use this suite to claim a convincing violin performance yet.
+
+One other test passes a deliberately weak condition: high damping and low damping both lasted 61,744 interleaved samples, because the release envelope ends them at the same programmed time. It establishes that high damping does not *extend* the note, not that it shortens the release. That distinction matters when reading a green suite.
+
+I ran `cargo test --release --test daw_physmod_live` outside the sandbox; it passed and captured seven PNGs. The test drove the real DAW, its audio bus, widget events, tools and renderer. It verified a held C4 on the track bus, release, a brighter latched note after increasing bow force, a bow drag while sounding, a timbre change between violin and cello settings, and arrangement playback. Those events were injected by the test driver; a musician's mouse, pen and listening session were not part of that run.
+
+## Decisions and failed attempts
+
+I first tried a nonlinear friction curve that pulled the loop toward a constant bow velocity each sample. In this single folded delay loop, the value settled at a fixed point instead of oscillating: pitch tests read a near-DC component regardless of how I tuned the pull. Regenerating the loop's own signal was more stable. The price is clear: there are no separate nut-to-bow and bow-to-bridge traveling waves, and no distinct stick and slip phases. A more faithful waveguide needs those parts.
+
+The regenerative version had its own failures. Without noise at startup, a note could settle an octave down. Without DC blocking, the sustain grew a low-frequency bias. An early DC blocker coefficient of 0.995 placed its cutoff high enough to encourage a 110 Hz note's second harmonic; changing it to 0.999 moved that cutoff below the supported notes. A generic one-pole loss coefficient also let the third harmonic dominate. The current loss cutoff follows the requested pitch, so the loop damps higher modes relative to its fundamental.
+
+For this post, the live BDD run initially timed out after 240 seconds inside the sandbox, before its first screenshot. The same command finished in 12.57 seconds with the needed device and renderer access outside the sandbox. That is an execution-environment failure, not a failed audio assertion.
+
+I kept bow position's comb filter on the output because feeding a position-dependent sample back into this simplified loop would make the stability problem harder. I kept the view separate from the audio representation because the GUI needs a legible string at frame rate, while the voice needs an audio-rate delay line. The 48-point snapshot connects them without a GUI lock on the audio path.
+
+These decisions make a playable, controllable instrument. They also define its limit: the current model can change timbre in the right directions, but a favorable centroid or a green BDD scenario is not a listening comparison with a violinist.
+
+## What's next
+
+The next phase is to make the 3D instrument a deeper sound-design interface: manipulate meaningful string, bow, bridge and body properties in the view, and have those edits change the audio model. Before making stronger realism claims, the pitch assertion should measure the property its name promises, damping needs a test that distinguishes its acoustic tail from the fixed release envelope, and a recorded listening comparison needs to happen. After that, the instrument laboratory can explore string and body designs that no wooden instrument could hold together.
