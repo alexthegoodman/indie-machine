@@ -1,0 +1,144 @@
+---
+title: "Entropy's ML Graph Learns to Execute: LSTM, Sparse MoE, and a Conditioned U-Net"
+date: 2026-09-24
+series: Entropy
+crate_versions:
+  added: []
+  unchanged:
+    - 'burn = "0.20" (resolved 0.20.1; ndarray and autodiff features)'
+    - 'burn-core = 0.20.1 and burn-nn = 0.20.1 (transitive Burn crates)'
+    - 'serde = 1.0.228 and serde_json = 1.0.149'
+    - 'deno_core = 0.332.0'
+  edition: "2024"
+  rustc: "1.94.1"
+  os: "Windows 11, build 10.0.26200, x86_64"
+  backend: "burn::backend::Autodiff<burn::backend::NdArray<f32>> on CPU; no GPU backend tested"
+  tooling: "Deno 2.6.7 bundles the TypeScript addon"
+repo_link: https://github.com/alexthegoodman/entropy-engine
+---
+
+[The first ML Graph Trainer post](/posts/entropy-ml-graph-trainer) ended with a useful restriction: a node graph could train a Burn model, provided the graph was one `Input → Dense → ... → Loss` chain. That was enough to show a variable-length `Vec<Linear<B>>` learning XOR and two moons. It could not express the models already living elsewhere in our projects. Yumon NPC has recurrent state and two outputs. Yumon Pet has causal attention and experts selected per token. Mini-Pic has image skips plus timestep and text conditioning.
+
+The editor now contains representative graphs for all three, and the Rust backend executes their named links. Each preset also has a smaller configuration that runs on the CPU during the live BDD suite. The distinction matters: these are trainable architectural paths on deterministic synthetic data. They are not imported Yumon or Mini-Pic checkpoints, and a falling loss on a tiny task is not evidence that a language model talks or a diffusion model draws.
+
+The work is in Entropy commit `f980ae9e2082cff277d0ae0ba49d4dd08c554fbb`, tagged locally as `ml-graph-architecture-execution-2026-09-24`. The tag has not been pushed as of this draft, so the public repository may not resolve this revision yet. I did not make a new code commit for this article.
+
+## The graph becomes a program
+
+The TypeScript editor's 23 node kinds include four sources, learned layers, tensor operations and named outputs. The three presets use the same catalog:
+
+| Graph | Main route | Outputs |
+| --- | --- | --- |
+| NPC | Sequence input → LSTM → last recurrent step → dropout → shared Dense | Action logits and tanh rotation |
+| Pet | Token embedding → two RMSNorm/causal-attention/sparse-MoE blocks with residual adds | Next-token logits and router auxiliary loss |
+| Mini-Pic | Noisy image, timestep and text → convolutions and residual blocks → spatial and cross attention → skip concatenations and upsampling | Predicted noise image |
+
+The editor checks shapes before a run, but the backend treats its JSON as untrusted. `src/ml_architecture.rs` checks node IDs, pin names, exactly one source per input pin, missing inputs, cycles, nodes that cannot reach an output, task output shapes and an interactive tensor budget. It computes a topological order from the actual links. A graph that draws a plausible U-Net but loses one skip wire fails before training starts.
+
+Here is the ordering step from that file:
+
+```rust
+let mut indegree: Vec<_> = inputs.iter().map(HashMap::len).collect();
+let mut ready: Vec<_> = indegree
+    .iter()
+    .enumerate()
+    .filter(|(_, d)| **d == 0)
+    .map(|(i, _)| i)
+    .collect();
+let mut order = Vec::new();
+while let Some(i) = ready.pop() {
+    order.push(i);
+    for &j in &outgoing[i] {
+        indegree[j] -= 1;
+        if indegree[j] == 0 {
+            ready.push(j);
+        }
+    }
+}
+if order.len() != graph.nodes.len() {
+    return Err("graph contains a cycle".into());
+}
+```
+
+Topological sorting is the part the old dense chain never needed. It allows one `Dense` output to feed both NPC heads, two MoE auxiliary values to meet in an `Add`, and encoder features to wait until the U-Net decoder reaches the matching skip merge. The forward pass stores typed tensor values by `(node, output pin)` and looks up each node's named inputs in the compiled plan. Rewiring a link therefore changes the computation, subject to validation.
+
+The tensor values carry rank and integer/float kind in Rust: `Float1` through `Float4`, plus integer timestep and token tensors. There is one subtle extra marker. The compiler omits the symbolic batch dimension when checking most shapes, so a router auxiliary scalar `[1]` can otherwise look like a batched `[B,1]` head. An `Add` that mixed those passed a superficial dimension comparison but would fail when executed. The compiled plan now tracks auxiliary outputs separately and rejects that connection synchronously. The regression test builds exactly that mistaken wire.
+
+## Giving a runtime graph Burn parameters
+
+[Burn's `Module` trait](https://docs.rs/crate/burn/0.20.1) registers parameter-bearing fields for optimization. The earlier MLP used `Vec<Linear<B>>`. Here each graph slot can own a different layer type: an LSTM, embedding, convolution, attention block, routed experts, or no parameters at all. I initially tried deriving `Module` for an enum of node variants. Burn's derive macro stopped with `Enums are only supported for one field type`. A heterogeneous enum was the wrong representation for that derive.
+
+The version that compiles uses one `Operator<B>` struct with optional parameter modules, plus a `Vec<Operator<B>>` in the trainable model. Non-parameter graph and execution-plan metadata live in `Ignored<T>` fields:
+
+```rust
+#[derive(Module, Debug)]
+pub struct Model<B: Backend> {
+    operators: Vec<Operator<B>>,
+    graph: Ignored<Graph>,
+    plan: Ignored<Plan>,
+}
+```
+
+That lets Burn visit every present parameter while the plan decides which operator runs at each graph node. The source for `Operator<B>` lists its optional fields explicitly in `src/ml_architecture.rs`; the graph is dynamic in its node count and wiring, while the set of supported operator kinds remains deliberate and finite. The `Ignored` metadata is not part of the saved parameter record. Burn 0.20.1's module implementation and attention API were checked against the installed crate source and its [versioned crate page](https://docs.rs/crate/burn/0.20.1), since current online pages can describe a newer release.
+
+## Three different training signals
+
+NPC's small task supplies sequences whose first feature carries one of two classes. Its LSTM's last state feeds action cross-entropy and a separate rotation MSE target of `-0.4` or `0.4`. The two losses update the shared route. That checks branching and the two heads, not NPC behavior in the simulation.
+
+Pet's task supplies short token sequences and targets `(token + 1) % vocabulary_size` at each position. Its attention node registers a future-token mask with Burn's `MhaInput::mask_attn`. A dedicated test changes a later token and compares the first token's logits; they stay equal within `1e-6`, while the edited token's own logits change. This tests the direction of the mask rather than assuming that a decreasing loss implies causality.
+
+The Pet MoE computes router probabilities for each token, takes the top-k choices, gathers only the selected rows for each expert, then adds their weighted outputs back at the original row indices. The core scatter in `MoeNode::forward` is:
+
+```rust
+let selected = flat.clone().select(0, index.clone());
+let gate = probabilities
+    .clone()
+    .select(0, index.clone())
+    .slice([0..count, i..i + 1]);
+let value = self.second[i].forward(relu(self.first[i].forward(selected))) * gate;
+output = output.select_assign(0, index, value, IndexingUpdateOp::Add);
+```
+
+The router also reports a balance term and a logit z-loss through its `aux` pin. The task combines next-token cross-entropy with that auxiliary value at a small weight. Tests train the same graph with top-1 and top-2 choices. This first version uses host-visible route indices and CPU `NdArray`; no throughput claim follows from it.
+
+Mini-Pic's task supplies an 8×8 noisy image, four text tokens and a timestep to the reduced preset. The graph has time embeddings in residual blocks, a text encoder, spatial self-attention, cross-attention, two downsampling levels, three skip merges, and matching upsampling. The target is a fixed small noise pattern, and the loss is image MSE. Another test holds the image constant while changing either the timestep or the text tokens; each changes the predicted image. That tells us the conditioning edges reach the output. It does not tell us whether a diffusion sampler can make a useful picture.
+
+![The live Entropy ML Graph addon after training the tiny NPC graph: action and rotation heads share an LSTM path, and the status shows a completed 24-epoch run.](/images/entropy-ml-architecture-npc-trained.png)
+
+![The live addon after training the tiny Pet graph: the token path includes two causal-attention and sparse-MoE blocks, with a separate auxiliary output.](/images/entropy-ml-architecture-pet-trained.png)
+
+![The live addon after training the tiny Mini-Pic graph: image, timestep and token sources feed the conditioned U-Net and its skip connections.](/images/entropy-ml-architecture-mini-pic-trained.png)
+
+## Evidence from the running addon
+
+I ran `cargo build --release --bin example`, then `cargo test --release --lib ml_ -- --test-threads=1` on Windows 11 with Rust 1.94.1 and Burn's CPU `NdArray` autodiff backend. All 13 targeted Rust tests passed: six architecture tests and seven earlier MLP tests. The architecture tests include second tiny datasets or shapes: NPC at four and seven steps, Pet with top-1 and top-2 expert routing, and Mini-Pic at 8×8 and 4×4. The existing TypeScript architecture suite passed 16 tests.
+
+The stronger check was `cargo test --release --test ml_graph_live -- --nocapture`. It launched the compiled `example ml-graph-demo` app, drove the actual addon UI, saved its results, and captured eleven screenshots. I ran it outside the sandbox because the native window cannot reliably render its first frame inside that sandbox. It trained the three old MLP datasets and all three new tiny architecture graphs. The new runs used seed 42:
+
+| Architecture | Tiny task | Epochs | Reported first loss | Reported final loss |
+| --- | --- | ---: | ---: | ---: |
+| NPC | Two-class sequence plus rotation | 24 | 1.0460 | 0.1032 |
+| Pet | Sixteen-token vocabulary, next-token target and router aux | 12 | 2.9033 | 0.9923 |
+| Mini-Pic | 8×8 fixed-noise prediction | 3 | 0.1055 | 0.0268 |
+
+These are training-set losses from intentionally easy, fixed synthetic samples, reported before each optimizer step. There is no held-out quality measure. A lower Pet loss does not mean coherent text; a lower Mini-Pic MSE does not mean image generation. The live BDD also verifies that breaking a U-Net skip wire produces an invalid graph, loading the saved graph restores it, and the addon persists each architecture run's first and final losses.
+
+## Decisions and failures that shaped it
+
+The first decision was to keep the graph's execution plan separate from Burn's parameter modules. Rebuilding a fixed Rust struct for every edited topology would make most wires decorative. The compiled DAG stores routing and shapes, while `Vec<Operator<B>>` gives the optimizer concrete parameters to visit. The cost is a larger, explicit operator catalog and runtime tensor-kind dispatch. That is a reasonable cost for an editor whose job is to make wiring consequential.
+
+The second decision was to run bounded synthetic tasks before connecting real datasets. The reference presets are much larger: Pet's graph has 320 token positions and an 8,192-token vocabulary; Mini-Pic's starts at 64×64 and uses wide image features. A full CPU pass through those graphs would make the editor a poor smoke-test surface. **Tiny Config** clones each graph, preserves every node and link, and reduces dimensions. The Rust API independently rejects oversized interactive runs. The original presets remain visible reference designs.
+
+Several failures exposed useful boundaries:
+
+- The enum derive failed with `Enums are only supported for one field type`; the optional-field operator container replaced it.
+- Integer tensor reads initially asked for `i32` and produced `TypeMismatch("Invalid target element type (expected I64, got I32)")`. Reading Burn's integer tensors as `i64` fixed both timestep encoding and MoE route choices. The first background-thread panic would otherwise have left the UI waiting, so the trainer now sends terminal errors through `pollArchitecture`.
+- The first MoE pass masked outputs from every expert after evaluating every token through every expert. That selected the right mathematical outputs but did no sparse computation. Gathering routed rows before each expert and scattering them back fixed the implementation.
+- The live BDD first failed an exact label check even though Mini-Pic had finished training. The UI had appended the loss to `Architecture training completed`, while the feature expected that label exactly. The status and numeric line are now separate. The test's failure was about UI text, not model convergence.
+- Dropping the symbolic batch dimension made an auxiliary `[1]` look like a batched `[B,1]`. The auxiliary marker closes that validation hole.
+
+## What remains
+
+`Entropy.ML.trainArchitecture` currently generates its own sequence, token and image inputs. It does not ingest external datasets, save trained weights or optimizer state, or load a graph for inference. The Mini-Pic path uses fixed synthetic noise and nearest-neighbor upsampling; the source project uses a diffusion schedule and bilinear resize. The Pet graph is a small decoder skeleton, not a checkpoint-compatible copy of Yumon Pet's training system. Those differences are documented in docs/ML_GRAPH_ARCHITECTURES.md in the tagged Entropy revision and tracked as follow-up work.
+
+The next useful milestone is to make one of these graph models leave the smoke-test world: define a versioned dataset input, persist the graph plus weights and optimizer state, and run inference from what was saved. Until then, the new backend proves that the edited architectures execute and receive gradients, with tests aimed at the causal and conditioning contracts most likely to be lost in a visual graph.
