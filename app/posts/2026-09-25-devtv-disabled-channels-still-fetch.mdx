@@ -1,0 +1,49 @@
+---
+title: "Product Hunt Pick: DEV·TV Puts Developer Feeds on a Television, but the Off Switch Still Fetches"
+date: 2026-09-25
+series: Product Hunt
+crate_versions: []
+repo_link: https://github.com/shouvik12/devtv
+---
+
+[DEV·TV](https://www.producthunt.com/products/dev-tv) is a little television for developer news. It was #5 on Product Hunt's September 25 board when I checked. GitHub repositories, Hacker News stories, releases, papers, CVEs, and videos cycle through ten channels. The idea is to leave it on a spare screen and notice a story without opening another feed. The maker says that was the intended use in the [Product Hunt discussion](https://www.producthunt.com/products/dev-tv).
+
+This one has a public [MIT repository](https://github.com/shouvik12/devtv), so I ran the actual page and tested it with controlled API responses. The television works. There is also a small but useful distinction in the settings: turning a channel off removes it from the rotation, but the page continues fetching that channel's data.
+
+## One file, ten sources
+
+The [live site](https://shouvik12.github.io/devtv/) is the product's landing page and the app. It serves one HTML document containing its CSS and JavaScript. I fetched the live page and confirmed a successful response and ten channel definitions; the pinned repository's `index.html` is 102,089 bytes. There is no package install, build, account, or DEV·TV backend. The browser still calls third-party APIs, which is how the live feeds work.
+
+The channels are GitHub, Hacker News, DEV, Hugging Face models, releases, AI papers, latest papers, CVEs, HN video, and AI video. The [README's source table](https://github.com/shouvik12/devtv#-channels) names the API behind each. Product Hunt's short listing and the current source both say ten channels. An older Product Hunt subpage still describes seven; the current listing and code are the better guide to what ships now.
+
+The GitHub channel is worth reading accurately. It requests repositories *created in the last two days*, sorted by total stars. That can surface new repositories, but it does not measure stars gained in those two days and is not GitHub Trending. The source comments say as much. The releases channel makes six more GitHub API calls per refresh, one for each tracked stack. The [README](https://github.com/shouvik12/devtv#-tech-notes) explains the shared unauthenticated rate-limit pressure and the browser cache used to soften it.
+
+## Running the page
+
+I cloned `shouvik12/devtv` at commit `71eea19356d070fc44703f2d9e3aededa8b93b05` and opened its unmodified `index.html` in headless Chrome 153 on Windows 11. The harness is in `ph-tests/devtv/`; `node browser-test.mjs` launches Chrome with a fresh profile, intercepts HTTPS requests, and records them. It supplies synthetic GitHub and Hacker News responses and returns HTTP 503 for the other feeds. There are no credentials, user sessions, or external API calls in that test run. The script made 30 intercepted requests across the initial load and an explicit refresh.
+
+The page rendered the fabricated GitHub story, opened its README in the built-in reader, switched to the HN story, and showed an explicit error for DEV. The settings panel listed all ten channels and remembered a disabled channel in `localStorage`.
+
+![DEV·TV showing a synthetic GitHub repository supplied by the test harness.](images/devtv-github-synthetic.png)
+
+![The built-in reader showing the synthetic repository's README.](images/devtv-reader-synthetic.png)
+
+These screenshots are from the real page with **synthetic feed data**, not from a live GitHub repository. The test also supplied HTML with an `onerror` handler in the README and HN story. Neither handler ran in Chrome, and the README did not leave an executable image element in the reader. That is a narrow check of these two paths, not a security audit of every markdown shape.
+
+The failure path is particularly clean. A 503 on DEV left the other channels running and displayed the channel's own `SIGNAL LOST` state instead of a blank screen.
+
+![The DEV feed's error state after the test harness returned HTTP 503.](images/devtv-signal-lost-synthetic.png)
+
+## An off channel still makes requests
+
+I disabled DEV in the settings panel and checked the stored setting. `devto` disappeared from `enabledIds` and from the persisted channel list. Then I called the page's normal `loadAll()` refresh. The request log gained another `dev.to/api/articles` call. The reason is direct in [`index.html`](https://github.com/shouvik12/devtv/blob/71eea19356d070fc44703f2d9e3aededa8b93b05/index.html): `getChannels()` filters the visible channels by `enabledIds`, while `loadAll()` iterates `ALL_CHANNELS` and calls every fetcher.
+
+This does not break channel switching. It matters if you turn off a source to save network traffic, avoid sending requests to it, or conserve a shared API allowance. The settings control is a viewing preference, not a request preference. The same code path runs at startup and every ten minutes. Caching can prevent a particular fetch, but the enabled setting is not consulted by the loader.
+
+## The trade
+
+The visual design is the point, and it comes through in the run: channel tuning, static, a story ticker, and a reader that stays inside the television. The project also makes reasonable scope choices for one static page. It uses public browser-accessible feeds and leaves out Product Hunt itself because its API would require a private token. The maker confirmed that constraint in the [launch discussion](https://www.producthunt.com/products/dev-tv).
+
+I would use it as ambient news on a second screen if those ten feeds suit me. I would not treat it as a private or offline reader: it sends requests to source APIs, and hiding a channel does not stop those requests. I also would not call its GitHub list a momentum ranking; it is a new-repository list sorted by total stars.
+
+I did not test the live third-party feed responses, sustained all-day playback, mobile Safari, or YouTube embedding from the hosted origin. The repository says locally opened video channels use a thumbnail fallback because YouTube's embed needs a web origin. My browser test used a local file and did not exercise video playback.
