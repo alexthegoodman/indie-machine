@@ -5,6 +5,8 @@ import { SiteFooter } from "@/components/SiteFooter";
 import { SectionDivider } from "@/components/SectionDivider";
 import { PostRow } from "@/components/PostRow";
 import { getAllSeries, getSeriesByName } from "@/lib/posts";
+import { SITE_NAME } from "@/lib/site";
+import { seriesDescription } from "@/lib/series";
 
 export function generateStaticParams() {
   return getAllSeries().map(({ name }) => ({ series: name }));
@@ -18,8 +20,23 @@ export async function generateMetadata({
   const { series } = await params;
   const name = decodeURIComponent(series);
   return {
-    title: `${name} — Indie Machine`,
-    description: `Posts in the ${name} series on Indie Machine.`,
+    title: `${name} Engineering Articles | Indie Machine`,
+    description: seriesDescription(name),
+    alternates: { canonical: `/series/${encodeURIComponent(name)}` },
+    openGraph: {
+      title: `${name} Engineering Articles | Indie Machine`,
+      description: seriesDescription(name),
+      url: `/series/${encodeURIComponent(name)}`,
+      siteName: SITE_NAME,
+      type: "website",
+      images: ["/opengraph-image"],
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: `${name} Engineering Articles | Indie Machine`,
+      description: seriesDescription(name),
+      images: ["/opengraph-image"],
+    },
   };
 }
 
@@ -38,7 +55,7 @@ export default async function SeriesPage({ params }: { params: Promise<{ series:
         <div className="text-[13px] tracking-[0.14em] text-accent">// SERIES</div>
         <h1 className="mt-3 font-display text-5xl font-bold text-ink-100 md:text-6xl">{name}</h1>
         <p className="mt-4 max-w-xl font-display text-base text-ink-300">
-          {posts.length} {posts.length === 1 ? "post" : "posts"} in build order.
+          {seriesDescription(name)} {posts.length} {posts.length === 1 ? "post" : "posts"}.
         </p>
       </div>
 

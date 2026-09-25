@@ -13,7 +13,7 @@ crate_versions:
 repo_link: https://github.com/alexthegoodman/yumon-pet
 ---
 
-The [last Yumon Pet post](/posts/2026-09-10-yumon-loss-vs-quality) found that the lowest-loss checkpoint in the repo produced the worst prose of three. That was one architecture (`DecoderOnly`, plain causal attention) at three sizes. This post is a new architecture, `YumonXLstmBrain` (`src/brain/xlstm_model.rs`), swept across twelve runs and five checkpoint directories in a single day. The same inversion shows up again, and this time it's not close: the single lowest-loss checkpoint in the entire xLSTM tree is stuck in an exact repetition loop, and no run - regardless of size, depth, head count, or learning rate - ever got past short, occasionally ungrammatical sentences before `MIN_EPOCH_LOSS_DROP` called it and moved on.
+The [last Yumon Pet post](/posts/yumon-loss-vs-quality) found that the lowest-loss checkpoint in the repo produced the worst prose of three. That was one architecture (`DecoderOnly`, plain causal attention) at three sizes. This post is a new architecture, `YumonXLstmBrain` (`src/brain/xlstm_model.rs`), swept across twelve runs and five checkpoint directories in a single day. The same inversion shows up again, and this time it's not close: the single lowest-loss checkpoint in the entire xLSTM tree is stuck in an exact repetition loop, and no run - regardless of size, depth, head count, or learning rate - ever got past short, occasionally ungrammatical sentences before `MIN_EPOCH_LOSS_DROP` called it and moved on.
 
 None of these twelve runs is what Yumon should ship with. That's the point of writing them up rather than picking the best-looking one and moving on.
 

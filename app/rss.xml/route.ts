@@ -1,7 +1,5 @@
 import { getAllPosts } from "@/lib/posts";
-
-const SITE_NAME = "Indie Machine";
-const SITE_DESCRIPTION = "Rust. Native. Complex applications. A build log for Entropy.";
+import { SITE_DESCRIPTION, SITE_NAME, SITE_URL, absoluteUrl } from "@/lib/site";
 
 function escapeXml(value: string): string {
   return value
@@ -12,13 +10,12 @@ function escapeXml(value: string): string {
     .replace(/'/g, "&apos;");
 }
 
-export async function GET(request: Request) {
-  const siteUrl = new URL(request.url).origin;
+export function GET() {
   const posts = getAllPosts();
 
   const items = posts
     .map((post) => {
-      const url = `${siteUrl}/posts/${post.slug}`;
+      const url = absoluteUrl(`/posts/${post.slug}`);
       return `
     <item>
       <title>${escapeXml(post.title)}</title>
@@ -34,7 +31,7 @@ export async function GET(request: Request) {
 <rss version="2.0">
   <channel>
     <title>${escapeXml(SITE_NAME)}</title>
-    <link>${siteUrl}</link>
+    <link>${SITE_URL}</link>
     <description>${escapeXml(SITE_DESCRIPTION)}</description>${items}
   </channel>
 </rss>`;

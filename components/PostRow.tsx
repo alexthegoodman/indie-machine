@@ -53,7 +53,7 @@ export function PostRow({
 
       <div className="shrink-0 text-left sm:w-36 sm:text-right">
         <div className="text-[11px] text-ink-500">{(post.series ?? "UNCATEGORIZED").toUpperCase()} SERIES</div>
-        <div className="mt-1 text-[11px] text-ink-500">{post.date}</div>
+        <time dateTime={post.date} className="mt-1 block text-[11px] text-ink-500">{post.date}</time>
         <div className="mt-2 text-xs text-accent">READ →</div>
       </div>
     </Link>

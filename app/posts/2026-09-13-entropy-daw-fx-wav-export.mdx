@@ -144,5 +144,5 @@ First-party benchmark: `src/bin/daw_fx_bench.rs` (`cargo run --release --bin daw
 
 - A real persistent per-track (or master) mixing bus, so delay/reverb tails from overlapping notes on the same track can actually share state instead of each note getting its own independent instance - would need moving off "one detached `Sink` per note" toward a continuous mixed stream, a much bigger architectural change than this session's scope.
 - More instrument presets beyond the current kick/snare/hihat/clap/tom plus sine/square/saw/triangle/noise.
-- A proper piano-roll rebuild on `TrackView`/`KeyframeTimeline` (see [the keyframe timeline and track view post](/posts/2026-09-12-entropy-keyframe-timeline-track-view)) instead of the DAW's current bespoke `PianoRoll` widget.
+- A proper piano-roll rebuild on `TrackView`/`KeyframeTimeline` (see [the keyframe timeline and track view post](/posts/entropy-keyframe-timeline-track-view)) instead of the DAW's current bespoke `PianoRoll` widget.
 - MIDI input.

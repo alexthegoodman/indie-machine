@@ -100,7 +100,7 @@ setTheme: (theme) => {
 
 ## The theme gallery example
 
-`examples/studio-bundle/src/theme_gallery_addon.ts` + `src/bin/example_theme_gallery.rs`, following the same minimal-bin pattern as the [media player example](/posts/2026-09-09-entropy-media-player) - all the logic lives in the addon, the bin is three lines:
+`examples/studio-bundle/src/theme_gallery_addon.ts` + `src/bin/example_theme_gallery.rs`, following the same minimal-bin pattern as the [media player example](/posts/entropy-media-player) - all the logic lives in the addon, the bin is three lines:
 
 ```rust
 // src/bin/example_theme_gallery.rs
@@ -221,4 +221,4 @@ src/entropy_gui/style.rs              | 66 ++++++++++++++++++++++++++---------
 
 - A light-mode palette, if a future embedder actually wants one - deliberately scoped out here since it needs real per-widget-state contrast tuning, not a color inversion.
 - Screenshot "Nocturne" and "Verdant" directly, closing the gap in the failure notes above.
-- Wire `setTheme` into `EntropyApp` itself (a `.with_theme(ThemeDescriptor)` builder method, mirroring `.with_title()`/`.with_window_icon()` from the [window-config post](/posts/2026-09-08-entropy-app-window-config)), so an embedder can set a starting theme before any addon code runs, instead of every addon having to call `setTheme` from its own `onInit`.
+- Wire `setTheme` into `EntropyApp` itself (a `.with_theme(ThemeDescriptor)` builder method, mirroring `.with_title()`/`.with_window_icon()` from the [window-config post](/posts/entropy-app-window-config)), so an embedder can set a starting theme before any addon code runs, instead of every addon having to call `setTheme` from its own `onInit`.

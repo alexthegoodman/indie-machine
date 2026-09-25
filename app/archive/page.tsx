@@ -4,10 +4,26 @@ import { SiteFooter } from "@/components/SiteFooter";
 import { SectionDivider } from "@/components/SectionDivider";
 import { PostRow } from "@/components/PostRow";
 import { getAllPosts } from "@/lib/posts";
+import { SITE_NAME } from "@/lib/site";
 
 export const metadata: Metadata = {
-  title: "Archive — Indie Machine",
-  description: "Every post published on Indie Machine, in build order.",
+  title: "Rust Engineering Article Archive | Indie Machine",
+  description: "Browse every Indie Machine article on Rust, wgpu, native UI, audio, machine learning, and developer tools, newest first.",
+  alternates: { canonical: "/archive" },
+  openGraph: {
+    title: "Rust Engineering Article Archive",
+    description: "Browse Indie Machine's Rust and native software build notes, newest first.",
+    url: "/archive",
+    siteName: SITE_NAME,
+    type: "website",
+    images: ["/opengraph-image"],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: "Rust Engineering Article Archive",
+    description: "Browse Indie Machine's Rust and native software build notes, newest first.",
+    images: ["/opengraph-image"],
+  },
 };
 
 export default function ArchivePage() {
@@ -21,7 +37,7 @@ export default function ArchivePage() {
         <div className="text-[13px] tracking-[0.14em] text-accent">// FULL RECORD</div>
         <h1 className="mt-3 font-display text-5xl font-bold text-ink-100 md:text-6xl">Archive</h1>
         <p className="mt-4 max-w-xl font-display text-base text-ink-300">
-          Every sheet logged so far, oldest to newest.
+          Every sheet logged so far, newest first.
         </p>
       </div>
 

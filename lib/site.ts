@@ -1,9 +1,15 @@
 // Single source of truth for the site's canonical origin. Sitemap, robots.txt,
 // metadataBase, and per-post structured data all resolve absolute URLs from
-// this - set NEXT_PUBLIC_SITE_URL in the deploy environment once the real
-// domain exists, otherwise this falls back to localhost for local builds.
-export const SITE_URL = process.env.NEXT_PUBLIC_SITE_URL ?? "http://localhost:3000";
+// this. The public domain is the default so local and preview builds still
+// point search engines to the same published URLs.
+export const SITE_URL = (process.env.NEXT_PUBLIC_SITE_URL || "https://indie-machine.com").replace(/\/+$/, "");
 
 export const SITE_NAME = "Indie Machine";
 export const SITE_DESCRIPTION =
-  "Indie Machine is a build log for Entropy, a native engine written from scratch in Rust — GPU compute pipelines, an in-house GUI kit, and everything measured against a real commit.";
+  "Indie Machine documents Rust and native software development through tested builds, source code, measurements, and practical notes on Entropy and Yumon.";
+
+export const SITE_TITLE = "Indie Machine | Rust and Native Software Engineering";
+
+export function absoluteUrl(path: string): string {
+  return new URL(path, `${SITE_URL}/`).toString();
+}

@@ -19,7 +19,7 @@ repo_link: https://github.com/alexthegoodman/entropy-engine
 
 Every Burn model in this codebase up to now has been a fixed Rust struct. `crate::yumon::system::BrainModel` is `Lstm -> Dropout -> Dense -> two heads`, hand-written, known at compile time. That's normal for Burn - a model's shape is part of its type.
 
-A node graph editor doesn't work that way. The whole point of dragging out a Dense node and wiring it into a chain is that the shape isn't decided until someone stops editing the graph, which could be any point at runtime. So the interesting problem this post is about isn't "hook a graph editor up to some numbers" (see the [Nocode Calculator](/posts/2026-09-09-entropy-node-graph-editor), which already does that in plain JS) - it's "take a graph nobody has typed a `struct` for and hand Burn a real, trainable model built from it."
+A node graph editor doesn't work that way. The whole point of dragging out a Dense node and wiring it into a chain is that the shape isn't decided until someone stops editing the graph, which could be any point at runtime. So the interesting problem this post is about isn't "hook a graph editor up to some numbers" (see the [Nocode Calculator](/posts/entropy-node-graph-editor), which already does that in plain JS) - it's "take a graph nobody has typed a `struct` for and hand Burn a real, trainable model built from it."
 
 ## What we're building
 
@@ -205,7 +205,7 @@ First-party diff, `git diff --stat` at commit `f9c9d8d1cc9001c4e2608fdbe919248ff
 
 ## Failure notes
 
-No first-try compile or runtime failures this session - worth stating plainly rather than manufacturing a war story, since [past posts in this series](/posts/2026-09-11-entropy-stylus-drawing) have hit real ones. The difference this time: every load-bearing Burn API (`Ignored<T>`, the `Vec<T>` blanket `Module`/`AutodiffModule` impls, `CrossEntropyLossConfig::init`/`forward`'s exact signature) was confirmed by reading the actual vendored crate source in `~/.cargo/registry/src/.../burn-core-0.20.1/` and `burn-nn-0.20.1/` before any model code was written, rather than reconstructed from memory of an earlier Burn version. The one place that paid off concretely: `burn-nn`'s own `cross_entropy.rs` test suite builds its integer target tensor as `Tensor::<TestBackend, 1, Int>::from_data(TensorData::from([2, 0, 4, 1]), &device)` with no explicit type conversion - a test elsewhere in the same file that mixes an `as i64` cast into the literal array does need `.convert::<IntElem<TestBackend>>()`. Copying the plain-literal form directly avoided finding that out by hitting a type-mismatch error.
+No first-try compile or runtime failures this session - worth stating plainly rather than manufacturing a war story, since [past posts in this series](/posts/entropy-stylus-drawing) have hit real ones. The difference this time: every load-bearing Burn API (`Ignored<T>`, the `Vec<T>` blanket `Module`/`AutodiffModule` impls, `CrossEntropyLossConfig::init`/`forward`'s exact signature) was confirmed by reading the actual vendored crate source in `~/.cargo/registry/src/.../burn-core-0.20.1/` and `burn-nn-0.20.1/` before any model code was written, rather than reconstructed from memory of an earlier Burn version. The one place that paid off concretely: `burn-nn`'s own `cross_entropy.rs` test suite builds its integer target tensor as `Tensor::<TestBackend, 1, Int>::from_data(TensorData::from([2, 0, 4, 1]), &device)` with no explicit type conversion - a test elsewhere in the same file that mixes an `as i64` cast into the literal array does need `.convert::<IntElem<TestBackend>>()`. Copying the plain-literal form directly avoided finding that out by hitting a type-mismatch error.
 
 Two real, open gaps rather than bugs:
 
@@ -216,6 +216,6 @@ Two real, open gaps rather than bugs:
 
 - More node types - at minimum a Dropout node (Yumon's own `BrainModel` already proves the underlying `Dropout`/`DropoutConfig` works in this codebase) and possibly an LSTM node, reusing `crate::yumon::system::BrainModel`'s exact layer as a template rather than a new implementation.
 - Branching graphs - multiple inputs merged into one node - once there's an actual use case that needs it, rather than built speculatively.
-- A live loss-curve visualization using `entropy_gui::KeyframeTimeline` (see the [KeyframeTimeline/TrackView post](/posts/2026-09-12-entropy-keyframe-timeline-track-view)) instead of a single running number, since both training runs in this post finished fast enough that a curve would actually be visible forming in real time.
+- A live loss-curve visualization using `entropy_gui::KeyframeTimeline` (see the [KeyframeTimeline/TrackView post](/posts/entropy-keyframe-timeline-track-view)) instead of a single running number, since both training runs in this post finished fast enough that a curve would actually be visible forming in real time.
 - Save/load a trained graph's weights - right now the model exists only inside the training thread's closure and is discarded once the final `MlTrainingUpdate` is sent.
 - A real dropdown-payload investigation, so activation/dataset selection isn't permanently stuck on cycling buttons.

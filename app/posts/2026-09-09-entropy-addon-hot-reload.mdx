@@ -20,7 +20,7 @@ The question going in was whether that's even possible without dylib-style hot-r
 
 ## What's out of scope here
 
-Bundling stays a manual step - `cd examples/studio-bundle && deno bundle src/fft_water_addon.ts > dist/fft_water.js`, same command from the [FFT ocean water post](/posts/2026-09-08-fft-ocean-water). The engine doesn't invoke `deno bundle` itself; it only watches the *output* file. That's a deliberate scope cut, not a missing feature - re-bundling doesn't need to live inside the render loop's process to solve the actual problem, which was state loss on reload, not the extra terminal command.
+Bundling stays a manual step - `cd examples/studio-bundle && deno bundle src/fft_water_addon.ts > dist/fft_water.js`, same command from the [FFT ocean water post](/posts/fft-ocean-water). The engine doesn't invoke `deno bundle` itself; it only watches the *output* file. That's a deliberate scope cut, not a missing feature - re-bundling doesn't need to live inside the render loop's process to solve the actual problem, which was state loss on reload, not the extra terminal command.
 
 ## Reusing the running JsRuntime instead of replacing it
 
@@ -71,7 +71,7 @@ let id = format!("cpipeline_{}", config.name);
 
 `HashMap::insert` on an existing key replaces the value, so a reload correctly recompiles the pipeline from whatever the shader source now says - that's the whole reason to have a shader-editing hot reload story - without accumulating one dead pipeline object per save. The cost: two addons that happen to pick the same pipeline `name` now collide, sharing one GPU pipeline instead of getting two. `ctx.pipelines` was already a single global (not per-addon) map before this change, so that's a pre-existing property of the naming scheme, not something hot reload introduces - worth knowing if two addons are ever loaded side by side.
 
-**Buffers and storage textures reuse instead of rebuilding.** These are where an addon's actual runtime state lives - the FFT ocean's ripple simulation keeps its accumulated wave height in three ring-buffered `Rgba16Float` storage textures (`textures.rippleRing[0..3]`, from the [interactive ripples post](/posts/2026-09-08-fft-water-interactive-ripples)), not in any JS variable. Giving those a stable id and checking for it before allocating is what keeps that GPU-resident state alive across a reload:
+**Buffers and storage textures reuse instead of rebuilding.** These are where an addon's actual runtime state lives - the FFT ocean's ripple simulation keeps its accumulated wave height in three ring-buffered `Rgba16Float` storage textures (`textures.rippleRing[0..3]`, from the [interactive ripples post](/posts/fft-water-interactive-ripples)), not in any JS variable. Giving those a stable id and checking for it before allocating is what keeps that GPU-resident state alive across a reload:
 
 ```rust
 // src/deno/addon_ops.rs, op_texture_create_ex

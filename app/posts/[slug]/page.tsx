@@ -14,7 +14,7 @@ import { mdxComponents } from "@/components/mdx-components";
 import { getAllPosts, getPostBySlug } from "@/lib/posts";
 import { rehypeFixImagePaths } from "@/lib/rehype-fix-image-paths";
 import { resolveRepoLink } from "@/lib/repoLink";
-import { SITE_NAME, SITE_URL } from "@/lib/site";
+import { SITE_NAME, absoluteUrl } from "@/lib/site";
 
 export function generateStaticParams() {
   return getAllPosts().map((post) => ({ slug: post.slug }));
@@ -77,11 +77,15 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
   const jsonLd = {
     "@context": "https://schema.org",
     "@type": "BlogPosting",
+    "@id": `${absoluteUrl(`/posts/${post.slug}`)}#article`,
     headline: post.title,
     datePublished: new Date(post.date).toISOString(),
     description: post.excerpt,
-    url: `${SITE_URL}/posts/${post.slug}`,
-    publisher: { "@type": "Organization", name: SITE_NAME },
+    url: absoluteUrl(`/posts/${post.slug}`),
+    mainEntityOfPage: absoluteUrl(`/posts/${post.slug}`),
+    image: absoluteUrl(`/posts/${post.slug}/opengraph-image`),
+    author: { "@type": "Organization", name: SITE_NAME, url: absoluteUrl("/about") },
+    publisher: { "@id": absoluteUrl("/#organization") },
     ...(post.series ? { about: post.series } : {}),
   };
 
@@ -89,7 +93,7 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
     <div className="relative z-10">
       <script
         type="application/ld+json"
-        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd) }}
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd).replace(/</g, "\\u003c") }}
       />
       <SiteHeader />
 
@@ -110,7 +114,7 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
               {post.series.toUpperCase()} SERIES
             </Link>
           )}
-          <span className="text-xs text-ink-500">{post.date}</span>
+          <time dateTime={post.date} className="text-xs text-ink-500">{post.date}</time>
         </div>
 
         <h1 className="mt-5 max-w-3xl font-display text-3xl font-bold text-ink-100 md:text-5xl">

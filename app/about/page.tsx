@@ -3,10 +3,26 @@ import { SiteHeader } from "@/components/SiteHeader";
 import { SiteFooter } from "@/components/SiteFooter";
 import { SectionDivider } from "@/components/SectionDivider";
 import { TitleBlock } from "@/components/TitleBlock";
+import { SITE_NAME } from "@/lib/site";
 
 export const metadata: Metadata = {
-  title: "About — Indie Machine",
-  description: "What Indie Machine is and how it's written.",
+  title: "About Indie Machine | Rust Engineering Build Log",
+  description: "How Indie Machine documents Rust native software, tests claims, and links each build note to its source and evidence.",
+  alternates: { canonical: "/about" },
+  openGraph: {
+    title: `About ${SITE_NAME}`,
+    description: "How Indie Machine documents Rust native software and verifies its build notes.",
+    url: "/about",
+    siteName: SITE_NAME,
+    type: "website",
+    images: ["/opengraph-image"],
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: `About ${SITE_NAME}`,
+    description: "How Indie Machine documents Rust native software and verifies its build notes.",
+    images: ["/opengraph-image"],
+  },
 };
 
 export default function AboutPage() {
@@ -27,16 +43,15 @@ export default function AboutPage() {
             how it actually got built.
           </p>
           <p>
-            Every post follows the same discipline: it ships with the commit it was measured
-            against, the exact command that produced any numbers in it, and — where there&apos;s
-            something to see — a screenshot pulled from the session that ran it, not a mockup or a
-            render from a script. Where a run failed or a shortcut got taken, that goes in a
-            Failure Notes section instead of getting quietly smoothed over.
+            Build posts identify the code revision and commands behind their results. When a test
+            produces a useful screenshot or measurement, the post says how it was made. Product
+            reviews distinguish what was run locally from what the product and its documentation
+            claim. Limitations and failed approaches belong in the record too.
           </p>
           <p>
-            Posts are grouped into series when they build on each other directly. The Entropy
-            series so far covers a GPU-driven FFT ocean, the interactive ripple layer added on top
-            of it, and the in-house GUI kit that replaced egui across the whole editor.
+            The Entropy series follows graphics, UI, audio, and application tooling in Rust.
+            Yumon follows model and world experiments. Product Hunt coverage examines developer
+            tools with the same attention to source code and observable behavior.
           </p>
         </div>
 

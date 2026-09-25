@@ -61,7 +61,7 @@ export default function Home() {
                 <span className="border border-line/28 px-2 py-1 text-[11px] tracking-[0.1em] text-ink-300">
                   {(featured.series ?? "").toUpperCase()} SERIES
                 </span>
-                <span className="ml-auto text-xs text-ink-500">{featured.date}</span>
+                <time dateTime={featured.date} className="ml-auto text-xs text-ink-500">{featured.date}</time>
               </div>
               <h2 className="mt-5 font-display text-2xl font-bold text-ink-100 group-hover:text-accent md:text-4xl">
                 {featured.title}

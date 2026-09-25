@@ -1,7 +1,7 @@
 import type { Metadata } from "next";
 import { Space_Grotesk, IBM_Plex_Mono } from "next/font/google";
 import { SheetChrome } from "@/components/SheetChrome";
-import { SITE_NAME, SITE_DESCRIPTION, SITE_URL } from "@/lib/site";
+import { SITE_NAME, SITE_DESCRIPTION, SITE_TITLE, SITE_URL, absoluteUrl } from "@/lib/site";
 import "./globals.css";
 
 import { Analytics } from "@vercel/analytics/next";
@@ -20,13 +20,14 @@ const plexMono = IBM_Plex_Mono({
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
-  title: "Indie Machine — Rust, native, complex applications",
+  title: SITE_TITLE,
   description: SITE_DESCRIPTION,
   alternates: {
+    canonical: "/",
     types: { "application/rss+xml": "/rss.xml" },
   },
   openGraph: {
-    title: "Indie Machine — Rust, native, complex applications",
+    title: SITE_TITLE,
     description: SITE_DESCRIPTION,
     url: "/",
     siteName: SITE_NAME,
@@ -34,7 +35,7 @@ export const metadata: Metadata = {
   },
   twitter: {
     card: "summary_large_image",
-    title: "Indie Machine — Rust, native, complex applications",
+    title: SITE_TITLE,
     description: SITE_DESCRIPTION,
   },
 };
@@ -46,6 +47,25 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
       className={`${spaceGrotesk.variable} ${plexMono.variable} h-full antialiased`}
     >
       <body className="relative min-h-full flex flex-col bg-ink font-mono text-ink-300">
+        <script
+          type="application/ld+json"
+          dangerouslySetInnerHTML={{
+            __html: JSON.stringify({
+              "@context": "https://schema.org",
+              "@graph": [
+                { "@type": "Organization", "@id": absoluteUrl("/#organization"), name: SITE_NAME, url: SITE_URL },
+                {
+                  "@type": "WebSite",
+                  "@id": absoluteUrl("/#website"),
+                  name: SITE_NAME,
+                  url: SITE_URL,
+                  description: SITE_DESCRIPTION,
+                  publisher: { "@id": absoluteUrl("/#organization") },
+                },
+              ],
+            }).replace(/</g, "\\u003c"),
+          }}
+        />
         <SheetChrome />
         {children}
         <Analytics />

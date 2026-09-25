@@ -72,6 +72,12 @@ excerpt field to keep in sync.
 | `/series/[series]` | Posts in one series |
 | `/about` | What this blog is |
 | `/rss.xml` | RSS feed, generated from the same post data |
+| `/llms.txt` | Plain-text guide to the site, series, and articles for AI readers |
+
+The canonical origin defaults to `https://indie-machine.com`. Set
+`NEXT_PUBLIC_SITE_URL` only when a different canonical origin is intentional.
+This origin is used by canonical URLs, the sitemap, RSS feed, article
+structured data, and `llms.txt`.
 
 `lib/posts.ts` is the single source of truth for reading and sorting posts —
 new routes should pull from there rather than reading `app/posts/` directly.
