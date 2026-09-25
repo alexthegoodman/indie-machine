@@ -1,49 +1,82 @@
 ---
-title: "Product Hunt Pick: DEV·TV Puts Developer Feeds on a Television, but the Off Switch Still Fetches"
+title: "Product Hunt Pick: DEV·TV Makes Developer News Ambient, but Off Channels Still Fetch"
 date: 2026-09-25
 series: Product Hunt
 crate_versions: []
 repo_link: https://github.com/shouvik12/devtv
 ---
 
-[DEV·TV](https://www.producthunt.com/products/dev-tv) is a little television for developer news. It was #5 on Product Hunt's September 25 board when I checked. GitHub repositories, Hacker News stories, releases, papers, CVEs, and videos cycle through ten channels. The idea is to leave it on a spare screen and notice a story without opening another feed. The maker says that was the intended use in the [Product Hunt discussion](https://www.producthunt.com/products/dev-tv).
+[DEV·TV](https://www.producthunt.com/products/dev-tv) puts developer news in a television frame. Pick a channel, let stories advance, glance back at it when something catches your eye. It was #5 on Product Hunt's September 25 board when I checked. The maker's suggested setup is a spare office screen or a remote team's always-on tab, where a story becomes something people can point at together.
 
-This one has a public [MIT repository](https://github.com/shouvik12/devtv), so I ran the actual page and tested it with controlled API responses. The television works. There is also a small but useful distinction in the settings: turning a channel off removes it from the rotation, but the page continues fetching that channel's data.
+The app is a single HTML file with a public [MIT repository](https://github.com/shouvik12/devtv). I cloned it, opened the unmodified page in Chrome, and drove it with a browser harness that supplied synthetic feed data and recorded every request. The TV is a real interface rather than a mockup: channel switching, the reader, playback controls, error states, and cached stories all worked in the paths I exercised. The surprising part is what the controls *do not* control. Disabling a channel removes it from the screen, but the page still fetches it. Powering off the screen also leaves refreshes running.
 
-## One file, ten sources
+## The channels are ten different bets on what is worth seeing
 
-The [live site](https://shouvik12.github.io/devtv/) is the product's landing page and the app. It serves one HTML document containing its CSS and JavaScript. I fetched the live page and confirmed a successful response and ten channel definitions; the pinned repository's `index.html` is 102,089 bytes. There is no package install, build, account, or DEV·TV backend. The browser still calls third-party APIs, which is how the live feeds work.
+The [live site](https://shouvik12.github.io/devtv/) is both landing page and app. I fetched it successfully and found ten channel definitions. There is no build step, account, or DEV·TV server; the browser calls the source APIs directly. The repository's pinned `index.html` is 102,089 bytes, including CSS and JavaScript. No npm dependencies hide behind the one-file pitch.
 
-The channels are GitHub, Hacker News, DEV, Hugging Face models, releases, AI papers, latest papers, CVEs, HN video, and AI video. The [README's source table](https://github.com/shouvik12/devtv#-channels) names the API behind each. Product Hunt's short listing and the current source both say ten channels. An older Product Hunt subpage still describes seven; the current listing and code are the better guide to what ships now.
+The [source table in the README](https://github.com/shouvik12/devtv#-channels) spells out each channel. They are not ten views of one aggregate feed:
 
-The GitHub channel is worth reading accurately. It requests repositories *created in the last two days*, sorted by total stars. That can surface new repositories, but it does not measure stars gained in those two days and is not GitHub Trending. The source comments say as much. The releases channel makes six more GitHub API calls per refresh, one for each tracked stack. The [README](https://github.com/shouvik12/devtv#-tech-notes) explains the shared unauthenticated rate-limit pressure and the browser cache used to soften it.
+| Channel | What the page requests | What that means |
+| --- | --- | --- |
+| GitHub | Repository search, created in the last two days, sorted by total stars | New repositories with high total stars, not star growth or GitHub Trending |
+| Hacker News | Current top-story IDs, then each story | A front-page snapshot, with another request for every selected story |
+| DEV | The site's top articles for today | A daily ranking supplied by DEV |
+| Hugging Face | Models sorted by its trending score | The platform's own momentum measure |
+| Releases | Latest release for React, Vue, TypeScript, Node.js, Python, and Rust | A six-project shortlist, not all releases |
+| AI Papers / Latest Papers | Hugging Face daily papers / OpenAlex works by publication date | Community attention versus recency |
+| CVE | Recent entries from NVD | A seven-day vulnerability window |
+| HN Video / AI Video | Two HN Algolia searches for YouTube links | HN-voted videos; the AI channel adds a title-keyword filter |
 
-## Running the page
+That design is more thoughtful than just putting RSS in a CRT skin. AI Papers can keep showing a paper people are still discussing; Latest Papers can show one too new to have a discussion. The video channels use Hacker News votes instead of YouTube recommendations. The tradeoff is mechanical: the AI-video keyword list will miss an AI talk with an ordinary title, and GitHub's `sort=stars` does not tell you how fast a repository is growing. Those limits are visible in the [fetchers](https://github.com/shouvik12/devtv/blob/71eea19356d070fc44703f2d9e3aededa8b93b05/index.html), not guesses about the feeds.
 
-I cloned `shouvik12/devtv` at commit `71eea19356d070fc44703f2d9e3aededa8b93b05` and opened its unmodified `index.html` in headless Chrome 153 on Windows 11. The harness is in `ph-tests/devtv/`; `node browser-test.mjs` launches Chrome with a fresh profile, intercepts HTTPS requests, and records them. It supplies synthetic GitHub and Hacker News responses and returns HTTP 503 for the other feeds. There are no credentials, user sessions, or external API calls in that test run. The script made 30 intercepted requests across the initial load and an explicit refresh.
+An older Product Hunt subpage says seven channels. The [current listing](https://www.producthunt.com/products/dev-tv) and both copies of the page I checked say ten. For this launch, ten is the number to use.
 
-The page rendered the fabricated GitHub story, opened its README in the built-in reader, switched to the HN story, and showed an explicit error for DEV. The settings panel listed all ten channels and remembered a disabled channel in `localStorage`.
+## How I ran it
 
-![DEV·TV showing a synthetic GitHub repository supplied by the test harness.](images/devtv-github-synthetic.png)
+I pinned `shouvik12/devtv` at commit `71eea19356d070fc44703f2d9e3aededa8b93b05` and opened `index.html` in Chrome 153 on Windows 11. The test harness lives locally in `ph-tests/devtv/`: `node browser-test.mjs` starts Chrome with a fresh profile, intercepts HTTPS through Chrome DevTools, and logs request URLs. It gives GitHub a fabricated repository and README, Hacker News two fabricated stories and one comment, and HN Algolia a fabricated YouTube link. Other feeds return HTTP 503. No account, credential, personal browsing data, or real source API is involved in that run.
 
-![The built-in reader showing the synthetic repository's README.](images/devtv-reader-synthetic.png)
+The first visible channel showed the synthetic GitHub repository. The bottom buttons selected channels without losing playback mode. STOP froze the current preview; switching channels kept it stopped. WATCH and STOP do not automatically change channels: they control story advancement within the selected channel. That is more like a television remote than a news carousel pretending to be one. The source sets a seven-second story interval at 1×, with 2×, 3×, and 0.5× choices.
 
-These screenshots are from the real page with **synthetic feed data**, not from a live GitHub repository. The test also supplied HTML with an `onerror` handler in the README and HN story. Neither handler ran in Chrome, and the README did not leave an executable image element in the reader. That is a narrow check of these two paths, not a security audit of every markdown shape.
+![The real DEV·TV page showing a synthetic repository provided by the browser harness.](images/devtv-github-synthetic.png)
 
-The failure path is particularly clean. A 503 on DEV left the other channels running and displayed the channel's own `SIGNAL LOST` state instead of a blank screen.
+The screenshots here show the **real product code with synthetic source data**. They do not show live GitHub or Hacker News results. The harness recorded 45 intercepted requests over the whole expanded run, including the initial load, reader requests, explicit refreshes, and one blocked thumbnail image request. That count is a test trace, not an estimate of normal daily traffic.
 
-![The DEV feed's error state after the test harness returned HTTP 503.](images/devtv-signal-lost-synthetic.png)
+## The reader earns its place on the screen
 
-## An off channel still makes requests
+Clicking the GitHub story fetched its README and opened it in the TV. A second open did not make a second README request: the page reused the browser cache. The README cache is fresh for one hour and can be used as a fallback for up to a day if a later request fails. I aged the cached copy to 61 minutes, returned a synthetic GitHub 403 with rate-limit headers, and reopened the story. The page retried the request, then showed the cached README. It used the headers to identify the failure as a rate limit instead of treating every 403 as one.
 
-I disabled DEV in the settings panel and checked the stored setting. `devto` disappeared from `enabledIds` and from the persisted channel list. Then I called the page's normal `loadAll()` refresh. The request log gained another `dev.to/api/articles` call. The reason is direct in [`index.html`](https://github.com/shouvik12/devtv/blob/71eea19356d070fc44703f2d9e3aededa8b93b05/index.html): `getChannels()` filters the visible channels by `enabledIds`, while `loadAll()` iterates `ALL_CHANNELS` and calls every fetcher.
+![DEV·TV's built-in reader showing the synthetic README.](images/devtv-reader-synthetic.png)
 
-This does not break channel switching. It matters if you turn off a source to save network traffic, avoid sending requests to it, or conserve a shared API allowance. The settings control is a viewing preference, not a request preference. The same code path runs at startup and every ten minutes. Caching can prevent a particular fetch, but the enabled setting is not consulted by the loader.
+The Hacker News reader has two distinct behaviors, and I tried both. A self-post showed its own text inside the TV. An external-link story opened with a notice that the article lives on `example.com`, a direct link to it, and the top HN comment below. That is an honest answer to a common reader problem: Hacker News does not hold the linked article's body, so a reader cannot simply display it without scraping another site.
 
-## The trade
+I put an `onerror` image handler in the fabricated README, self-post, and HN comment. It did not execute in these browser checks. The README renderer escaped the input and did not leave an image element with that handler; the HN path stripped raw HTML before formatting the text. This is evidence for those three payloads and reader paths, not a claim that every markdown or HTML input is safe. The source also validates video IDs against the eleven-character YouTube format; the test accepted `youtu.be/abcdefghijk` and rejected `youtube.com.evil.test`.
 
-The visual design is the point, and it comes through in the run: channel tuning, static, a story ticker, and a reader that stays inside the television. The project also makes reasonable scope choices for one static page. It uses public browser-accessible feeds and leaves out Product Hunt itself because its API would require a private token. The maker confirmed that constraint in the [launch discussion](https://www.producthunt.com/products/dev-tv).
+For the video channel, I supplied a fabricated HN story linking to YouTube. Both HN Video and AI Video accepted its clearly AI-related title. Because the page was opened as a local `file:` URL, the reader showed a clickable thumbnail link instead of creating a YouTube iframe. That matches the README's warning that embedded playback needs a hosted page with a web origin. I did not test whether YouTube actually plays on the hosted site; individual uploaders can also disable embedding.
 
-I would use it as ambient news on a second screen if those ten feeds suit me. I would not treat it as a private or offline reader: it sends requests to source APIs, and hiding a channel does not stop those requests. I also would not call its GitHub list a momentum ranking; it is a new-repository list sorted by total stars.
+## Cache, failure, and the cost of leaving it on
 
-I did not test the live third-party feed responses, sustained all-day playback, mobile Safari, or YouTube embedding from the hosted origin. The repository says locally opened video channels use a thumbnail fallback because YouTube's embed needs a web origin. My browser test used a local file and did not exercise video playback.
+Each channel stores its last successful stories in `localStorage`. The fresh window ends 30 seconds before the ten-minute refresh interval; the copy stays available for up to 24 hours as a fallback. After the first load, I invoked the page's normal `loadAll()` while the GitHub and HN responses were still fresh. Neither endpoint was requested again. DEV, which had failed with 503 and had no good cache, was requested again. The TV showed `SIGNAL LOST` for DEV while the other channels remained usable.
+
+![The failed DEV channel after the harness returned HTTP 503.](images/devtv-signal-lost-synthetic.png)
+
+I then aged the GitHub story cache past its fresh window and returned a synthetic rate-limit response. The channel retried GitHub, kept the last good story, and labeled it as old with a retry notice. That is better than replacing the screen with an error when the API has a temporary problem. It also makes the limitation visible: the repository on screen may be from the last successful fetch, not from this refresh.
+
+![A cached synthetic GitHub story after its refresh received a rate-limit response.](images/devtv-stale-github-synthetic.png)
+
+The [README's rate-limit math](https://github.com/shouvik12/devtv#-tech-notes) needs one correction. It counts seven GitHub requests per ten-minute refresh, then treats all 42 per hour as spending the unauthenticated 60-per-hour **core** allowance. The six release requests are core requests, so they amount to 36 per hour before README reads and other activity on the same IP. The repository search is governed by GitHub's separate **search** counter. [GitHub's rate-limit documentation](https://docs.github.com/en/rest/rate-limit/rate-limit) explicitly separates `core` and `search`; the response headers tell you which counter governed a real request. The project is right that an office sharing one public IP can run out of allowance, but its seven-into-sixty calculation combines two different buckets. I did not measure a live GitHub quota in this test.
+
+## The switches only change what you see
+
+The settings panel lists all ten channels with ON/OFF labels. I turned DEV off and confirmed that `devto` was absent from both the in-memory enabled list and the persisted setting. I then called the normal `loadAll()` refresh. Another request went to `dev.to/api/articles`. In the pinned source, `getChannels()` filters the visible rotation by `enabledIds`; `loadAll()` loops over `ALL_CHANNELS`. The loader never checks the enabled list.
+
+The same separation applies to the TV's power button. I turned the screen off, invoked `loadAll()`, and observed another DEV request. The timed refresh is also wired to `loadAll()` without a power-state guard. A powered-off TV can therefore keep polling; a hidden channel can keep polling. Fresh successful caches may suppress a particular request, but the setting itself does not.
+
+That distinction matters in two ways. If a channel was disabled because you do not want to contact that source, the setting does not provide that guarantee. If it was disabled to conserve requests, failed feeds still retry and successful feeds resume after their fresh cache expires. It is a product behavior gap, not evidence of a hidden analytics service: the requests in my log went to the named feed hosts, and the app's code is available to inspect.
+
+## Where I landed
+
+DEV·TV succeeds at its main idea. It gives familiar developer sources a glanceable shape, handles missing feeds gracefully, and preserves useful stories across a temporary API failure. The built-in reader saves a tab switch for READMEs, HN self-posts, and discussions. The source's lack of a backend also explains its boundaries: it chooses browser-accessible APIs and leaves out a Product Hunt channel because that API needs a private token. The maker said the same thing in the [launch discussion](https://www.producthunt.com/products/dev-tv).
+
+I would put it on a second screen for ambient discovery. I would change the channel loader so OFF means no fetch, and pause refresh while power is off. I would also correct the README's GitHub quota arithmetic. These are small changes to a convincing one-file product.
+
+I tested the pinned page with controlled API replies. I did not verify the live feeds' current contents, all-day playback, mobile Safari, or video playback on the hosted origin. The [live site](https://shouvik12.github.io/devtv/) loaded when checked, but the hands-on findings above come from the isolated browser run.
