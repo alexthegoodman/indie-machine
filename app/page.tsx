@@ -18,18 +18,42 @@ export default function Home() {
 
       {/* masthead */}
       <div className="px-6 pt-16 pb-10 md:px-24 md:pt-24 md:pb-14">
-        <div className="text-[13px] tracking-[0.14em] text-accent">// ENGINEERING JOURNAL</div>
-        <h1 className="mt-3 font-display text-[15vw] leading-[0.96] font-bold tracking-tight text-ink-100 sm:text-7xl md:text-8xl lg:text-[100px]">
-          Indie Machine
-        </h1>
-        <div className="mt-4 text-[13px] tracking-[0.2em] text-accent uppercase md:text-[15px]">
-          Rust - Native - Complex Applications
+        <div className="grid items-center gap-8 lg:grid-cols-2 lg:gap-12">
+          <div className="min-w-0">
+            <div className="text-[13px] tracking-[0.14em] text-accent">// ENGINEERING JOURNAL</div>
+            <h1 className="mt-3 font-display text-[15vw] leading-[0.96] font-bold tracking-tight text-ink-100 sm:text-7xl md:text-8xl lg:text-[clamp(3.5rem,5vw,6.25rem)]">
+              Indie Machine
+            </h1>
+            <div className="mt-4 text-[13px] tracking-[0.2em] text-accent uppercase md:text-[15px]">
+              Rust - Native - Complex Applications
+            </div>
+            <p className="mt-6 max-w-2xl font-display text-base leading-relaxed text-ink-300 md:text-lg">
+              Indie Machine documents native software as it is built: Entropy&apos;s engine, GUI, creative
+              tools, and experiments; Yumon Pet&apos;s model work; and carefully sourced Product Hunt
+              coverage. Build posts carry the commit, command, and session evidence behind their claims.
+            </p>
+          </div>
+          <figure className="min-w-0">
+            <video
+              className="block aspect-video w-full bg-black object-contain"
+              autoPlay
+              muted
+              playsInline
+              loop
+              controls
+              preload="metadata"
+              aria-label="Entropy DAW demo"
+            >
+              <source src="/videos/entropy-daw-reel-min.mp4" type="video/mp4" />
+              Your browser does not support embedded video.
+            </video>
+            <figcaption className="mt-3 font-display text-sm leading-relaxed text-ink-300">
+              <span className="font-semibold text-ink-100">Entropy DAW</span> - a native digital
+              audio workstation built with Entropy Engine, with MIDI sequencing, synthesis, and
+              audio mixing.
+            </figcaption>
+          </figure>
         </div>
-        <p className="mt-6 max-w-2xl font-display text-base leading-relaxed text-ink-300 md:text-lg">
-          Indie Machine documents native software as it is built: Entropy&apos;s engine, GUI, creative
-          tools, and experiments; Yumon Pet&apos;s model work; and carefully sourced Product Hunt
-          coverage. Build posts carry the commit, command, and session evidence behind their claims.
-        </p>
 
         <div className="mt-9">
           <TitleBlock

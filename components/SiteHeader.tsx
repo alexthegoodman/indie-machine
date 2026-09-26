@@ -11,8 +11,9 @@ const NAV = [
 export function SiteHeader({ active }: { active?: (typeof NAV)[number]["key"] }) {
   return (
     <header className="flex items-center justify-between border-b border-dashed border-line/25 px-6 py-5 md:px-24">
-      <Link href="/" className="flex items-center gap-2.5 text-ink-100">
-        <CrosshairIcon className="text-accent" />
+      <Link href="/" className="flex items-center gap-2.5 text-white!">
+        {/* <CrosshairIcon className="text-accent" /> */}
+        <img src="/icon.png" alt="Indie Machine logo" className="w-4" />
         <span className="text-[13px] font-medium tracking-[0.12em]">INDIE&nbsp;/&nbsp;MACHINE</span>
       </Link>
       <nav aria-label="Main navigation" className="flex items-center gap-5 text-[11px] tracking-[0.14em] md:gap-9 md:text-xs">
