@@ -2,7 +2,7 @@
 
 Rust. Native. Complex applications. Indie Machine is a build-log blog for
 Entropy, a native engine written from scratch in Rust — its own GPU compute
-pipelines, its own immediate-mode GUI kit, its own docking system.
+pipelines, its own immediate-mode GUI kit, its own docking system. Enjoy.
 
 Built with Next.js (App Router) and MDX. No database, no CMS — every post is
 a file in the repo.
