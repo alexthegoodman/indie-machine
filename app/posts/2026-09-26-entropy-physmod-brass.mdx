@@ -1,0 +1,578 @@
+---
+title: "Physically Modelled Instruments: A Tube, a Pair of Lips and a Shock Front"
+date: 2026-09-26
+series: Entropy
+crate_versions:
+  added: []
+  unchanged:
+    - 'rodio = "0.21.1"'
+    - 'realfft = "3.5" (resolves to 3.5.0)'
+    - 'image = 0.25.9 (view tests only)'
+    - 'wgpu = "27.0.1" (live DAW only)'
+    - 'deno_core = "0.332.0"'
+  edition: "2024"
+  rustc: "1.94.1"
+  os: "Windows 11 Pro 10.0.26200"
+  hardware: "Intel Core i5-12500, 32 GB; default audio output device for the live DAW run"
+  commit: "entropy-engine db5fd61 plus uncommitted changes (the report tests appended to src/audio/brass/tests.rs). No tag."
+repo_link: https://github.com/alexthegoodman/entropy-engine
+---
+
+[The last post](/posts/entropy-physmod-strings) built a bowed string: a resonator that is nearly harmonic on its own, excited by a friction law at one point. A brass instrument reverses the roles. The exciter is a pair of lips that the player's breath blows open. The resonator is the whole instrument, an air column a few metres long that is not harmonic until someone shapes it to be. And the player matters more, because nothing on a brass instrument fixes the pitch the way a finger on a string does.
+
+This post covers the brass model in Entropy's DAW: trombone, trumpet, horn and tuba, built from one bore description, one lip model and one virtual player. It runs offline with no audio device, which is how every number below was produced. Nobody listened to it while it was built, and I make no claim about how it sounds. What I can claim is what the tests measure.
+
+## Environment
+
+- Engine commit `db5fd61`, with the uncommitted change listed in the frontmatter. There is no tag yet, so a reader cloning the public repository cannot reproduce this exact state today.
+- Rust 1.94.1, edition 2024, `--release` for everything. Every report starts with `profile: release`.
+- Windows 11 Pro 10.0.26200, Intel Core i5-12500. Engine rate 44.1 kHz; the air column and lips run at 88.2 kHz internally.
+- Tests and reports are offline. The view pictures are CPU-rasterized by the headless harness. The DAW screenshots come from a live run against the default output device, driven by the test harness, not a hand. I did not record which wgpu backend it picked.
+
+Commands, from `entropy-engine/`:
+
+```text
+cargo test --release --lib brass
+cargo test --release --test brass_no_alloc
+cargo test --release --test brass_view
+cargo test --release --test daw_brass_live
+cargo test --release --lib brass::tests::brass_bore_report -- --ignored --nocapture
+```
+
+The six `brass_*_report` tests in `src/audio/brass/tests.rs` (bore, lips, player, brassiness, family, cost) print every measurement quoted below and write the plots. From `examples/studio-bundle/`: `npx vitest run tests/daw_brass.test.ts`.
+
+## Contents
+
+1. What is different from the string
+2. The bore
+3. The reference: transfer-matrix impedance
+4. The runtime waveguide
+5. The lips
+6. Why it plays sharp, and a player fitted from the model
+7. Attacks
+8. Brassiness: the wave that steepens
+9. One bore, four instruments
+10. Mutes, the hand and the bell
+11. The view and the DAW
+12. How this was verified without listening
+13. Decision log
+14. Failure notes and known limits
+
+## 1. What is different from the string
+
+The string chain was player, bow, string, bridge and body, output. The brass chain is:
+
+```text
+player (breath, embouchure) -> lips -> mouthpiece -> bore (leadpipe, slide or valves, bell) -> radiation -> output
+```
+
+| | Bowed string | Brass |
+| --- | --- | --- |
+| Exciter | Bow: friction, stick and slip | Lips: a mass-spring valve blown open by breath |
+| Resonator | A string, nearly harmonic, weakly lossy | An air column, made harmonic only by the mouthpiece and the flare; strongly lossy |
+| What sets the pitch | The finger | Tube length picks a family of resonances; the lips pick which one sounds |
+| Main nonlinearity | Friction curve | Flow through the lips, lip collision, nonlinear propagation in the bore |
+| Radiation | Through the body's modes | From the bell: highs leave, lows reflect back and sustain the oscillation |
+
+Two consequences run through everything below. **The bore is the instrument**: its profile, radius along its length, decides tuning, timbre and response, and the acoustics and the drawing both derive from it. **The player matters more**: on brass the player picks a slide position or valve combination, picks which resonance to put the lips on, and can miss.
+
+The code is under `src/audio/brass/`: `bore.rs` (the profiles), `impedance.rs` (the transfer-matrix reference, build time and tests only), `airbore.rs` (the runtime waveguide), `lips.rs`, `engine.rs` (instruments, valves, mutes and the player), `analysis.rs` and `mod.rs` (`BrassShared` for the view, the voices, offline rendering). `analysis.rs` builds on the strings' `physmod::analysis`, so a pitch in cents means the same thing in both posts.
+
+## 2. The bore
+
+`bore.rs` describes an air column as three runs, because the runtime treats them differently: the **front** (cup, throat, backbore, leadpipe: short sections that vary a lot), the **cylinder** (the long constant-bore run: tuning slide, trombone slide, valve tubing) and the **bell** (the taper and flare). A `Section` is a cone, a cylinder or a Bessel-horn flare, `r(d) = B (d + d0)^-gamma` with `d` from the wide end, the shape a brass bell follows.
+
+The stock instruments use published approximate dimensions, then tapers and flares chosen by search "the way a maker would", as the code comment puts it. I did not re-run the search. They are illustrative defaults, not a measurement of one instrument, and the one thing they are judged by is what good instruments share: resonances that fall on a harmonic series.
+
+| Instrument | Front | Cylinder | Bell | Total | Mouth | Adds (slide or valves) | Nominal fundamental |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Tenor trombone | 0.303 m | 1.534 m | 0.983 m | 2.820 m | 216 mm | 1.16 m | 58.27 Hz |
+| Bb trumpet | 0.316 m | 0.488 m | 0.569 m | 1.373 m | 123 mm | 0.53 m | 116.54 Hz |
+| Double horn, Bb side | 0.679 m | 0.646 m | 1.484 m | 2.809 m | 304 mm | 2.40 m | 58.27 Hz |
+| F tuba | 0.658 m | 0.300 m | 4.681 m | 5.639 m | 460 mm | 4.10 m | 29.14 Hz |
+
+![Four panels, one per instrument, drawing bore radius against distance from the lips on a common length scale. The trombone and horn are about 2.8 m long with a thin cylinder and a flare at the end. The trumpet is half that. The tuba is 5.6 m and widens slowly along almost its whole length before flaring at the bell.](/images/entropy-physmod-brass-bores.svg)
+
+Red is the front, blue the cylinder, brown the bell. Note the tuba: almost all its length is a slowly widening cone. That is why its fundamental is playable, and why, in section 8, it gets no brassiness. The horn's "adds" figure includes the F side, the extra tube a thumb valve switches in.
+
+## 3. The reference: transfer-matrix impedance
+
+To know where an air column resonates, compute its input impedance at the lips. The peaks are the resonances. `impedance.rs` cuts the bore into 1 mm cylinders, gives each a plane wave with visco-thermal wall loss (an attenuation and a slight slowing, growing with frequency and narrowness), loads the mouth with the low-frequency lumped radiation impedance of an open end, and chains the matrices from the mouth to the lips. It never runs on the audio thread. It builds each instrument's resonance table once, and the player reads that table.
+
+**Evidence: the machinery.** A closed-open cylinder, 1 m long, 10 mm radius, has a closed form: peaks at odd quarter wavelengths of the effective length, with the speed of sound a little low because of the boundary layer.
+
+| Peak | Reference | Closed form | Difference |
+| --- | --- | --- | --- |
+| 1 | 83.74 Hz | 83.75 Hz | -0.08 cents |
+| 2 | 253.11 Hz | 253.11 Hz | +0.02 cents |
+| 3 | 422.82 Hz | 422.81 Hz | +0.05 cents |
+| 4 | 592.68 Hz | 592.65 Hz | +0.08 cents |
+
+The test asserts 3 cents. That agreement says the machinery is consistent with itself, not that the model matches a real cylinder. The loss law is separately checked against Benade's rule of thumb (`alpha` about `3e-5 sqrt(f) / r` nepers per metre) to 10%; I took the rule from the code comment and did not read Benade.
+
+**Evidence: the stock bores line up.** Resonances against the harmonic series of each nominal fundamental:
+
+| Instrument | Resonances checked | Worst deviation | First resonance, as a fraction of the fundamental |
+| --- | --- | --- | --- |
+| Tenor trombone | 2 to 10 | +27 cents (peak 5) | 0.68 (39.6 Hz) |
+| Bb trumpet | 2 to 10 | -20 cents (peak 8) | 0.74 (85.9 Hz) |
+| Double horn, Bb side | 2 to 12 | +8 cents (peak 4) | 0.93 (54.2 Hz) |
+| F tuba | 1 to 8 | -23 cents (peak 1); peaks 2 to 8 within 9 | 0.99 (28.8 Hz) |
+
+The trombone's peaks 2 to 10 in cents: -10, +2, -12, +27, +6, -9, +4, -2, -5. The trumpet's: -6, -11, +17, +9, +4, 0, -20, -19, -12.
+
+Those two instruments share one property: the first resonance sits far below the series while everything above sits close to it. That is the physical reason the pedal tone, the note on the fundamental, is special on a trombone or trumpet: nothing holds it up. A tuba's conical bore puts its first resonance within 23 cents, so pedal notes are playable, and here they are played on the tuba only.
+
+The slide behaves like a slide. Seventh position lowers resonances 3 to 10 by 5.55 to 6.27 semitones and resonance 2 by 7.18. The second moves further because low resonances depend more on the mouthpiece and bell, which the slide does not lengthen.
+
+## 4. The runtime waveguide
+
+`airbore.rs` is the same bore at audio rate, built from three things.
+
+**Cells.** The front and the bell are chains of one-sample cells, each `c / sample rate` long, 3.89 mm at 88.2 kHz, with the cross-section of the bore it stands for: about 78 cells of front and 253 of bell on the trombone (length over cell length; I did not print the counts). Where neighbouring cells differ in area, waves partly reflect. That is Kelly-Lochbaum scattering. In Julius Smith's [Physical Audio Signal Processing](https://ccrma.stanford.edu/~jos/pasp/Kelly_Lochbaum_Scattering_Junctions.html) the reflection coefficient is `(R_i - R_(i-1)) / (R_i + R_(i-1))` and the outgoing waves are `[1 + r] f+ - r f-` and `r f+ + [1 - r] f-`. The code, with `k` the coefficient and `a` and `b` the two arriving waves:
+
+```rust
+let w = k * (a - b);
+*ro = a + w;
+*lo = b + w;
+```
+
+Expand it and it is Smith's pair: `a + k (a - b)` is `(1 + k) a - k b`, and `b + k (a - b)` is `k a + (1 - k) b`. A chain of these is passive by construction, so no profile can make it unstable, and a cup, a throat and a flare need no special cases.
+
+**The cylinder** is a pair of fractional delay lines, one each way, whose length is the slide's, so the slide moves smoothly while a note sounds. The wall losses of the whole bore are one lumped three-tap filter per direction, fitted to the boundary-layer attenuation at 150 and 1500 Hz. It is symmetric, so its delay is exactly one sample at every frequency: it attenuates without adding a dispersion of its own.
+
+**The mouth** is loaded by the same lumped radiation impedance as the reference, discretized by the bilinear transform. Below the bell's cutoff (`ka` under 1) it radiates like a small source; above it the radiated power per unit flow stops rising and the bell beams its highs forward. The output is the radiated power's pressure, blended with the on-axis beam by the bell-facing control. Waves are in pascals and flows in cubic metres per second throughout, so the lips see a physically scaled mouthpiece.
+
+**Evidence: waveguide against reference.** A puff of flow (`1e-6` m3/s, one sample) at the lips, the FFT of the mouthpiece pressure, and you have the waveguide's input impedance. The boundary layer's slowing is applied at the played pitch (below), so I ran the waveguide tuned for partial 4 and for partial 8.
+
+| Peak | Tuned for partial 4 | Tuned for partial 8 | Height against reference |
+| --- | --- | --- | --- |
+| 1 | +30.2 cents | +38.9 cents | -7.2 dB |
+| 2 | +7.8 | +15.5 | -1.8 dB |
+| 3 | +6.0 | +11.6 | +1.4 dB |
+| 4 | -0.3 | +6.6 | +1.3 dB |
+| 5 | -2.1 | +4.6 | +2.4 dB |
+| 6 | -1.4 | +4.1 | +3.2 dB |
+| 7 | -5.1 | +1.4 | +3.0 dB |
+| 8 | -6.4 | +0.1 | +3.2 dB |
+| 10 | -8.9 | -2.3 | +2.4 dB |
+| 12 | -9.1 | -3.0 | +1.7 dB |
+
+![Input impedance of the tenor trombone in first position, in dB, from 20 to 700 Hz. A blue transfer-matrix curve and a red waveguide curve lie almost on top of each other, with peaks near the dashed grey harmonics of 58.27 Hz. The first peak, at 40 Hz, is well below its dashed line and the red curve is visibly lower there.](/images/entropy-physmod-brass-impedance-trombone.svg)
+
+- **Peaks 2 to 8 are within 8 cents** when tuned for partial 4, inside the 12 the tests assert.
+- **Peak 1 is wrong.** It is 30 to 39 cents sharp and 7 dB low. Nothing in the docs mentions it. It matters little for notes on partial 2 and up, and a lot for a pedal tone, which the tuba plays.
+- **The high peaks are 1.4 to 3.2 dB too tall.** A whole bore's loss replaced by one three-tap filter loses a little less than the transfer matrix does.
+
+Two claims in the design doc did not reproduce. It says resonances come out "about 15 cents flat eight partials up"; I see -9.1 at peak 12 with the tuning at partial 4, and a spread of about 15 cents across the first six or seven peaks depending on where it is tuned. It also says the DC flow resistance is about 7 times too high. |Z| at very low frequency reads 2.47 times the reference at 1 Hz, 1.51 at 2 Hz, 1.06 at 5 Hz and 0.97 at 15 Hz: too high, but by 2.5 and only below about 3 Hz. The doc may measure something else; I did not find what.
+
+**The boundary layer.** It slows sound in a narrow tube by 1 to 2%, more at low frequency, flattening every resonance. The plan assumed a first-order allpass could carry that slope. The design doc records that at the model's rate an allpass bending the delay between 100 Hz and 1 kHz swings it by hundreds of samples where the boundary layer moves it by about nine. I did not re-run that. The code applies the slowing at the pitch being played instead, so the sounding resonance sits where the reference puts it and resonances far from it drift, which is what the table shows.
+
+## 5. The lips
+
+`lips.rs` is a one-mass outward-striking valve. The opening `h` is pushed open by the difference between mouth pressure `p_m` and mouthpiece pressure `p`, and pulled back toward its rest opening `h0` by lip tissue:
+
+```text
+h'' + (w_l / Q_l) h' + w_l^2 (h - h0) = (p_m - p) / mu
+U = w h sqrt(2 |p_m - p| / rho)
+```
+
+`mu` is lip mass per unit area, `w_l` the lips' own resonance (the player's lip tension), `w` the slit width. The flow is a Bernoulli jet. The mouthpiece pressure depends on the flow through the air column's impedance, so the two are solved together, in closed form, as the bow was against the string. With `P = p_m - 2 incoming` and `U = K sqrt(dp)`, the condition `dp = P - z0 U` is a quadratic in `sqrt(|dp|)`:
+
+```rust
+let k = self.spec.width * self.h.max(0.0) * (2.0 / RHO as f32).sqrt();
+let big_p = p_mouth - 2.0 * incoming;
+let zk = z0 * k;
+let s = 0.5 * (-zk + (zk * zk + 4.0 * big_p.abs()).sqrt());
+let u = big_p.signum() * k * s;
+let p = 2.0 * incoming + z0 * u;
+```
+
+When `h` reaches zero the lips collide: the flow stops and a stiff, lossy contact spring takes over. Nothing here sets a pitch. The lips' own resonance decides which of the air column's resonances they fall in with, and the column's feedback does the rest. It is one of the standard models: Berjamin, Lombard, Vergez and Cottanceau's [time-domain brass model](https://arxiv.org/abs/1511.04247) also couples a one-mass lip to a nonlinear tube (I read the abstract, not the whole paper).
+
+With one lip mass for every note, low partials would not sound loudly and high ones would not sound softly. The player therefore sets the vibrating mass by pitch, keeping the lips' stiffness about constant:
+
+```rust
+pub fn lip_mass(hz: f32) -> f32 {
+    (3.0 * (233.0 / hz.max(20.0)).powi(2)).clamp(0.5, 20.0)
+}
+```
+
+**Evidence: a threshold of breath.** Below some mouth pressure nothing sounds. The report steps the pressure up by 25% from 150 Pa and stops when the lips sound on the partial they were set for, so results are good to one step.
+
+| Partial | 2 | 3 to 8 | 9 and 10 | 11 | 12 |
+| --- | --- | --- | --- | --- | --- |
+| Threshold | 234 Pa | 293 Pa | 366 Pa | 572 Pa | 715 Pa |
+
+The tests assert 150 to 600 Pa for partials 2 to 8 and more than double partial 4's for partial 12; 715 is 2.4 times 293.
+
+**Evidence: the slot.** Brass players talk about the slot: a range of lip frequencies that lock onto each resonance, depending on breath. I swept it. For each breath from 500 Pa to 16 kPa and each lip frequency from 0.66 to 1.08 of the resonance in steps of 0.01, I started the lips from rest against a fixed first-position trombone for 0.4 s and asked which resonance the sounding pitch fell on.
+
+![A map with lip frequency, as a fraction of resonance 4, on the horizontal axis and breath on the vertical axis. A red band, locking on partial 4, lies between a blue region on the left (partial 3) and a green region on the right (partial 5). Both edges slope left as breath rises. A black dashed line, the player's law, runs diagonally inside the red band. A small silent region sits at low breath and high lip frequency.](/images/entropy-physmod-brass-slot-map.svg)
+
+| Breath | Locks on partial 4 for lip ratios | Width | Player's law |
+| --- | --- | --- | --- |
+| 500 Pa | 0.78 to 0.98 | 0.20 | 0.871 |
+| 1.1 kPa | 0.74 to 0.97 | 0.23 | 0.822 |
+| 2.5 kPa | 0.70 to 0.93 | 0.23 | 0.775 |
+| 5.5 kPa | 0.68 to 0.89 | 0.21 | 0.731 |
+| 9.4 kPa | 0.66 to 0.87 | 0.21 | 0.703 |
+| 16 kPa | 0.66 to 0.86 | 0.20 | 0.676 |
+
+The player's law is what the code fitted from an earlier sweep of this kind:
+
+```rust
+pub fn lip_center(peak_hz: f32, pressure: f32) -> f32 {
+    peak_hz * 0.875 * (pressure.max(100.0) / 700.0).powf(-0.073)
+}
+```
+
+That is 0.85 `(p / 700 Pa)^-0.073` of the resonance, aimed 3% high because notes speak fastest a little above the centre. The dashed line is the 0.85 form. It lies inside the slot at every breath I tried, and for partials 3, 6, 8 and 10 at 1, 3 and 8 kPa. It is not the slot's centre by my criterion: the middle of the longest run that sounds on partial 4 drifts from 0.880 to 0.760 over the range, an exponent of about -0.042 against the law's -0.073. The player's aim is a fit to how fast a note speaks, and I did not re-derive that one.
+
+The slot narrows higher up. At 3 kPa its width in lip ratio is 0.25 on partial 3, 0.10 on partial 6, 0.11 on partial 8 and 0.10 on partial 10, which is why high notes crack.
+
+**Evidence: hysteresis.** If the lips select a resonance, moving them slowly up should hand the note to the next resonance later than moving them slowly down hands it back. At 3 kPa, lip mass set for partial 4, I swept the lip resonance from 125 to 320 Hz in 8 s and back, with no reset.
+
+![Sounding pitch against lip resonance during an up-sweep in red and a down-sweep in blue. Both climb slowly along each resonance and jump to the next. The up-jumps happen at higher lip frequencies than the down-jumps, so the traces form a double staircase.](/images/entropy-physmod-brass-hysteresis.svg)
+
+| Jump | Swept up at lip frequency | Swept down at lip frequency | Gap |
+| --- | --- | --- | --- |
+| Partial 3 and 4 | 177.6 Hz | 137.7 Hz | 39.9 Hz |
+| Partial 4 and 5 | 237.1 Hz | 196.7 Hz | 40.4 Hz |
+| Partial 5 and 6 | 298.1 Hz | 242.5 Hz | 55.6 Hz |
+
+The model has hysteresis, a lot of it: 17% of the lip frequency in the middle of the range. The design doc claims it. Before this run no test held it. Also visible in the figure: while the lips sit on one partial, the sounding pitch still rises a little with them. The pitch follows the lips weakly, which is what lets a player lip a note into tune.
+
+## 6. Why it plays sharp, and a player fitted from the model
+
+The one-mass lip sounds above the resonance it locks onto. With the lips set by `lip_center`, the sounding pitch comes out this far above the resonance:
+
+| Breath | Partial 2 | Partials 3 to 8 | Partials 9 and 10 |
+| --- | --- | --- | --- |
+| 1 kPa | +90 cents | +57 to +66 | +53 to +57 |
+| 3 kPa | +96 | +62 to +73 | +60 to +62 |
+| 8 kPa | +95 | +72 to +85 | +69 |
+
+The design doc says 50 to 110 cents and calls it a known property of the outward-striking model; real lips, which also move up and down, sit closer. The planned fix, a two-degree-of-freedom lip, is not built. The player copes three ways.
+
+1. **The tuning slide.** It pulls the slide out by about 0.1 m, leaving first position roughly 25 cents sharp, so every note can be tuned by lengthening the tube, the only way a slide moves.
+2. **A fitted aim.** It aims the lips with the law above, and each instrument gets its own aim from its own sweeps: the trumpet 0.94 of the trombone's, the horn 0.97 up to partial 6 and 0.92 above, the tuba 0.88 for its bottom two partials.
+3. **An ear.** `PitchEar` follows the sounding pitch by zero crossings of the low-passed mouthpiece pressure. Once a note has spoken and the slide has arrived, the player compares what it hears with the note asked for and eases the slide; where the slide cannot go shorter it bends the lips up instead.
+
+**Evidence: in tune.** The trombone, Bb2 to C5, 11 notes at three dynamics, each held 0.8 s, pitch over the second half:
+
+| Breath knob | Mouth pressure | Worst error over 11 notes |
+| --- | --- | --- |
+| 0.15 | 0.9 kPa | 0.3 cents |
+| 0.5 | 3.1 kPa | 0.5 cents |
+| 0.9 | 12.6 kPa | 0.4 cents |
+
+The tests assert 6, 6 and 16. The code sits far inside them, and I would not read that as a statement about the physical model. It is the ear loop: on a slide, any error is corrected by moving the slide until the period is right, so what this measures is how well the loop converges. On valves it cannot converge as far, and section 9 shows where that stops. The player picks the resonance and position a trombonist would: Bb3 on partial 4 in first position, G3 on partial 4 in position 3.9, E3 on partial 3 in 2.3, Bb2 on partial 2 in 1.2. Positions are in semitones down from first, as trombonists count them.
+
+**Evidence: lip tension picks the partial.** The tension control moves the lips relative to where the player would set them. Bb3 (233.08 Hz), tension from -1 to +1 in steps of 0.2, the settled pitch:
+
+| Tension | -1.0 to -0.6 | -0.4 to +0.6 | +0.8 and +1.0 |
+| --- | --- | --- | --- |
+| Pitch | 179 to 182 Hz | 233 Hz | 286 and 291 Hz |
+
+Loose lips fall to the F below, pinched lips pop to the D above, and between them is a plateau where the same note plays. That is the slot again, from the player's side.
+
+## 7. Attacks
+
+Released from rest, the lips ring at their own resonance, about 0.8 of the note, and the air column takes around 150 ms to pull them round. A note that slow is unusable, so the player does what a good one does: it hears the note first. At `attack_skill` 1 the lips are guided through a buzz at the note's pitch for six periods (each model step pulls them 5% of the way toward the buzz, fading out) and then left to the physics.
+
+Skill also sets how well the lips are placed. At 1 they are in the slot; lower, they miss by up to 12% and the miss is corrected over the first tenth of a second, enough on a high partial, where the slot is narrow, to crack onto the neighbour. A cracked note is found again: the player hears the wrong pitch and moves the lips 60% of the way toward the right one, up to three tries at full skill.
+
+**Evidence: how fast it speaks.** Time to half and to 90% of the settled level, tongued notes at breath 0.5, in 5 ms blocks:
+
+| Note | Skill 1, half / 90% | Skill 0, half / 90% |
+| --- | --- | --- |
+| Bb2, 116.54 Hz | 30 / 40 ms | 125 / 150 ms |
+| F3, 174.61 Hz | 30 / 60 ms | 170 / 205 ms |
+| Bb3, 233.08 Hz | 20 / 35 ms | 140 / 150 ms |
+| F4, 349.23 Hz | 20 / 45 ms | 155 / 175 ms |
+| Bb4, 466.16 Hz | 20 / 40 ms | 105 / 125 ms |
+
+The tests assert half level within 40 ms and 90% within 80 ms for a skilled attack, and that an unskilled one is 2.5 times slower. Measured, it is five to eight times slower.
+
+![Level against time for the first 300 ms of a Bb3 trombone note. The blue skilled curve reaches full level in about 40 ms. A brown curve, half skill, is slightly slower. The red unskilled curve stays near zero for 100 ms and then climbs to full level around 160 ms.](/images/entropy-physmod-brass-attack.svg)
+
+The red curve's plateau near zero is the lips ringing at their own pitch while the air column pulls them round. The envelope is measured in blocks of exactly one period so it does not beat against the pitch.
+
+**Evidence: cracks.** Pitch heard 30 to 100 ms in, in cents from the note asked for, three takes each (later takes move the player's deterministic randomness on):
+
+| Note | Skill 1 | Skill 0.5 | Skill 0 |
+| --- | --- | --- | --- |
+| F4, 349.23 Hz | +6, +6, +6 | +27, 0, 0 | +137, -180, -178 |
+| Bb4, 466.16 Hz | +7, +5, +4 | +24, -4, -4 | +112, -111, -111 |
+| D5, 587.33 Hz | -10, -12, -12 | +93, +3, -4 | +73, -85, -67 |
+
+At full skill no take starts more than 12 cents off. At zero, every take starts 67 cents or more away, far past anything a slide could explain: the lips have locked onto a neighbouring partial or sit between two. A glissando, Bb3 to G3 on one partial with no tongue, passes through the pitches between (233.1, 211.2, 201.2, 196.5, 194.4, 193.3, 192.6, then 194.5, 195.5, 195.9, 196.0 Hz, every 60 ms). It undershoots the target by about 30 cents before the ear brings it back. I did not expect that and have not traced it; I expect the ear loop reacting late.
+
+## 8. Brassiness: the wave that steepens
+
+At high pressures the peaks of a wave travel faster than its troughs, because the speed of sound depends on the local pressure. Over the long cylindrical run of a trombone or trumpet the front steepens toward a shock, and the radiated sound gains a burst of high harmonics that grows much faster than its level.
+
+The model splits the forward line down the cylinder into four segments. Each reads its own output at a delay shortened by the pressure it carries, `c ~ c0 (1 + beta p / rho c0^2)`, with `beta` 1.2 for air, `(gamma + 1) / 2`. The weak wave returning from the bell stays linear. The design doc calls this the generalized Burgers treatment and planned it as `burgers.rs`; it lives in `airbore.rs`.
+
+```rust
+let nominal = d.read(seg);
+let y = if eps > 0.0 {
+    // The crest arrives early, the trough late. The read point may not move by more
+    // than half a sample per sample: where the wave would overtake itself (a shock),
+    // the front is held at the steepest a sampled wave can carry, band-limited
+    // instead of folding over.
+    let want = seg * (1.0 - eps * nominal).clamp(0.5, 1.5);
+    let dd = (want - *last).clamp(-MAX_DELAY_SLEW, MAX_DELAY_SLEW);
+    *last = if *last == 0.0 { want } else { *last + dd };
+    d.read(*last)
+} else {
+    *last = seg;
+    nominal
+};
+```
+
+Myers, Pyle, Gilbert, Campbell, Chick and Logie (JASA 131, 678, 2012) conclude that a brass instrument's capacity for strong high-frequency components depends on how far its bore profile supports nonlinear propagation. That is from the abstract as returned by a search; the publisher's page refused the fetch. Berjamin and co-authors simulate the same physics with a total-variation-diminishing solver and report that nonlinear propagation has "a major influence on the timbre". Their scheme differs from mine, delayed reads here against a PDE solver there. The conclusion I am checking is the same.
+
+**Evidence: the A/B.** The trombone's Bb3, breath from 0.1 to 1.0, second half of a 0.8 s note. Left: real air. Right: the same breath with the nonlinearity off (`brassiness` 0). Slope is the steepest slope of the wave arriving at the bell, Pa per second.
+
+| Breath | Mouth pressure | Level | Centroid | Slope | | Level | Centroid | Slope |
+| --- | --- | --- | --- | --- | --- | --- | --- | --- |
+| 0.1 | 0.8 kPa | -46.8 dB | 825 Hz | 9.2e5 | | -46.9 dB | 840 Hz | 8.1e5 |
+| 0.3 | 1.6 kPa | -38.7 | 913 | 2.0e6 | | -38.9 | 964 | 2.0e6 |
+| 0.5 | 3.1 kPa | -29.5 | 882 | 6.2e6 | | -30.2 | 1042 | 5.1e6 |
+| 0.6 | 4.4 kPa | -24.6 | 884 | 1.2e7 | | -25.7 | 1019 | 8.6e6 |
+| 0.7 | 6.3 kPa | -19.5 | 1086 | 2.8e7 | | -21.2 | 1068 | 1.5e7 |
+| 0.8 | 8.9 kPa | -14.5 | 1696 | 7.7e7 | | -16.7 | 1095 | 2.5e7 |
+| 0.9 | 12.6 kPa | -10.5 | 2169 | 1.6e8 | | -12.3 | 1127 | 4.3e7 |
+| 1.0 | 16.0 kPa | -8.2 | 2200 | 2.3e8 | | -9.3 | 1175 | 6.2e7 |
+
+Read the right half first. With no nonlinearity the centroid barely moves, from about 850 Hz at pp to about 1170 Hz at fff: louder, not brighter. With it, the centroid stays flat until breath 0.7, then climbs from 1086 to 2169 Hz by 0.9. That is the knee, between 6 and 9 kPa. Mezzo (0.5) against fortissimo (0.9):
+
+- fortissimo is 19.0 dB louder and its centroid 2.46 times higher (2169 against 882 Hz); the nonlinearity alone accounts for 1.92 times of that;
+- the tenth harmonic, relative to the strongest, is -50.2 dB at mezzo, -13.5 dB at fortissimo and -42.2 dB at fortissimo with the nonlinearity off: 28.7 dB from the nonlinearity alone, where the tests assert 15;
+- the wave slope at the bell is 25 times steeper at fortissimo than mezzo (tests assert 8) and 3.7 times steeper than the same breath without the nonlinearity.
+
+![Level of each of the first 24 harmonics of the trombone's Bb3, relative to the loudest harmonic of the fortissimo note. Mezzo, in blue, falls steeply, to minus 66 dB by harmonic 10. Fortissimo, in red, falls slowly, to minus 13 dB by harmonic 10 and minus 34 dB by harmonic 24. Grey, fortissimo with the nonlinearity off, lies between at minus 42 dB by harmonic 10.](/images/entropy-physmod-brass-brassiness-spectra.svg)
+
+![Three panels of three periods each of the trombone's Bb3. Mezzo, in blue, is a smooth wave with a hump. Fortissimo, in red, is a nearly flat line with one narrow tall spike per period. Fortissimo with the nonlinearity off, in grey, is a smoother wave with a hump and two dips.](/images/entropy-physmod-brass-brassiness-waveforms.svg)
+
+The fortissimo waveform is a train of narrow spikes: the shock front, radiated. It peaks at 1.355 of full scale at the default gain of 0.6, so it exceeds digital full scale before whatever limiter follows. I did not check what the DAW's master does with it. At the mouthpiece the picture is quieter:
+
+![Six panels: mouthpiece pressure and lip opening over one period for mezzo, fortissimo and fortissimo with the nonlinearity off. The mouthpiece pressure is a flat-topped wave with a sharp dip. The lip opening is a rounded wave with a flat trough.](/images/entropy-physmod-brass-lips-mouthpiece.svg)
+
+The lip trace has a flat trough: the lips held at the bottom of their travel, which I read as closed against each other (the mean is removed from the plot, so I cannot read zero from it). The AC peak of the mouthpiece pressure at fortissimo is 21 kPa against a 12.6 kPa breath.
+
+**A contradiction.** Below the knee, switching the nonlinearity on makes the note duller. At breath 0.5 and 0.6 the centroid falls from 1042 to 882 Hz and from 1019 to 884 Hz, about 15%, with level within 1.2 dB. Nothing in the docs describes it. I expect a mildly steepened wave redistributes energy among the low harmonics before it does anything above them, and the whole-spectrum centroid follows the low ones. That is a guess, not a measurement.
+
+**Evidence: which instruments get brassy.** Breath 0.9 on each, a note of similar height in its own series, with and without the nonlinearity:
+
+| Instrument, note | Cylinder of total | Centroid, on and off | Tenth harmonic, on and off | Slope ratio |
+| --- | --- | --- | --- | --- |
+| Trombone, Bb3 | 1.53 m of 2.82 m | 2169 and 1127 Hz (1.92x) | -13.5 and -42.2 dB | 3.7x |
+| Trumpet, Bb4 | 0.49 m of 1.37 m | 5497 and 2454 Hz (2.24x) | -18.5 and -40.7 dB | 4.0x |
+| Horn, F4 | 0.65 m of 2.81 m | 1795 and 693 Hz (2.59x) | -32.9 and -71.4 dB | 4.0x |
+| Tuba, Bb2 | 0.30 m of 5.64 m | 336 and 363 Hz (0.92x) | -47.6 and -44.7 dB | 1.1x |
+
+The tuba gets nothing, as it should: its cylinder is 5% of its length and the rest is a slowly widening cone. The horn gets the most, which I did not predict. Its cylinder is short, so cylinder length alone is not the explanation, and its linear centroid is the lowest, so a ratio against a low base is an easy one to win. The plan says brassiness should be milder on conical bores; the tuba supports that and the horn neither supports nor contradicts it. There is no flugelhorn, the comparison the plan meant.
+
+**Evidence: aliasing.** The plan allowed a 4 times oversampled mode if 2 times aliased the shock front audibly. As a proxy I rendered the same note with the engine at 44.1 kHz (model at 88.2) and at 88.2 kHz (model at 176.4) and took the share of spectral energy below 20 kHz lying more than a quarter of the fundamental from any harmonic.
+
+| Case | Engine at 44.1 kHz | Engine at 88.2 kHz |
+| --- | --- | --- |
+| Fortissimo | 1.63e-3 | 3.69e-4 |
+| Fortissimo, nonlinearity off | 4.31e-4 | 6.76e-5 |
+| Mezzo | 2.97e-4 | 4.03e-5 |
+
+At fortissimo 0.16% of the energy is off the harmonic lattice, and doubling the rate cuts it by 4.4. The linear case falls by a similar factor, so some of this is not shock aliasing: analysis leakage from a note whose pitch is not perfectly steady, or the decimator. It shows the share is small. It does not show there is no audible aliasing.
+
+## 9. One bore, four instruments
+
+`BrassInstrument` picks the bore and the lips (the tuba's slit is wider, the trumpet's and horn's narrower). `Mechanism` picks how the tube length changes: a slide, or valves whose tubes add. Each valve's tube was cut for the open instrument, so combinations come out sharp. The trumpet's, against the ideal tube, with the open tube taken as 1.4 m as the test does:
+
+| Valves | 2 | 1 | 1 and 2 | 3 | 2 and 3 | 1 and 3 | 1, 2 and 3 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Semitones | 1 | 2 | 3 | 3 | 4 | 5 | 6 |
+| Sharp by | 0.0 cents | 0.0 | 15.5 | 0.0 | 10.6 | 30.3 | 53.6 |
+
+That is a real trumpet's trouble with combinations, and the model has it because it adds the tubes. The player does not pick the combination whose real resonance is nearest the note, which chooses fingerings no player uses. It takes the standard chart: fewest valves, the out-of-tune partials 7, 11, 13 and 14 avoided, on the horn the F side low and the Bb side high. It then trims toward the real resonance by up to 45 cents, as valve slides and lipping do, and the ear does the rest. The horn's F side is one more "valve" worth five semitones with its own longer valve tubes. The tuba needed a different shape: fitted with a long cylinder like the trombone's it would not line up, so almost all its length is the widening bell branch.
+
+**Evidence: the whole range at three dynamics.** Every chromatic note of each range, held at breath 0.15, 0.5 and 0.9, pitch over the settled half. "Silent" means that half's rms was under 1e-3 of full scale.
+
+| Instrument, range | Breath | Within 6 cents | Within 15 | Outside 15 cents |
+| --- | --- | --- | --- | --- |
+| Trombone, E2 to F5 (38 notes) | 0.15 | 36 | 37 | Ab4 +141 (partial 7) |
+| | 0.5 | 36 | 37 | E5 -51 (partial 11) |
+| | 0.9 | 37 | 38 | none |
+| Trumpet, E3 to C6 (33) | 0.15 | 31 | 31 | B3 +34, B4 +38 |
+| | 0.5 | 31 | 31 | B3 +32, B4 -181 |
+| | 0.9 | 31 | 31 | B3 +128, B4 +45 |
+| Horn, F2 to F5 (37) | 0.15 | 33 | 33 | F#2 +96, G2, Ab2, F#3 (all silent) |
+| | 0.5 | 32 | 33 | F#2 +120, G2, F#3 (silent), F4 +16 |
+| | 0.9 | 31 | 32 | F2, G2, Ab2, F#3 (silent), F#2 +170 |
+| Tuba, E1 to C4 (33) | 0.15 | 32 | 32 | C4 +22 (partial 9) |
+| | 0.5 | 33 | 33 | none |
+| | 0.9 | 33 | 33 | none |
+
+![Four scatter plots, one per instrument, of cents error against the chromatic note. Almost every dot lies on zero within the plus or minus 6 cent band. The trumpet has outliers at B3 and B4, the horn at its low notes and near F#3, the tuba one at C4.](/images/entropy-physmod-brass-tuning.svg)
+
+The misses are not random. Trumpet B3 and B4 are the 1-2-3 fingering, the sharpest combination in the table at 53.6 cents against a trim capped at 45; B4 at mezzo is 181 cents flat, the lips gone to another partial. Horn F#2 to Ab2 and F#3 are the F side with the longest valve tubes, and some of them never speak. The doc's known limits name "the horn's lowest (F2, G2) and, at some dynamics, F4"; I find F#2 and G2 at every dynamic, F4 at mezzo, F#3, and F2 only at fortissimo. Same shape, different notes. The tuba's lowest note, E1 at 41.2 Hz, is within 1 cent at mezzo, where the tests allow 20.
+
+The lowest notes also speak at different speeds (time to 90% of level, breath 0.5): trombone E2 65 ms, horn F2 25 ms, tuba E1 55 ms, trumpet E3 280 ms. The trumpet's E3 is 1-2-3 again, the only note here slower than a tenth of a second and six times slower than the F3 a semitone up (45 ms). The bass strings of the last post took over half a second to settle. The tuba's bottom note does not.
+
+## 10. Mutes, the hand and the bell
+
+A mute, or the horn player's hand, changes the bell's termination. Here it is a change to the bore: an `Obstruction` narrows a stretch of the bell, so it moves the resonances in both the reference and the waveguide. The mute's own body then colours the sound with filters on top. That second part is a filter, not acoustics.
+
+**Stopping the horn.** With the hand fully in the bell each upper resonance gets a neighbour above it. On the reference, the nearest stopped resonance sits 149, 153, 133, 135, 122, 120, 112 and 110 cents above the open resonances 9 to 16. The tests assert 80 to 170.
+
+![Input impedance of the horn from 300 to 1100 Hz, with the usual hand in blue and the hand fully in the bell in red. Each red peak sits a little above the blue one.](/images/entropy-physmod-brass-horn-stopped.svg)
+
+That is why a stopped note with the lips set as before comes out a semitone high, and the player knows its stopped instrument, so it plays in tune. Horn A4, breath 0.6:
+
+| Hand | Pitch | Level against hand 0 | Centroid |
+| --- | --- | --- | --- |
+| 0 (out) | +0.0 cents | 0.0 dB | 968 Hz |
+| 0.35 (the horn's usual) | +0.1 | -1.1 | 1047 (1.08x) |
+| 0.7 | 0.0 | -4.6 | 1035 (1.07x) |
+| 1.0 (stopped) | 0.0 | -19.6 | 1544 (1.59x) |
+
+Stopped: almost 20 dB quieter, 1.6 times brighter, in tune. The tests assert 6 dB and 1.3 times.
+
+**Mutes.** All three keep the trombone within 0.1 cents. On the trumpet all but one do:
+
+| Instrument, mute | Pitch | Level against open | Centroid |
+| --- | --- | --- | --- |
+| Trombone Bb3, straight | +0.0 cents | -7.9 dB | 989 Hz (1.12x) |
+| Trombone, cup | +0.0 | -8.5 | 466 (0.53x) |
+| Trombone, harmon | +0.1 | -17.1 | 1247 (1.41x) |
+| Trumpet Bb4, straight | +1.7 | -16.9 | 2328 (1.22x) |
+| Trumpet, cup | +0.1 | -7.0 | 1279 (0.67x) |
+| Trumpet, harmon | -22.6 | -29.8 | 2990 (1.57x) |
+
+Straight is quieter and thinner, cup quieter and darker, harmon much quieter and buzziest: the directions real mutes go. The harmon pulls the trumpet 22.6 cents flat and the player's ear does not correct it in time; the docs say about 20.
+
+**The bell.** The output blends the radiated power's pressure with the on-axis beam by a facing control from 0 to 1. Trombone Bb3, breath 0.7:
+
+| Facing | 0 (away) | 0.25 | 0.5 | 0.75 | 1 (toward) |
+| --- | --- | --- | --- | --- | --- |
+| Centroid | 606 Hz | 778 | 922 | 1691 | 2002 |
+| Level against facing 0 | 0.0 dB | +0.3 | +2.4 | +3.8 | +6.4 |
+
+## 11. The view and the DAW
+
+The pattern from the strings post carries over and I will not re-explain it: the audio thread publishes lock-free state every 512 output samples, about 86 times a second, and the view reads it. Here that is `BrassShared`: the bore's pressure at 96 points, one period of mouthpiece pressure and lip opening at 64 points each, the resonance ladder, the slide or valves, the mute, the hand, the bell. `BrassLive` is the counterpart of `PhysModLive`, four atomics (breath, lip tension, vibrato depth, bend), so a drag in the view, a knob, automation and the AI tool all move the same held note.
+
+`widgets_brass.rs` draws each instrument from its own bore. The drawing is as long as the air column, a valve's loop as long as the tube it adds, and the mute or hand is drawn where the bore is obstructed. This is the one place "one instrument, two representations" holds by construction and not convention: the bore profile drives both.
+
+![The headless view of a sounding trombone in first position, Bb3 at 233.1 Hz, partial 4, slide position 1.0, breath 4.4 kilopascals, lips at 175 Hz. A tube runs in a long U with rings along it, flaring to the bell on the right, with arcs radiating from the bell.](/images/entropy-physmod-brass-view-trombone.png)
+
+That is the plain view at breath 0.6. Physics View adds the resonance ladder with the lip frequency and the sounding pitch marked, the playing map with the current point, and one period of mouthpiece pressure and lips. F3 at pianissimo, then at fortissimo:
+
+![The trombone playing F3 at pianissimo with Physics View on. The status reads smooth wave, round tone, breath 1.1 kilopascals, bell slope 8.6e5 Pa per second. The playing point sits inside the partial 3 band.](/images/entropy-physmod-brass-view-pp-physics.png)
+
+![The same F3 at fortissimo. The status reads breath 14.9 kilopascals, wavefront shocked, blazing, bell slope 1.3e8 Pa per second. One period of mouthpiece pressure has a much sharper edge.](/images/entropy-physmod-brass-view-fff-physics.png)
+
+Breath 0.2 to 0.95, slide position 1.1 to 1.2. The wave slope at the bell goes from 8.6e5 to 1.3e8 Pa/s, 151 times, and the captions read "smooth wave - round tone" against "wavefront shocked - blazing".
+
+![The Bb trumpet playing A4 on the second valve with Physics View on. Three piston valves are drawn, the second pressed. The resonance ladder is marked with partials 1 to 8.](/images/entropy-physmod-brass-view-trumpet-valve2.png)
+
+![The horn playing A4 with the hand stopped and the bell facing away. The tubing coils round a large circle; red rings in the bell mark the hand.](/images/entropy-physmod-brass-view-horn-stopped.png)
+
+The view tests pass 9 of 9: a sounding trombone with Physics View adding to it, the slide drawn where the note puts it, a loud note looking different from a soft one, an instrument at rest, the chip click, a drag in the playing map setting breath and lips, a drag on the slide asking for a position, the keyboard, and the trumpet, horn and tuba drawn with their valves. One readout I will call out: the valved pictures print the lip opening as negative ("open -0.05 mm", "-0.06 mm"). That is the collision spring letting the lips penetrate a little, the model's way of representing them pressed shut, and the label is not corrected for it.
+
+**In the DAW.** A synth track with waveform `brass` gets a `BrassInstrumentVoice`, one live player per track, so notes share a player and can slur. `daw_brass.ts` holds the instrument presets, six playing styles (Chorale, Section, Fanfare, Blazing, Glissando, Rough), the mutes, the hand and bell knobs and the `daw_brass` tool, whose `hear` action returns the analysis. Offline export runs the same notes through `render_performance`.
+
+![The DAW with the Brass window open on the Lead track: the instrument row, the Blazing style selected, a trombone view labelled wavefront shocked, knob groups for breath and lips, mute and hand, tongue and slide, vibrato and a laboratory group with air noise and brassiness. The Analyzer window at the bottom right shows a spike-train waveform and a harmonic spectrum.](/images/entropy-physmod-brass-daw-blazing.png)
+
+The picture is from `tests/daw_brass_live.rs`: a real DAW window, a key held, a latched note, the Blazing style, a drag in the playing map, four `daw_brass` tool calls and a song playing through the track. The Analyzer on the master bus reads a spike-train waveform, the same shape as the figure in section 8, with peak -8.8 dBFS, rms -22.4 dBFS, brightness 2074 Hz and its strongest bin at 699 Hz, the third harmonic of the 233 Hz note. The events were injected by the test driver.
+
+A second frame, just after a tool call switched the track to a trumpet with a cup mute:
+
+![The Brass window after switching to Trumpet and Cup. The buttons show Trumpet and Cup selected. The view still draws a trombone and the analyzer says Silent.](/images/entropy-physmod-brass-daw-trumpet-cup.png)
+
+Trumpet and Cup are selected and the view still draws a trombone. The docs say changing the instrument, mute, hand or bell rebuilds the air column and applies from the next note, and the view draws what the voice last published. I think the stale trombone is that and not a drawing bug. I did not confirm it.
+
+**Cost.** `brass_cost_report` renders 10 s of audio through `Engine::next_frame` and divides wall time by audio time. Median of three, release, i5-12500, one thread, engine only (no voice wrapper, publishing or mixing):
+
+| Instrument | Note | Breath 0.5 | Breath 0.9 |
+| --- | --- | --- | --- |
+| Trombone | Bb3 | 1.7% | 1.7% |
+| Trumpet | Bb4 | 1.5% | 1.5% |
+| Horn | F4 | 2.0% | 2.0% |
+| Tuba | Bb2 | 3.2% | 3.2% |
+
+One player is 1.5 to 3.2% of a core; the design doc says 3.9%. The tuba costs most because its bell run has the most cells (length over cell size, about 1200). Breath does not change the cost, so brassiness is not the expensive part. I did not measure inside the running DAW.
+
+## 12. How this was verified without listening
+
+Each behaviour was measured from rendered audio and the tests keep the measurements in place. Results are from this run.
+
+| Claim | Where | Result |
+| --- | --- | --- |
+| Trombone resonances 2 to 10 within 30 cents of the Bb series, the first below 0.75 of the fundamental | `brass::tests` | Pass (+27, 0.68) |
+| Seventh position lowers resonances 3 to 10 by 5.4 to 6.4 semitones | same | Pass (5.55 to 6.27) |
+| Waveguide peaks 2 to 8 within 12 cents of the reference | same | Pass (8) |
+| Quarter-wave cylinder within 3 cents | `brass::impedance::tests` | Pass (0.08) |
+| A breath threshold of 150 to 600 Pa; partial 12 more than twice partial 4's | `brass::tests` | Pass |
+| In tune within 6 cents at pp and mf, 16 at ff | same | Pass (0.5) |
+| Skilled attacks half level within 40 ms, 90% within 80; unskilled 2.5 times slower | same | Pass (60 ms; 5 to 8 times) |
+| Loose lips drop Bb3 to F3, pinched lips pop it to D4 | same | Pass |
+| Unskilled attacks on high notes start 60+ cents off, skilled within 20 | same | Pass |
+| ff 12+ dB louder than mf, centroid doubled; nonlinearity off makes the 10th harmonic 15+ dB weaker | same | Pass (19.0 dB, 2.46 times, 28.7 dB) |
+| Wavefront at the bell steepens 8 times from mf to ff | same | Pass (25 times) |
+| Valve 1 and 3 15 to 40 cents sharp; every range within 8 cents (tuba's lowest 20) | same | Pass |
+| Stopped horn 80 to 170 cents above each of 9 to 16; mutes keep the trombone within 8 cents; bell toward the listener 1.8 times brighter | same | Pass |
+| A valve slur has no gap and lands in tune | same | Pass |
+| No allocation while notes arrive, slur, glide, re-tongue and release | `tests/brass_no_alloc.rs` | Pass |
+| The view draws the instruments and Physics View; drags steer the held note | `tests/brass_view.rs` | 9 of 9 |
+| Settings, styles, note configs, the window's keys, the tool, save, sequencer, export | `tests/daw_brass.test.ts` | 20 of 20 |
+| The live DAW feature | `tests/daw_brass_live.rs` | See below |
+
+`cargo test --release --lib brass`: 35 passed, 0 failed, 7 ignored (the six reports and `listening_examples`, which renders WAVs for ears). The filter also matches the bore, impedance and widget unit tests. The no-allocation test is the strings' idea again: a counting global allocator watches only the audio thread while another thread sends notes, slurs, glides, re-tongues and releases, and the count must be zero.
+
+The live feature is a different story. The DAW reports `status: passed` for the whole feature. The Rust side then checks levels, and it fails on `playing-map`: the capture after a drag in the playing map peaked at -45.57 to -45.75 dBFS on three runs, against a floor of -45. The pitch is right, so the note is sounding; it is quiet. The drag went to breath 0.3 and lip tension -0.2, a soft note, and I expect the floor was set when the drag landed somewhere louder. I did not edit the assertion. The screenshots above come from one of those runs.
+
+## 13. Decision log
+
+**Waveguide at runtime, transfer matrix for the truth.** A transfer matrix gives the impedance exactly and cannot run at audio rate with a nonlinearity in it. A waveguide runs sample by sample and can bend its delays with pressure, and needs something to be checked against. The cost I hit: they disagree in two places the docs did not list, peak 1 and the height of the high peaks.
+
+**Cells for the front and bell, delay lines for the cylinder.** Cells are passive and describe a cup, a throat and a flare with no special cases, but cost a sample of travel each. Delay lines make the slide continuous and give the nonlinearity somewhere to bend, but cannot hold a change of area. That is the reason for three runs.
+
+**Slowing at the played pitch, not an allpass.** The plan wanted a dispersive allpass and the doc says it swung the delay by hundreds of samples where nine were needed. The cost is resonances far from the played note drifting by up to about 15 cents.
+
+**One-mass lips and a lip mass that follows the note.** The threshold, pitch pulling and spectrum come from the coupling. The costs: they play 50 to 100 cents sharp and the player has to allow for it, and the mass law is a tuned function standing in for how much of a real lip vibrates.
+
+**Standard valve fingerings, trimmed by up to 45 cents.** The nearest real resonance picks fingerings no player uses. The cost is in section 9: 1-2-3 is 53.6 cents sharp against a 45 cent trim, so those notes miss.
+
+**The hand and mutes as part of the bore.** Stopping the horn moves its resonances the way it does, with no filter faking it. A mute's body, its cup and harmon chamber, is still a filter.
+
+**A slew limit on the nonlinear delay.** Where a wave would overtake itself the model holds the steepest front a sampled wave can carry, instead of folding over. The maths did not make that choice for me, and the cost is that a real shock's width is not modelled.
+
+## 14. Failure notes and known limits
+
+**Failure notes**
+
+- The waveguide's first resonance is 30 to 39 cents sharp of the reference and 7 dB low (section 4). Undocumented.
+- The design doc's "about 15 cents flat eight partials up" reads -9 here, and its "DC flow resistance 7 times too high" reads 2.5 times at 1 Hz and 1.06 at 5 Hz. Its cost of 3.9% of a core reads 1.5 to 3.2%.
+- Trumpet B3 and B4 (1-2-3) and the horn's lowest F-side notes miss at some dynamics, and some horn notes never speak (section 9).
+- Switching the nonlinearity on makes mezzo about 15% duller by centroid (section 8).
+- The live DAW feature fails its `playing-map` level floor by 0.6 to 0.75 dB (section 12).
+- A tooling note. The strings' `pitch()` searches for the fundamental only within an octave of the expected pitch. My first slot-map classifier centred that window on partial 4 and could not see partials above about 480 Hz: 9 and 10 read as "no resonance" and 8 as partial 4. Passing the pitch expected for the partial under test fixed it. A classifier that hands its search one fixed centre will not find what it is not looking for.
+
+**Known limits**
+
+- The low register radiates about 16 dB less than the high at the same breath: trombone Bb2 -38.0 dBFS, Bb4 -22.1 at breath 0.5. The doc says about 15. A register balance is not built.
+- Pedal tones (partial 1) are played on the tuba only. The one-mass lip plays 50 to 100 cents above its resonance.
+- Changing the instrument, mute, hand or bell applies from the next note.
+- A mute's body is a filter, not acoustics.
+- The default output peaks above digital full scale at fortissimo (1.355). I did not check the DAW master's handling of it.
+- The view's layouts are stylised, but every length along them is the bore's.
+- The live DAW window is tested through its callbacks and the headless view, and once by a driven live run that fails a level floor. It has not been tested by a hand.
+- The laboratory (continuous size, conicity, flare, mouthpiece, a bore designer) and sections and hall are not built. There is no flugelhorn, so "milder on conical bores" is checked against the tuba only.
+- I did not listen to any of it. Nothing here says it sounds like a trumpet or a trombone. The claims are pitch, resonance, level, spectrum and wave shape, measured on samples.
+- I read Smith's page on Kelly-Lochbaum junctions and the abstracts of Berjamin and co-authors and of Myers and co-authors. I did not read the full papers, or Hirschberg et al.'s 1996 "Shock waves in trombones", which the shock treatment builds on.
+
+## What's next
+
+The last of the three physically modelled instruments: drums and cymbals, from one contact law to a kit that hears itself. It uses the view pattern a third time and starts from an impact, not from a bow or a breath. The open items here that could change these numbers are the waveguide's first resonance, the 1-2-3 fingering and the horn's silent F-side notes. If any of them turns out to be a bug, the tables in sections 4 and 9 change with it.
