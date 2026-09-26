@@ -1,0 +1,607 @@
+---
+title: "Physically Modelled Instruments: From One Contact Law to a Kit That Hears Itself"
+date: 2026-09-26
+series: Entropy
+crate_versions:
+  added: []
+  unchanged:
+    - 'rodio = "0.21.1"'
+    - 'realfft = "3.5" (resolves to 3.5.0)'
+    - 'hound = "3.5" (listening-example tests only)'
+    - 'image = 0.25.9 (view tests only)'
+    - 'wgpu = "27.0.1" (live DAW only)'
+    - 'deno_core = "0.332.0"'
+  edition: "2024"
+  rustc: "1.94.1"
+  os: "Windows 11 Pro 10.0.26200"
+  hardware: "Intel Core i5-12500, 32 GB; default audio output device for the live DAW run"
+  commit: "entropy-engine db5fd61 plus uncommitted changes (the new src/audio/matter/report_tests.rs and its one-line module entry in src/audio/matter/mod.rs). No tag."
+repo_link: https://github.com/alexthegoodman/entropy-engine
+---
+
+The [bowed string](/posts/entropy-physmod-strings) had a friction law at its centre and the [brass](/posts/entropy-physmod-brass) had a pair of lips. A drum has neither. Nothing drives it. Something hits it, lets go, and the body rings until it is quiet. So the third instrument starts from the hit: a contact law between two bodies, solved every sample, with everything else built on top of it. A stretched membrane, a shallow bronze shell, and finally a whole kit whose pieces hear each other through the air.
+
+This post covers the drums, the cymbals and the kit in Entropy's DAW. It is the longest of the three because it holds five pull requests of work, and it carries one result I did not expect: the cymbal's nonlinearity, as built, puts a large slowly decaying offset in the output, and that changes how the doc's "10 dB louder" reads. Every number below was produced offline on this machine. Nobody listened to it while it was built, and I make no claim about how it sounds. What I can claim is what the tests measure.
+
+## Environment
+
+- Engine commit `db5fd61`, with the uncommitted change in the frontmatter. There is no tag yet, so a reader cloning the public repository cannot reproduce this exact state today.
+- Rust 1.94.1, edition 2024, `--release` for everything. Every report starts with `profile: release`.
+- Windows 11 Pro 10.0.26200, Intel Core i5-12500. Engine rate 44.1 kHz; the drums and cymbals run at that rate.
+- The view pictures are CPU-rasterized by the headless harness. The one DAW screenshot comes from a live run against the default output device, driven by the test harness. I did not record which wgpu backend it picked.
+- The design doc's cost figures were measured in a four-core Linux container. Every cost below is re-measured here, median of three, engine only.
+
+Commands, from `entropy-engine/`:
+
+```text
+cargo test --release --lib matter
+cargo test --release --test matter_no_alloc
+cargo test --release --test matter_view
+cargo test --release --test daw_matter_live
+cargo test --release --lib matter::report_tests::matter_cymbal_report -- --ignored --nocapture
+```
+
+The eight `matter_*_report` tests in `src/audio/matter/report_tests.rs` (modal, contact, membrane, glide, drums, plate, cymbal, kit) plus `matter_cost_report`, `matter_offset_report` and `matter_stretch_report` print every measurement quoted here and write the plots. From `examples/studio-bundle/`: `npx vitest run tests/daw_matter.test.ts`.
+
+The same module also holds friction, brushes, rubbing and the whole water family. They reuse what is described here and are not covered. Water is the next post.
+
+## Contents
+
+1. Impact as the connective tissue
+2. Modal bodies
+3. Contact
+4. A drum head from Bessel zeros
+5. Tension modulation and the glide
+6. Kick, toms, timpani
+7. The snare
+8. Cymbals: a shallow shell
+9. The von Karman nonlinearity
+10. The kit as one voice
+11. The kit in the DAW
+12. How this was verified without listening
+13. Decision log
+14. Failure notes and known limits
+
+## 1. Impact as the connective tissue
+
+A drumstick on a head, a mallet on a gong, a snare wire landing on a film: these are all one interaction, two bodies and a contact between them. The plan for this family called it "Object A, contact geometry, Object B" and put it first. Every other piece is a client of it.
+
+Two building blocks:
+
+- **Bodies as modes.** Almost everything here rings as a set of damped modes. What differs is where the modes come from: Bessel zeros for a membrane, a free-edge plate solve for a cymbal, the acoustic modes of a cylinder for the air inside a shell.
+- **A contact solve.** Each body answers two questions about a point on its surface: where will you be after the coming sample if nothing pushes you, and how far does a newton held for this sample move you. A contact force is then the root of one monotone scalar equation.
+
+The code is under `src/audio/matter/`, next to `physmod` and `brass`: `bessel.rs` (`J_m` and its zeros), `modal.rs` (the body), `contact.rs`, `membrane.rs`, `cavity.rs` and `drum.rs` for drums, `plate.rs`, `vonkarman.rs` and `cymbal.rs` for cymbals, `kit.rs` and `live.rs` for the whole thing on a track. The view and DAW pattern from [the strings post](/posts/entropy-physmod-strings) carries over: the audio thread publishes lock-free state, the view reads it.
+
+## 2. Modal bodies
+
+`modal.rs` runs each mode as the exact response of a damped mass-spring to a force held for one sample. The state is a complex number rotated by `exp((-sigma + i omega_d) h)` every sample. Its imaginary part is the displacement and its real part is `(q' + sigma q) / omega_d`:
+
+```rust
+let r = (-sig * self.h).exp();
+let (sn, cs) = theta.sin_cos();
+self.rot_re[k] = r * cs;
+self.rot_im[k] = r * sn;
+// and every sample:
+let x = re[i] + kick[i] * force[i];
+let y = im[i];
+re[i] = rr[i] * x - ri[i] * y;
+im[i] = ri[i] * x + rr[i] * y;
+```
+
+Three properties follow. A mode cannot go unstable, because the rotation has magnitude `r` below one. A mode above Nyquist is not represented and is silent. And the frequencies can be scaled while the body rings with displacement and velocity continuous, which the tension modulation in section 5 needs.
+
+**Evidence: tuning in `f32`.** The comment on `modal.rs` says the usual two-pole recurrence "loses its tuning" at low frequency in `f32`. I ran both for 8 s at 44.1 kHz and took the frequency from upward zero crossings. The two-pole recurrence has its coefficients computed in `f64` and rounded to `f32`, so this is its best case:
+
+| Mode frequency | Rotated state | Two-pole, `f32` coefficients |
+| --- | --- | --- |
+| 10 Hz | 0.000 cents | -1.49 cents |
+| 15 Hz | 0.000 | -7.04 |
+| 22.9 Hz | 0.000 | -2.91 |
+| 30 Hz | 0.000 | -1.44 |
+| 60 Hz | 0.000 | -0.02 |
+| 120 Hz to 4 kHz | 0.000 | within 0.04 |
+
+![Tuning error in cents against mode frequency from 10 Hz to 4 kHz. The rotated complex state is a flat line at zero. The two-pole recurrence dips to minus 7 cents at 15 Hz and returns to zero by 60 Hz.](/images/entropy-physmod-drums-modal-tuning.svg)
+
+So the claim holds below 30 Hz and not above 60. I had expected about 5 cents at 30 Hz from the coefficient rounding and got 1.4. It matters here only because the crash's lowest mode sits at 22.9 Hz. The test asserts 0.5 cents at 30 Hz for the rotated state.
+
+**Evidence: the rest of the body.**
+
+- A 25 kHz mode at 44.1 kHz produced exactly zero output over 1000 samples.
+- A 200 Hz mode retuned to 300 Hz with `set_scale(1.5)` kept displacement (`-1.976325e-6`) and velocity (`-1.106245e-2`) identical to seven digits and then rang at 300.000 Hz. Retuned slowly to 1.5 times over 2000 samples, energy divided by frequency, the adiabatic invariant, moved 0.3% (3.2136e-8 to 3.2246e-8).
+- **Subnormals.** A mode that decays for long enough ends in subnormal floats, and some processors handle those slowly. Four hundred modes decaying at `sigma` 3/s for 40 s, 5 s slices, with `flush_quiet` every 64 samples and without it:
+
+| Slice | 0-20 s | 20-25 s | 25-30 s | 30-35 s | 35-40 s |
+| --- | --- | --- | --- | --- | --- |
+| With `flush_quiet` | 0.02 s each | 0.02 | 0.04 | 0.03 | 0.02 |
+| Without | 0.02 s each | 0.65 | 3.61 | 3.66 | 3.70 |
+
+That is 180 times slower on this CPU, a Golden Cove core, once the modes reach the subnormal range, and it is 73% of real time for four hundred modes doing nothing audible. The flush costs nothing measurable.
+
+- **Cost.** 400 modes from 60 Hz to 9 kHz: 0.28 to 0.35 ns per mode per sample in two runs, 0.5 to 0.6% of a core. The step is written four modes at a time with SSE2, because the compiler would not vectorize it.
+
+`bessel.rs` computes `J_m` by Miller's backward recurrence and finds zeros by scan and bisection. It runs at build time only. Against tabulated values, `J_0(1)`, `J_1(1)`, `J_0(10)`, `J_2(5)` and `J_5(10)` agree to 6e-16 and eight zeros, from `j_{0,1}` to `j_{0,10} = 30.634606468432`, to 4e-15. The reference values were typed from tables, and that they agree to 15 digits means I typed them right.
+
+## 3. Contact
+
+`contact.rs` has materials (hickory, nylon, polyester film, plastic, rubber, steel, brass, glass), tips (Hertz spheres, and felt as a power law) and a law:
+
+```text
+F = K delta^alpha (1 + lambda d(delta)/dt)      for delta > 0, else 0
+```
+
+For an elastic sphere on a flat, Hertz gives `alpha = 3/2` and `K = 4/3 E* sqrt(R)`. Felt stiffens as it compresses, a power law with a larger exponent. `lambda` follows Flores and co-authors: `8 (1 - e) / (5 e v_in)` from the coefficient of restitution `e` and the speed at first touch. The code comment says it holds over the whole range of `e`, where Hunt and Crossley's own `3 (1 - e) / (2 v_in)` holds only for small losses.
+
+Because both bodies are linear over one sample, the penetration after the step is a straight line in the force, `delta(F) = free_gap - (C_a + C_b) F`. The force is found each sample by a bracketed Newton iteration on the monotone function `g(F) = F - law(delta(F))`: never guessed, never a one-sample impulse. The whole loop for a striker on a body, from `cymbal.rs`:
+
+```rust
+let (sy, sc) = f.striker.predict(h);
+let (by, bc) = self.body.predict(&f.shape);
+let force = f.contact.solve(sy - by, sc + bc, h);
+f.striker.apply(force, h);
+self.body.add_force(&f.shape, force);
+```
+
+`predict` on a body is two dot products over its modes. That is why a contact costs almost nothing until something touches.
+
+**Evidence: resolved at the audio rate.** A 30 g felt mallet at 2 m/s on a film, `e` 0.8, at four sample rates:
+
+| Sample rate | Contact time | Peak force | Rebound |
+| --- | --- | --- | --- |
+| 44.1 kHz | 3.492 ms | 74.4 N | 1.516 m/s |
+| 88.2 kHz | 3.481 ms | 75.5 N | 1.546 m/s |
+| 176.4 kHz | 3.469 ms | 76.1 N | 1.562 m/s |
+| 705.6 kHz | 3.464 ms | 76.5 N | 1.573 m/s |
+
+The 44.1 kHz contact is 0.8% long and its peak 2.8% low against a step sixteen times finer. The test asserts 6% and 5% against 176.4 kHz.
+
+**Evidence: Hertz's scaling.** A 20 g steel ball, 10 mm radius, on steel, run at 20 MHz because the contact lasts tens of microseconds and 44.1 kHz would see two samples of it:
+
+| Speed | Contact | Hertz's closed form | Peak force |
+| --- | --- | --- | --- |
+| 0.25 m/s | 76.45 us | 76.41 us | 240 N |
+| 1 m/s | 57.95 us | 57.91 us | 1267 N |
+| 4 m/s | 43.90 us | 43.89 us | 6681 N |
+| 16 m/s | 33.30 us | 33.26 us | 35 218 N |
+
+The closed form is `2.943 (1.25 m / K)^0.4 v^-0.2`. The solved contact is within 0.1% of it at all seven speeds, and the fitted exponent of contact time against speed is -0.1998 against Hertz's -0.2.
+
+![Contact time in microseconds of a steel ball on steel, against impact speed from 0.25 to 16 m/s on a log axis. The measured points from the solved contact lie on Hertz's closed-form curve, which falls from 76 to 33 microseconds.](/images/entropy-physmod-drums-contact-hertz.svg)
+
+**Evidence: restitution.** Felt on film at 176.4 kHz, 2 m/s in. Coefficient set, fraction of the approach speed that comes back: 0.3 gives 0.256, 0.6 gives 0.573, 0.9 gives 0.884. The contact loses slightly more than asked, by 0.016 to 0.044. The test allows 0.05, and the 0.3 case is close to it.
+
+**Failure note: bronze.** A hickory stick on bronze is a very stiff contact and it peaks for tens of microseconds, which 44.1 kHz sees averaged. The peak sample is a fraction of what a finer step finds; what reaches the ear is the contact time, the impulse and the force spectrum below 8 kHz. Against a 176.4 kHz run, striking at 0.6 of the radius:
+
+| Case | Contact time | Impulse | Peak force |
+| --- | --- | --- | --- |
+| Crash, stick shoulder, 1 m/s | +1.7% | -0.1% | 84 N against 145 (x0.58) |
+| Crash, 5 m/s | 0.0% | -0.2% | 435 against 921 (x0.47) |
+| Ride, stick bead, 1 m/s | +6.1% | -0.2% | 115 against 170 (x0.68) |
+| Ride, 5 m/s | +4.1% | -0.2% | 673 against 1079 (x0.62) |
+| Ride, yarn mallet, 5 m/s | +1.8% | -0.8% | 184 against 187 (x0.98) |
+
+![The contact force of a 5 m/s stick on the ride against time, first 1.6 ms, drawn twice: at 44.1 kHz in red and at 176.4 kHz in blue. Both pulses last about 0.85 ms and the blue peak is about 60% taller.](/images/entropy-physmod-drums-contact-bronze.svg)
+
+The test asserts contact time within 8%, impulse within 2% and the spectrum below 8 kHz within 1 dB. The peak force, which a listener does not hear directly, is a third to a half low. Anything that reads peak force off this contact, the view's force plot for one, is reading the coarse pulse.
+
+## 4. A drum head from Bessel zeros
+
+`membrane.rs` is an ideal circular membrane under tension `T` and surface density `sigma`. Its modes are `J_m(j_mn r / a) cos(m theta)`, with `j_mn` the zeros of `J_m`, each shape normalized to a mean square of one so every mode's mass is the head's. Three things make a real head differ from that, and all three are computed:
+
+- **Air loading.** The air next to the head moves with it. In the wavenumber domain the Rayleigh integral becomes `rho / sqrt(kappa^2 - k^2)` weighting the mode's spectrum. The evanescent part, beyond the acoustic wavenumber, is mass, and the propagating part is radiation damping. The Hankel transform of a mode has a closed form (Lommel), so this is a smooth integral per mode, cached. The load depends on the frequency and the frequency on the load, so it is iterated four times.
+- **The enclosed air** is a spring on the modes that change the volume, which lives in `drum.rs` and `cavity.rs`.
+- **Tension modulation**, section 5.
+
+**Evidence: the timpani.** A 26 inch head, tuned to 130.81 Hz on its `(1,1)` mode, which is the pitch of a timpani. Tension 2729 N/m, head mass 0.0904 kg. The `(m,1)` ratios to `(1,1)`:
+
+| Mode | In a vacuum | With air, as built | Rendered from a stroke | Air on one side |
+| --- | --- | --- | --- | --- |
+| (2,1) | 1.340 | 1.469 | 1.469 | 0.0323 kg |
+| (3,1) | 1.665 | 1.921 | 1.921 | 0.0248 kg |
+| (4,1) | 1.980 | 2.362 | 2.362 | 0.0203 kg |
+| (5,1) | 2.289 | 2.795 | not checked | 0.0173 kg |
+
+The design doc records Rossing's measurements of real timpani as about 1 : 1.50 : 1.97 : 2.44, which I did not read myself, and no fitting was done: the air loading alone moves the family from the vacuum ratios most of the way there. The model lands 2.1%, 2.5% and 3.2% short of those three figures. The test asserts within 6% and three times closer than the vacuum ratios.
+
+![Spectrum of a timpani stroke at 0.75 of the radius from 60 to 900 Hz on a log axis. The strongest peak is at 130.8 Hz, the note. Grey dashed lines mark where the modes would be in a vacuum, red lines where the air puts them, and green dotted lines mark 1.5, 2 and 2.5 times the note. The red lines sit between the grey and the green.](/images/entropy-physmod-drums-timpani-spectrum.svg)
+
+The lowest mode, `(0,1)`, is the one that sweeps volume. It is the most loaded: 0.0985 kg of air on one side against a head of 0.0904 kg. In vacuum it would sit at 117.9 Hz, the head with air on it alone gives 66.1 Hz, and in the drum, with the kettle's air as a spring, a centre stroke shows it at 84.8 Hz. It radiates as a monopole, so it is damped hard. Its `T60` is 0.49 s against 1.73 s for the note in the mode table, and rendered, the time for each to fall 20 dB, times three, is 0.6 s against 1.8 s. A stroke at 0.75 of the radius has `(0,1)` 21.8 dB below `(1,1)`. So the thud dies and the note sings on.
+
+A centre stroke leaves the asymmetric modes silent. The four strongest peaks of one are all axisymmetric, at 84.8, 508.7, 360.3 and 211.3 Hz, and the first asymmetric peak, 165.2 Hz, is 94.5 dB down. Against a stroke at 0.75 of the radius the `(1,1)` level relative to `(0,1)` differs by 105 dB. The test asserts 30.
+
+## 5. Tension modulation and the glide
+
+A displaced head is stretched, so its tension rises by `E h / (4 (1 - nu)) * sum k^2 q^2`, exact for uniform in-plane strain with these shapes. Every mode's frequency rises by `sqrt(T / T0)`. A hard hit starts sharp and glides down as it decays. The film cannot stretch without limit, so the added tension is capped at the yield strain of polyester, about 3%.
+
+```rust
+for k in 0..self.k2.len() {
+    let ms = self.body.mean_square(k);
+    s += self.k2[k] * ms;
+}
+let target = (self.stretch * s).min(self.yield_tension);
+let next = self.added + (target - self.added) * smoothing;
+self.ramp = (next - self.added) / BLOCK as f32;
+```
+
+The stretch is read every 16 samples from each mode's amplitude averaged over its cycle, `mean_square`, and the tension is ramped every sample between readings. Both choices came from failures, below.
+
+**Evidence: the glide.** A floor tom on one head with an open shell (a concert tom), struck at 0.5 of the radius, the head's `(1,1)` frequency 5 to 85 ms in against its settled pitch, and beside it the peak of the model's own tension trace, `600 log2(T / T0)`:
+
+| Tuning | Speed | Measured, 5-85 ms | Peak of the tension trace |
+| --- | --- | --- | --- |
+| 82 Hz | 0.5 m/s | +0.4 cents | 3 cents |
+| 82 Hz | 1.5 m/s | +6.1 | 28 |
+| 82 Hz | 3 m/s | +24.8 | 104 |
+| 82 Hz | 6 m/s | +90.8 | 313 |
+| 65 Hz (slack) | 5 m/s | +164.8 | 461 |
+| 82 Hz | 5 m/s | +65.2 | 241 |
+| 110 Hz (tight) | 5 m/s | +16.3 | 91 |
+
+![Frequency above rest in cents against time after a hit, first 300 ms, for a floor tom. Every curve spikes to its peak within about 5 ms while the stick is in contact, drops to a lower value and then decays over about 250 ms. The 65 Hz slack tom at 5 m/s peaks at 461 cents, the 82 Hz tom at 6 m/s at 313, the 110 Hz tight tom stays under 100 and the 0.5 m/s hit is flat.](/images/entropy-physmod-drums-glide.svg)
+
+The spike is the head stretched while the stick is pressing on it; what a listener hears is the decay after it, which the 5 to 85 ms window averages. A slacker head glides further, a softer hit not at all. The design doc's 82 Hz figures, 63 cents at 6 m/s and 16 at 3, read 91 and 25 here. Its slack and tight figures, 163 and 14, read 165 and 16. I do not know what accounts for the 82 Hz difference.
+
+**Failure notes: two ways to drive the tension that do not work.** The doc records both. I reproduced them by patching `drum.rs` by hand, measuring, and restoring the file byte for byte. A drum struck hard, arrival speed against the speed the stick leaves at, and the peak of the output:
+
+| Variant | Kick, 55 Hz, felt beater, 6 m/s | Floor tom, 6 m/s | Floor tom, 25 m/s at the rim |
+| --- | --- | --- | --- |
+| As built | leaves at 5.04 m/s, peak 6.0 | 4.70, peak 0.40 | leaves at 32.9 m/s, peak 7.2 |
+| Tension from the instantaneous `q^2` | 5.19, peak 7.7 | 4.75, peak 0.49 | 36.2, peak 1149 |
+| The sampled high band counted in the stretch | 18.72, peak 109 | 4.63, peak 0.50 | 88.0, peak 59 |
+
+Instantaneous `q^2` ripples at twice each mode's frequency, and a ripple followed even slightly late pumps energy into the head: parametric amplification. The hard tom is fine and the 25 m/s one runs away (peak output 1149, where full scale is 1). The cycle-averaged amplitude has no ripple and follows the envelope. The second variant is the one behind the kick: the high band is sampled modes that only listen to the contact, and if their motion also raises the tension that pushes the striker back, energy appears from nowhere. The 6 m/s beater left at 18.7 m/s, the doc says 19, and the kick was 18 times louder than as built. With only the contact-coupled modes in the stretch the beater leaves at 5.04 m/s; the doc says 5.2.
+
+One thing the doc calls physical and I would not: as built, a 25 m/s stick at the rim of the floor tom leaves at 32.9 m/s. It arrives at 25. That is energy gained from the stretch at the extreme end of the range. It is small beside the 88 m/s of the failed variant above, but it is not zero.
+
+## 6. Kick, toms, timpani
+
+`drum.rs` describes a drum in physical quantities: head sizes and film, tension solved from the tuning asked for, the shell's volume and depth, losses such as a pillow in the kick, and the striker. A kick has a two-ply batter head with a pillow against it and a resonant head; the tunings are of the batter's `(0,1)` mode with air loading, before the shell couples it. The enclosed air is the spring that ties the heads together. The resonant head of a tom or kick keeps only the modes the air can move, up to four orders, since nothing else drives it.
+
+**Evidence: how long a strike lasts.** The head's give sets it, not the tip:
+
+| Case | Contact | Peak force | Leaves at |
+| --- | --- | --- | --- |
+| Timpani, felt mallet, 2 m/s at 0.75 | 8.23 ms | 19 N | 1.78 m/s |
+| Timpani, hard mallet | 7.17 ms | 21 N | 1.76 m/s |
+| Rack tom, stick, 4 m/s at 0.4 | 5.78 ms | 31 N | 3.48 m/s |
+| Floor tom, stick, 4 m/s | 7.07 ms | 26 N | 3.11 m/s |
+| Snare, stick, 4 m/s | 3.79 ms | 46 N | 3.39 m/s |
+| Kick, felt beater, 3 m/s at 0.2 | 19.14 ms | 57 N | 2.59 m/s |
+| Kick, plastic beater | 18.46 ms | 58 N | 2.54 m/s |
+
+A stick is in contact for 4 to 7 ms and a kick beater for 19. Swapping felt for plastic on the kick changes the contact by 0.7 ms and its peak by 1 N. What the tip changes is the sharp start of the force, the top of the spectrum: the share of the first 150 ms above 4 kHz is -55.1 dB with felt and -44.7 with plastic, 10.4 dB more, where the test asserts 6.
+
+**Evidence: what a harder stroke does.** A stick's contact is set by the head, so a harder hit is louder and hardly brighter. Centroid of the first 100 ms at 1 and 5 m/s: snare 2358 and 2334 Hz, 14.0 dB louder; rack tom 1225 and 1266 Hz, 15.4 dB louder. What brightens a stroke is the mallet: felt against hard on the timpani, 436 against 1122 Hz, and felt against itself, 230 Hz at 0.4 m/s and 592 Hz at 4, because the felt stiffens under load.
+
+**Evidence: pillow and tuning.**
+
+- With the pillow the kick's rms falls 99.4 dB from the first 0.1 s to 0.4-0.6 s. Without it, 63.8. The test asserts 6 dB more.
+- A rack tom follows its tuning. The `(1,1)` peak sits at 203.3 Hz for a 120 Hz batter and 268.7 for 160 Hz: a ratio of 1.322 against 1.333, 15 cents flat, where the test allows 25. At 200 Hz it is 33 cents flat. The air inside loads the `(1,1)` more the closer the head's mode comes to the shell's own.
+
+## 7. The snare
+
+A snare is a batter head, a snare-side head, the air between them, an impact, and twenty steel strands lying against the resonant head. It uses everything above and adds two things.
+
+**The air as modes.** With only a uniform pressure, nothing but the volume-changing modes reach the snare side, and they radiate their energy away in tens of milliseconds. `cavity.rs` models the shell as the acoustic modes of a hard-walled cylinder, `J_m(alpha r / a) cos(m theta) cos(l pi z / L)`, driven by both heads and pressing back on them, with the overlaps in closed form. In a 14 by 5.5 inch shell the first transverse mode is 565 Hz (a cosine and a sine member), then 1176 Hz (the first radial mode), 1225 Hz (one half-wave along the axis), 1349 Hz and 1698 Hz. They carry the batter's `m = 1` motion to the snare side, which holds 6.6% of its energy in `m = 1` modes 50 ms after a hit, and exactly zero with only the uniform mode. The test asserts 3%.
+
+**The wires.** Eight groups of strands, each a small mass held against the head by a soft spring and lightly damped, with an ordinary contact between group and head. The strainer presses the whole set on with a fraction of a newton (0.15 N by default). When the head accelerates away faster than the preload can pull a group after it, the group lifts off, flies and lands again, and each landing is a small sharp impact on the head. Nothing plays a noise burst.
+
+| Case | Landings in 1 s | Last time a group was off the head |
+| --- | --- | --- |
+| 0.8 m/s | 160 | 50 ms |
+| 2 m/s | 232 | 72 ms |
+| 4 m/s | 292 | 94 ms |
+| 2 m/s, snares off | 0 | never |
+| 2 m/s, preload 0.05 N (loose) | 315 | 113 ms |
+| 2 m/s, preload 0.15 N (default) | 232 | 72 ms |
+| 2 m/s, preload 1.2 N (tight) | 112 | 29 ms |
+
+A ghost note at 0.3 m/s lands the wires 111 times. Snares on add 6.2 dB above 3 kHz in the first 50 ms (27.3 against 21.1 dB), where the test asserts 4.
+
+![Number of snare-wire groups off the head, out of eight, averaged over 2 ms, against time after a 2 m/s stick, for three preloads. The loose 0.05 N setting has groups leaving the head for 113 ms, the default 0.15 N for 72 ms and the tight 1.2 N for 29 ms. The traces are jagged as groups lift and land in turn.](/images/entropy-physmod-drums-snare-wires.svg)
+
+**The high band.** A membrane's modes crowd together quadratically, so a complete set stops at 2-3 kHz, and a stick has real energy above that. The sampled high band represents each 1/40 octave slice above the complete band by one real mode drawn from it, standing for all `count` modes of the slice: its mass divided by `count`, its radiated weight by `sqrt(count)` because the modes radiate incoherently. Its shape is a random plane wave, which is what high modes of a membrane look like locally, mean square one everywhere. A rack tom hit at 4 m/s:
+
+| | Above 4 kHz | Peak force | Contact |
+| --- | --- | --- | --- |
+| High band on | -30.4 dB | 30.5 N | 255 samples |
+| High band off | -49.3 dB | 30.5 N | 255 samples |
+
+![Spectrum of a rack tom hit from 200 Hz to 16 kHz with the sampled high band on in blue and off in red. The two curves are the same below about 3 kHz. Above it the blue curve keeps falling slowly and the red one drops away.](/images/entropy-physmod-drums-highband.svg)
+
+18.9 dB more above 4 kHz, with the contact unchanged. The test asserts 10 dB and 3%.
+
+**Failure notes.** The doc records three, and I did not reproduce them.
+
+- Coupling the high band both ways made the contact chatter at the sparse modes' frequencies, with a force whose energy was flat to 16 kHz. It only listens now, and the failure in section 5 is what happens when its motion reaches back anyway.
+- Retuning in 16-sample steps modulated every mode with a staircase, putting sidebands at multiples of 2.8 kHz, 40 dB or more above the true top end. The tension is now ramped every sample.
+- The doc gives 44% of a core for a snare before profiling and 13% after, from SSE2 and sharing the eight wire groups' pass over the head. Median of three here: 6.5%, a different machine and a different starting point.
+
+## 8. Cymbals: a shallow shell
+
+A flat 16 inch crash of a millimetre of bronze would have modes at 22 and 54 Hz and almost nothing you would call a cymbal. `plate.rs` starts from the free-edge Kirchhoff plate: modes `W(r) cos(m theta)` with `W = J_m(lambda r / a) + C I_m(lambda r / a)`, `omega = lambda^2 sqrt(D / (rho h)) / a^2`, the `lambda` of each mode a root of the determinant of the free-edge moment and shear conditions. Plates are dispersive, so their modes are spread evenly in frequency, unlike a membrane's.
+
+**Evidence: the flat plate.** `lambda^2` from the frequency equation for a free plate with `nu` 0.33, against Leissa's table:
+
+| Mode | Computed | Solved to full precision | Leissa | Difference from Leissa |
+| --- | --- | --- | --- | --- |
+| (2,0) | 5.2620 | 5.262 | 5.253 | 0.17% |
+| (0,0) | 9.0689 | 9.0689 | 9.084 | 0.17% |
+| (3,0) | 12.2439 | 12.2439 | 12.23 | 0.11% |
+| (1,0) | 20.5131 | 20.5127 | 20.52 | 0.03% |
+| (4,0) | 21.5272 | 21.5272 | 21.6 | 0.34% |
+
+The tests assert 2e-4 against the frequency equation and 0.5% against Leissa. I did not read Leissa; the values are the ones in the test.
+
+**The dome.** A cymbal is not flat. It is a spherical cap. Every mode with a nodal circle has to stretch the dome to move, and the axisymmetric modes most. The dome's stiffness is folded into shell modes by an eigen-solve per order. A dome of radius `R` lifts every mode that stretches it to about the ring frequency `sqrt(E / rho) / (2 pi R)`, and the short waves follow `omega^2 = omega_flat^2 + E / (rho R^2)`.
+
+| | Bronze | Mass | Dome radius | Ring frequency | Lowest axisymmetric mode, flat to dome | Modes, nonlinear |
+| --- | --- | --- | --- | --- | --- | --- |
+| Crash, 16 inch | 0.99 mm | 1.10 kg | 1.04 m | 546 Hz | 37.9 to 547.4 Hz | 238, 72 |
+| Ride, 20 inch | 1.43 mm | 2.50 kg | 1.17 m | 488 Hz | 35.3 to 489.4 Hz | 249, 77 |
+| Splash, 10 inch | 0.57 mm | 0.25 kg | 0.68 m | 839 Hz | 56.5 to 841.4 Hz | 186, 49 |
+
+The modes that only bend, the ones with nodal diameters and no nodal circle, barely move: the crash's `(2,0)` goes from 21.8 to 22.9 Hz and `(3,0)` from 50.8 to 54.4. The nine crash modes above 1.5 kHz (flat frequency) and with fewer than ten nodal diameters follow the dispersion relation to within 0.01%, where the test asserts 1%.
+
+![Dome frequency against flat-plate frequency for the crash's nonlinear modes, both on log axes from 20 Hz to 3 kHz. Modes with nodal diameters, in blue, lie just above the grey dashed no-dome line at low frequency. Axisymmetric modes, in red, and modes with nodal circles jump up to a black curve that is flat at 546 Hz and then merges with the dashed line above 1 kHz.](/images/entropy-physmod-drums-plate-modes.svg)
+
+Radiation is the baffled Rayleigh integral in the wavenumber domain, both faces. Below the coincidence frequency, 17.3 kHz for this crash, a plate radiates only from its edge and its long wavelengths, so most of its modes are damped by the metal. Build time is 0.10 to 0.19 s per plate, cached, in a process that had built them before.
+
+## 9. The von Karman nonlinearity
+
+When a plate bends by more than a fraction of its thickness it also stretches in its own plane, and the coupling of the two is the von Karman theory. Projected on the shell modes, the stretching energy is a sum of squares, `U = sum_k c_k (P_k + l_k)^2`, with `P_k` quadratic in the mode amplitudes and `l_k` linear. The linear part is the dome's stiffness and is in the modes already. The rest is a quadratic force from the dome and a cubic one from stretching, coupling every mode to every other. Energy put into a few low modes by a stick spreads through the rest over tens of milliseconds. That is the crash's swell into a wash, and nothing in the presets shapes it.
+
+The literature this rests on: Ducceschi and Touzé, *Modal approach for nonlinear vibrations of damped impacted plates: application to sound synthesis of gongs and cymbals* (J. Sound Vib. 344, 2015), whose abstract describes an energy-conserving modal time-domain scheme for exactly this and the cascade of energy that follows; Shen, Xu and Yang, *The scalar auxiliary variable (SAV) approach for gradient flows* (J. Comput. Phys. 353, 2018), where the auxiliary variable comes from; and Skare and Abel, *Real-Time Modal Synthesis of Crash Cymbals with Nonlinear Approximations, Using a GPU* (DAFx-19), which says a cymbal needs enough modes to stress a modern CPU. I read the abstracts and the search results for those three. The full papers were PDFs I could not open here.
+
+**Stability.** The stretching force is stiff and grows with the square of the amplitude, so evaluating it explicitly is stable only up to some amplitude, and a hard crash is where it is needed. `vonkarman.rs` uses a scalar auxiliary variable. A scalar `psi` of about `sqrt(2 (U + C))` is carried along with the modes, the force is `-psi g` with `g = grad U / sqrt(2 (U + C))`, and `psi` is updated so that the work the force does on the modes is exactly what `psi^2 / 2` loses:
+
+```text
+Delta E_modes = H f.v + H^2 |f|^2 / (2M),   f = -(psi + Delta psi / 2) g
+Delta (psi^2 / 2) = -Delta E_modes    ->    Delta psi in closed form
+```
+
+One scalar, no solve. The sum of the modes' energy and `psi^2 / 2` can never grow whatever the amplitude, so the scheme cannot blow up. How well `psi` tracks the true stretching energy is the accuracy, and the tests measure it.
+
+**Evidence: energy.** With no losses and no striker, the modes' energy plus the scheme's stretching energy over one second, started from a knock in the lowest modes:
+
+| Start amplitude | Energy | Worst drift in 1 s | Stretching energy swings |
+| --- | --- | --- | --- |
+| 0.02 | 3.28e-4 J | 0.086% | 2.6% of E |
+| 0.1 | 8.20e-3 J | 0.095% | 8.1% of E |
+
+The test asserts 0.5%. Two 25 m/s hits, 0.98 then 0.5 of the radius, 50 ms apart, on each cymbal: everything stays finite, and the rms falls from 0.75, 1.05 and 0.97 (crash, ride, splash) at 0.1-0.2 s to 0.048, 0.051 and 0.035 at 1.9-2.0 s.
+
+**Evidence: the climb.** The energy-weighted mean frequency of the 72 nonlinear modes, from the modes' own energies, not the sound, since closely spaced modes beat and a tiny phase change would swing a band a decibel either way:
+
+| Time after the hit | Crash, 5 m/s | Crash, 0.3 m/s | Crash, 5 m/s, coupling off |
+| --- | --- | --- | --- |
+| 3 ms | 571 Hz | 587 | 590 |
+| 30 ms | 646 | 567 | 567 |
+| 80 ms | 714 | 552 | 546 |
+| 250 ms | 702 | 489 | 482 |
+| 500 ms | 614 | 413 | 403 |
+| 1 s | 435 | 295 | 291 |
+
+![Energy-weighted frequency of the crash's nonlinear modes in Hz against time after the hit, on a log time axis from 3 ms to 1 s. A soft 0.3 m/s hit and a hard hit with the coupling off both fall steadily from about 590 to 290 Hz. The hard hit with the coupling rises from 571 to 714 Hz over 80 ms, stays near 700 until 250 ms and then falls to 435 Hz.](/images/entropy-physmod-drums-cymbal-climb.svg)
+
+Energy climbs 25% in frequency in 80 ms and then falls as the high modes lose it faster than the low ones. A linear plate only falls, and a soft stroke does the same as a linear one: 552 against 546 Hz at 80 ms. That is what the plan asked for, the tests assert 10%, and it is a statement about the modes.
+
+Where the energy sits, by band of mode frequency, at 0.1 s after a 5 m/s hit:
+
+| Mode band | Under 300 Hz | 300-700 | 700-1200 | 1200-2000 | 2000-3000 | 3000-5000 | Over 5000 |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| With the coupling | 30.1% | 24.0 | 18.5 | 15.8 | 6.4 | 1.9 | 3.3 |
+| Without | 45.2% | 17.6 | 14.6 | 11.9 | 4.8 | 2.3 | 3.7 |
+
+The energy has moved from below 300 Hz into 300-2000 Hz. Above 2 kHz there is no more of it than in the linear plate (11.6% against 10.8%). The nonlinear set stops at 2 kHz, and above it the modes are linear and get only what the stick puts in.
+
+**A result I did not expect: an offset.** The doc says a hard stroke sounds about 10 dB louder than the same plate made linear. The crash's rms over the first 0.1 s reads 8.8 dB higher at 1.5 m/s and 17.0 dB at 5 m/s, and over 0.3 to 1.0 s 14.6 and 22.8 dB. That is not the doc's 10, and it does not come from where I expected. Spectrum by region, first 3 s of a 5 m/s crash:
+
+| Region | With the coupling | Without | Difference |
+| --- | --- | --- | --- |
+| 0-30 Hz | 77.6 dB | -0.8 dB | +78 |
+| 30-100 Hz | 68.0 | -9.6 | +78 |
+| 100-500 Hz | 66.5 | -27.2 | +94 |
+| 500-2000 Hz | 58.5 | 53.2 | +5.3 |
+| 2000 Hz up | 42.0 | 37.3 | +4.7 |
+
+The mean of the output is not zero. Over the first 0.1 s of a 5 m/s crash it is -0.216, against a peak of 0.49 for the whole render, and it decays: -0.146 over 0.1-0.5 s, -0.085 over 0.5-1 s, -0.039, -0.009, and -0.0006 by 4-8 s. A 4 m/s splash starts at -0.402. The same crash made linear has a mean of -0.00001. A ride at 3 m/s, which the doc says stays nearer linear, has a mean of -0.0016 and moves 100-500 Hz by 1.1 dB, and a crash at 0.3 m/s is at -0.001. So it grows quickly with how hard the plate is driven and only the thin, hard-hit cymbals show it.
+
+The sound above 500 Hz does change, by less than the doc says: about 5 dB in the third-octave bands from 565 Hz to 2.3 kHz for the hard crash (7.3 dB at 565 Hz, 16.8 at 712), and nothing above about 2.8 kHz. A 4 m/s splash moves 500-2000 Hz by 15.7 dB.
+
+![Energy per third octave from 500 Hz to 16 kHz over the crash's first second. The 5 m/s hit with the stretching, in red, sits above the same hit with the plate made linear, in dashed grey, between 500 Hz and 2.5 kHz, by up to 17 decibels at 712 Hz. Above 3 kHz they coincide. The 0.3 m/s hit in blue and the linear one in dashed green coincide throughout.](/images/entropy-physmod-drums-cymbal-bands.svg)
+
+I have not traced the offset. I expect that the modal output, the radiated acceleration from each mode's own `-omega^2 q - 2 sigma q'`, leaves out the nonlinear force that holds displaced modes at a new equilibrium, so a static deflection that should radiate nothing radiates its `-omega^2 q`. That is a guess. It has two consequences I can state. There is nothing after the cymbal that removes a slowly varying offset that I could find, and the DAW's Analyzer agrees: after a crash pad in the live run, section 11, it reads its strongest bin at 46.0 Hz. My offline render's strongest peak below 700 Hz is 46.4 Hz as well. I did not confirm those are the same thing. And it makes the third-octave figures under 500 Hz and the rms difference above meaningless as loudness. The radiated centroid, by the same token, is 1224 Hz for the coupled crash in the first 50 ms and 3736 Hz for the linear one, lower by a factor of three, which is the offset's low content and not a duller cymbal. The claim I can make is the one in the band table above 500 Hz.
+
+**Rate.** The force is evaluated every second sample. The crash's third-octave bands against evaluating every sample:
+
+| Evaluated every | Cost | Band error, max | Mean |
+| --- | --- | --- | --- |
+| 1 sample | 64% | 0 | 0 |
+| 2 | 35% | 1.8 dB | 0.49 |
+| 3 | 23% | 90.2 dB | 4.55 |
+| 4 | 18% | 46.0 | 3.49 |
+| 6 | 11% | 89.8 | 5.63 |
+
+Every second sample halves the cost for 0.5 dB on average. Every third aliases.
+
+**Resting the coupling.** The crash's coupling stops being evaluated once the stretching's share of its energy, taken as the peak of `|U|` over 50 ms since `U` swings through zero every cycle, is small. Crash, 5 m/s, 8 s, against never resting:
+
+| Floor | Rests at | Bands change by, mean | Max |
+| --- | --- | --- | --- |
+| 1e-3 | 6.74 s | 0.00 dB | 0.10 |
+| 3e-3 (the kit's) | 5.70 s | 0.00 | 0.00 |
+| 1e-2 | 4.51 s | 0.72 | 13.71 |
+| 3e-2 | 3.35 s | 1.51 | 22.07 |
+
+**The doc's other failure notes**, which I did not re-run: dropping even the smallest 1% of couplings moved some bands by 11 dB, so there is no pruning; storing the couplings sparse took 213% of a core against 56% for dense blocks with SSE2 and identical output; and gating the rest on a single reading at a zero crossing of `U` lost 15 dB from the low bands.
+
+**Cost.** Median of three, one second after a hard hit, one thread:
+
+| | Nonlinear modes | Coupling coefficients | Share of a core | Doc |
+| --- | --- | --- | --- | --- |
+| Crash | 72 | 22 540 | 33.6% | 56% |
+| Ride | 77 | 26 572 | 40.1% | 63% |
+| Splash | 49 | 8468 | 15.7% | 29% |
+
+Those are far over the plan's budget of 5% for a whole kit, on both machines. The coupling is most of it.
+
+## 10. The kit as one voice
+
+`kit.rs` sets every piece up where a kit puts it, and that one `placement` is what the 3D view draws and what decides how long each piece's sound takes to reach the others.
+
+![The kit from above with the listener at the bottom: circles for the snare, kick, rack tom and floor tom drawn solid and the crash, ride and splash dashed, each at its own radius. Dotted red lines run to the snare from the rack tom, kick and floor tom, labelled 56, 86 and 116 samples.](/images/entropy-physmod-drums-kit-layout.svg)
+
+A piece's radiated sound arrives at every drum's heads after `d / c`, weakened as `1 / d`, and presses on their volume-changing modes through the same `add_pressure` path the air inside uses:
+
+```rust
+let d = distance(from, at).max(0.25);
+delay[h] = ((d / C_AIR * sr).round() as usize).clamp(BLOCK, HISTORY - BLOCK);
+gain[h] = FULL_SCALE_PA / d;
+// per block, on the target piece:
+d.add_pressure(self.incident[0][i], self.incident[1][i]);
+```
+
+Cymbals radiate into the kit and do not listen; a plate barely moves under a few pascals.
+
+**Exact in blocks.** The kit runs in blocks of 32 samples. The closest pair of pieces is the rack tom and the snare, 56 samples of sound travel to the batter head and 54 to the nearer of the two heads, which `Kit::min_delay()` reports. Within a block no piece can hear another, so each depends only on earlier blocks, and the pieces can render side by side. Sample delays from each source to each drum's batter head:
+
+| Target | Kick | Snare | Rack tom | Floor tom | Crash | Ride | Splash |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| Kick | - | 67 | 69 | 64 | 145 | 133 | 127 |
+| Snare | 86 | - | 56 | 116 | 92 | 155 | 119 |
+| Rack tom | 78 | 60 | - | 102 | 78 | 108 | 64 |
+| Floor tom | 85 | 112 | 91 | - | 167 | 74 | 102 |
+
+The audio thread and a few parked worker threads each always render the same pieces, so the result is the same however they are timed. A test renders a hit on five pieces on 0, 1 and 3 workers and requires the outputs to be identical sample for sample; it passes. A piece with nothing striking it, output under -100 dB of full scale and energy under 1e-10 J for 50 ms, sleeps until something strikes it or sound louder than 0.02 Pa reaches it.
+
+**Evidence: sympathy.** The snare wires' landings in the second after one hit elsewhere, default kit:
+
+| Piece hit | 2 m/s | 4 m/s | 6 m/s |
+| --- | --- | --- | --- |
+| Kick | 0 | 12 | 76 |
+| Rack tom | 12 | 152 | 324 |
+| Floor tom | 0 | 0 | 24 |
+| Crash | 0 | 16 | 86 |
+| Ride | 0 | 0 | 0 |
+| Splash | 0 | 0 | 115 |
+
+A stick on the snare itself at 0.3 m/s lands the wires 119 times. The rack tom is the closest drum and tuned nearest the snare. The floor tom is far and low. With the pieces deaf to each other, or the snares off, the wires do not move: both are tests. The doc's crash figures, 8 at 2 m/s and 388 at 6, read 0 and 86 here, at a strike position I did not choose to match; its kick, rack and floor figures agree to within a few landings.
+
+**Evidence: cost.** Audio-thread time as a share of real time, 4 s, median of three, engine only. The groove is a ride hit every 0.25 s, a kick on every fourth of those and a snare on the third of each four, and a crash on the first; "all seven" is every piece struck hard at once:
+
+| Workers | All seven struck at once | The groove | Doc, groove |
+| --- | --- | --- | --- |
+| 0 | 99% | 52% | 100% |
+| 1 | 69% | 48% | 69% |
+| 2 | 61% | 35% | 68% |
+| 3 | 57% | 40% | 75% |
+
+Per piece, median of three, 1 s after a hit: snare 6.5% of a core, kick 4.4%, floor tom 3.6%, rack tom 3.1%, timpani 1.0%. The doc gives 13%, 7%, 5.5%, 4% and 2%. Everything ringing at once is more than the 512-frame callback can afford on one thread, and the groove is comfortable. More threads than work is slower: 3 workers is 40% against 35% for two, because there are more threads to wake than pieces to share. The doc found the same in the same place.
+
+**Build.** 0.96 to 0.98 s cold and 0.08 to 0.09 s warm, in two runs of a process that builds nothing else first (the doc: 1.6 and 0.15). The pieces build in parallel on a thread when the track becomes a kit, never on the audio thread. Hits sent before the kit is ready are dropped.
+
+**Where the time goes.** The ride's coupling on its own thread is the critical path. Its coupling matters for seconds, so a ride played on every beat never rests, and should not.
+
+**Level.** At 6 m/s the pieces peak, in dBFS at the kit's output with sympathy off: kick -8.9, snare +5.8, rack tom -11.8, floor tom -15.5, crash -13.3, ride -21.3, splash -7.6. The snare is over full scale at a hard hit, before whatever limiter follows. The DAW's `daw_matter` hear action on the snare reads the same +5.8.
+
+## 11. The kit in the DAW
+
+The pattern from post 1 carries over: the audio thread publishes `MatterShared` and the view reads it. What is different is what is published: each face's displacement on a 145-point grid, its lowest 64 modes, each strike's measured contact, the snare wires and the latest force pulse, about 85 times a second. `widgets_matter.rs` draws each head and plate as rings and spokes displaced by that field. The stick replays each strike from what the contact measured: it lands where it landed, stays down for the contact time stretched 30 times, and leaves at its measured rebound speed. Clicking a head strikes it there.
+
+![The headless kit view after a 5 m/s stroke on the crash with Physics View on. The crash is drawn bent into a dome with rings displaced. The status reads: bending past its thickness, modes coupled, energy climbing. The contact force plot has a 422 N spike. The energy bars show the crash far above the drums.](/images/entropy-physmod-drums-view-crash-physics.png)
+
+![The kit after a 6 m/s stick on the rack tom. The status reads: head stretched, pitch plus 10 cents gliding down; snare wires 3 of 8 off the head, 211 landings. The energy bars show the snare, kick and floor tom ringing.](/images/entropy-physmod-drums-view-rack-tom-sympathy.png)
+
+The second picture is the sympathy of section 10 seen from the view: the tom is struck, nothing touched the snare, and the snare's wires are landing, 211 of them, with the snare's energy bar lit. The energy per piece is drawn at its true relative size, no smaller than a fifth of the loudest.
+
+![The kit after a 5 m/s stroke at the snare's edge. The status reads: snare wires, 6 of 8 off the head, 23 landings. The contact force plot is a smooth 67 N arch lasting about 5.6 ms.](/images/entropy-physmod-drums-view-snare-physics.png)
+
+![The kit after a 5 m/s beater on the kick. The status reads: head stretched, pitch plus 297 cents gliding down. The contact force plot is a wide 116 N arch over 12.3 ms.](/images/entropy-physmod-drums-view-kick-physics.png)
+
+Those pictures are from `tests/matter_view.rs`, 8 of 8 passing. They cover a kit at rest and struck, Physics View adding to it, sympathy showing, clicks striking where they land, the pads and the chip, and the brush drag, which is not part of this post.
+
+**In the DAW.** A synth track with waveform `matter` gets a live kit, one per track, so all seven pieces can hear each other. `daw_matter.ts` holds the kit rows, each with its General MIDI note: kick, snare, snare edge (at 0.82 of the radius, where the asymmetric modes ring), rack tom, floor tom, crash (the stick's shoulder), ride, ride bell (at 0.12) and splash. MIDI velocity is stick speed, log-spaced from 0.4 m/s up to the kit's dynamics, 6 m/s by default. Presets (studio, jazz, rock, funk, mallets) set the tunings, muffling, snare tension and hands. The mix knobs are the microphones. A tuning knob is committed only after 350 ms of stillness, so a drag does not start a build per step. `matter_ops.rs` adds `Entropy.Matter.analyzeHit`, and the `daw_matter` AI tool's `hear` action returns it. `hear` on the snare at 5.93 m/s returned a 4.29 ms contact, 61 N, a 5.04 m/s rebound, a 37.1 cent glide and a strongest bin at 311 Hz.
+
+![The DAW with the Kit window open on the Lead track after a crash pad at 6 m/s. The kit view, Physics View on, shows the crash's contact of 2.7 ms and 507 N, the kit's tuning, muffling, snare, mix and dynamics knobs on the right, and the arrangement behind. The Analyzer at the bottom reads Peak minus 24.8, RMS minus 30.1, Strongest 46.0 Hz, Brightness 957 Hz.](/images/entropy-physmod-drums-daw-crash.png)
+
+That is from `tests/daw_matter_live.rs`, a real DAW window driven by the harness: the track made a kit, opened, a pad struck, a click on the floor tom, Physics View, the AI tool striking and a song playing through the track. The design doc says this feature had not been run in the environment it was written in. It passes here, both the DAW's own `status: passed` and the Rust-side checks. The events were injected by the test driver, not a hand. The Analyzer's 46.0 Hz strongest bin is the one from section 9.
+
+`daw_matter.test.ts` passes 20 of 20.
+
+## 12. How this was verified without listening
+
+Each behaviour was measured from rendered audio, or from the head's own motion, and the tests keep the measurements in place. `cargo test --release --lib matter` ran 108 passed, 0 failed, 18 ignored before the report tests were added; the filter also matches the friction, water and widget tests, which are not this post's.
+
+| Claim | Where | Result |
+| --- | --- | --- |
+| `J_m` values and zeros match tables | `matter::bessel::tests` | Pass (4e-15) |
+| A struck mode rings at its frequency and decays at its rate; a 30 Hz mode stays in tune in `f32`; a retuned body is continuous | `matter::tests` | Pass |
+| Contact is resolved at 44.1 kHz; Hertz `v^(-1/5)` and its closed form; restitution 0.3, 0.6, 0.9 | `matter::contact::tests` | Pass (0.8%, 0.1%, 0.044) |
+| A membrane in vacuum rings at the Bessel zeros; a centre strike leaves the asymmetric modes silent | `matter::tests` | Pass (105 dB) |
+| The timpani plays its note on `(1,1)`; `(m,1)` within 6% of 1.5, 2, 2.5 and three times closer than vacuum; the `(0,1)` thud dies 10 dB+ faster | same | Pass |
+| A hard hit glides to its pitch, a soft one does not; a slacker head glides further | same | Pass |
+| The kick's pillow shortens the boom 6 dB+; a plastic beater 6 dB+ brighter above 4 kHz | same | Pass (35.6, 10.4) |
+| The shell's air drives the resonant head; the cavity's modes give the snare side 3%+ in `m = 1` | same | Pass (6.6%) |
+| Snare wires land 50+ times, never with snares off; looser buzz longer; snares add 4 dB+ above 3 kHz | same | Pass (232, 0; 6.2 dB) |
+| The high band adds 10 dB+ above 4 kHz and changes the contact under 3% | same | Pass (18.9 dB, 0%) |
+| Free plate `lambda^2` to 2e-4 and Leissa 0.5%; the dome lifts `(0,1)` to the ring frequency; short waves within 1% | `matter::cymbal_tests` | Pass |
+| Energy plus the scheme's stretching energy drifts under 0.5% undamped | same | Pass (0.095%) |
+| A soft stroke stays linear; a hard crash's energy climbs 10%+ within 100 ms then falls; a ride moves under 0.6 of the crash | same | Pass (25%) |
+| Stick on bronze at 44.1 kHz: contact within 8%, impulse 2%, spectrum below 8 kHz 1 dB | same | Pass (6.1%, 0.8%) |
+| Every drum and cymbal stays finite at 25 m/s and falls silent | `matter::tests`, `cymbal_tests` | Pass |
+| A rack tom sets the wires buzzing; the pieces render identically on 0, 1 and 3 workers; the kit sleeps | `matter::kit_tests` | Pass |
+| No allocation on the audio thread while hits arrive | `tests/matter_no_alloc.rs` | Pass |
+| The view draws the kit, Physics View, sympathy, clicks | `tests/matter_view.rs` | 8 of 8 |
+| Settings, presets, rows, GM notes, debounced tuning, tool, save, sequencer, export | `tests/daw_matter.test.ts` | 20 of 20 |
+| The running DAW plays the kit | `tests/daw_matter_live.rs` | Pass |
+
+The no-allocation test is the strings' idea again: a counting global allocator watches only the audio thread while another thread sends hits, and the count must be zero, here for a kit with all pieces on it and with workers.
+
+## 13. Decision log
+
+**Contact first.** Everything else is a client of it, and it is what makes a stick and a mallet and a snare wire the same code. The cost is a bracketed Newton solve per sample per striker in flight, up to four, and an implicit answer that is only as good as the two compliances it is handed.
+
+**A rotated state per mode, not a two-pole recurrence.** The tuning difference is real but small: 1.4 cents at 30 Hz, 7 at 15, and under 0.04 above 120. The property that decided it is the retune: `set_scale` with displacement and velocity continuous, which the tension modulation and the water's glasses both need. The cost is two multiplies more per mode and a rotation that has to be rebuilt when the scale moves, incrementally for small changes.
+
+**Air loading computed, not fitted.** The doc chose it before the timpani was measured, and the timpani is what justified it: the ratios move from vacuum to within 3% of the recorded real ones with no parameter. The cost is 0.2 to 0.8 s to build a drum, in radiation integrals, which is why builds are cached and off the audio thread.
+
+**Tension from the cycle-averaged amplitude.** Instantaneous `q^2` pumps energy in (section 5). The cost is that the glide follows an envelope and not the ripple, which is what the real head does, by the doc's account.
+
+**A sampled high band that only listens.** A complete set of modes stops at 2-3 kHz and a stick has real energy above. The statistical band puts it back (18.9 dB) and leaves the contact alone. The cost is that the band's own motion does not push back on a striker, and that letting it stretch the head is a catastrophe (section 5).
+
+**A scalar auxiliary variable for the plate.** No solve, no time-step limit, unconditional energy bound. The cost is accuracy: `psi` follows the stretching energy to about 1e-5 of the total on a soft stroke and 1e-2 on a hard one, per the doc, and it has to be resynchronized while a striker is in contact.
+
+**Every other sample.** Half the cost for 0.5 dB on average, and every third aliases to 90 dB. The floor is a fact about this plate's stiffness and I did not derive it.
+
+**A shared layout and a 32-sample block.** The sound and the picture cannot disagree about where the toms are. The cost is that a hit sent live lands at the next block, under 0.73 ms, and that a layout that put two pieces closer than 32 samples' travel would make the block inexact. There is a test for that.
+
+## 14. Failure notes and known limits
+
+**Failure notes**
+
+- The cymbal's output carries a slowly decaying offset when the plate is driven hard: mean -0.216 for a crash at 5 m/s in the first 0.1 s, -0.402 for a splash. It is undocumented, has no test, and it invalidates the doc's "about 10 dB louder" as a loudness claim (section 9). I did not trace it.
+- The doc's figures that do not reproduce here: a snare 13% of a core (6.5), a crash 56% (33.6), a groove at 100% on one thread (52), the kit's build at 1.6 s (0.96), an 82 Hz floor tom gliding 63 and 16 cents (91 and 25), a hard stroke "10 dB louder" (see above).
+- The energy-leak fix in section 5 is a restriction, not a cure: a 25 m/s stick at a floor tom's rim still leaves at 32.9 m/s.
+- The snare exceeds full scale at 6 m/s (+5.8 dBFS at the kit's output).
+- My first expectation for the two-pole recurrence's error at 30 Hz was about 5 cents. It is 1.4.
+- The `matter_view` pictures cover the whole kit. Its contact-force plot shows the 44.1 kHz pulse, which for a cymbal is about half the true peak (section 3).
+- The rendered `(0,1)` mode of the timpani is not where the membrane's mode table says (84.8 against 66.1 Hz), because the kettle's air is not in that table. My first check of its decay looked for the mode at 66 Hz, found a noise floor and reported an 84 dB drop. The tests are not affected, since they compare a centre and an edge stroke, but a check like mine that hands its peak search one fixed centre will not find what it is not looking for. The same lesson was in the brass post.
+
+**Known limits**
+
+- No hi-hat (two plates clamped together is its own model) and no rim: no rimshot or cross-stick. The snare's shell has no modes.
+- Cymbals radiate into the kit and do not listen to it.
+- Uniform thickness and a spherical dome: no bell profile, no lathing, no hole. The stand is two rigid felt modes, not coupled to the plate's own. Strikes lie on one diameter, so a hit elsewhere on a ringing cymbal lands on the same pattern. No glancing strikes, no chokes, and no air loading on plates.
+- The nonlinear set stops at 2 kHz. The cascade piles energy up below it, and the crash's rising wash above a few kHz, which a real crash has, is not here. The radiated centroid does not rise.
+- Heads are ideal membranes: no bending stiffness, so no sharpening of high modes, and no non-uniform tension around the rim, so degenerate pairs do not split and beat. Strikes are along the head's normal only; a glancing blow or a beater held against the head is not modelled.
+- Sympathy is a uniform pressure on each head. The pressure gradient across a head, which would drive its `m = 1` modes directly, and the doubling of pressure at a large surface, are left out.
+- A whole kit ringing hard is 99% of real time on one thread here, and the plan's budget was 5%. Hits sent while a kit is first built, about 1 s cold, are dropped.
+- The view draws the lowest 64 modes of each face. The Chladni pattern of a hit's first milliseconds, when the high band carries much of the motion, is smoother than the head's.
+- I did not listen to any of it. Nothing here says it sounds like a drum kit. The claims are pitch, mode ratio, contact time, level, spectrum and energy, measured on samples.
+- I read the abstracts, and search results for the abstracts, of Ducceschi and Touzé, of Shen, Xu and Yang and of Skare and Abel. I did not read Hunt and Crossley, Flores and co-authors, Hertz, Rossing, Fletcher and Rossing or Leissa; every figure attributed to them above is from the code's comments and the design doc, and I say so where it matters.
+
+## What's next
+
+The same module also holds friction, brushes, rubbing and water. Water is next: bubbles, droplets, glasses tuned by what is in them, rain landing on a roof, a lake or one of the cymbals above. It reuses the modal body and the contact solve unchanged. The open items here that could change these numbers are the cymbal's output offset and the drum's stretch at extreme speeds. If the offset turns out to be a bug, the level and centroid figures in section 9 change with it.
