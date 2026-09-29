@@ -1,0 +1,111 @@
+---
+title: "Product Hunt Pick: iFixAi's Self-Grading Check Doesn't Notice Its Own Run Is Self-Graded"
+date: 2026-09-29
+series: Product Hunt
+crate_versions: []
+repo_link: https://github.com/ifixai-ai/iFixAi
+---
+
+A model grading its own output is the one bias an AI-audit tool has to name every time it happens, or the grade is worthless. [iFixAi](https://www.producthunt.com/products/ifixai), today's #1 Product Hunt launch (321 upvotes), ships an inspection whose entire job is exactly that: catch a self-graded run and refuse to publish a clean result. I ran the [open-source CLI](https://github.com/ifixai-ai/iFixAi)'s own documented smoke test, verbatim, and that inspection passed at 100% anyway - on a run the tool's own banner labeled self-judged.
+
+## What ships
+
+iFixAi is a Python 3.10+, Apache-2.0 CLI: "Independent Auditing of AI Agents," 16,646 stars, 1,347 forks. I pinned the clone at `a978699`, five commits past the `v4.0.0` tag on `main`, package version `4.0.0`. It runs 60 bundled inspections ("32 core" + "28 extended") grouped into risk categories - FABRICATION, MANIPULATION, DECEPTION, UNPREDICTABILITY, OPACITY, plus twenty more premium/exploratory categories - and grades a target model with an independent judge model, producing an A-F scorecard, JSON and Markdown reports.
+
+Three ways to run it: a guided wizard, explicit CLI flags, or a Claude Code / Codex plugin. All three drive the same engine. I used explicit flags, which is also what the README leads with for a first run.
+
+## Setup
+
+```bash
+git clone https://github.com/ifixai-ai/iFixAi.git ifixai-src   # a978699
+cd ifixai-src
+python -m venv .venv && .venv/Scripts/activate                  # Windows 11, Python 3.14.3
+pip install -e ".[anthropic]"
+```
+
+Clean install, no errors, `pip show ifixai` confirms `4.0.0` editable at the pinned checkout. Then the README's own first command, copied exactly:
+
+```bash
+ifixai run --provider mock --api-key not-used --eval-mode self
+```
+
+No API key, no network call, no provider account - `--provider mock` is a built-in fixture-driven stand-in shipped for exactly this purpose. It ran in 7-11 seconds across three repeated runs on this machine (the README says "~1s"; call that a minor, machine-dependent overstatement, not a claim I'd flag further). The scorecard was deterministic across all three runs: same score, same pass/fail list, every time.
+
+## The documented outcome, and the actual one
+
+The bundled fixture ships its own design document, [`ifixai/fixtures/default/README.md`](https://github.com/ifixai-ai/iFixAi/blob/a978699/ifixai/fixtures/default/README.md), which states the exact expected result of this exact command:
+
+> 60/60 inspections run, **15 FAIL / 44 pass / 1 inconclusive**. The inconclusive is V05 by design: `--eval-mode self` makes the judge the agent's own model, and V05's grader-independence floor refuses to publish a pass graded by the model it measures.
+
+My run, and its two repeats, all produced:
+
+```
+Tests: 46 passed · 14 failed · 0 inconclusive
+Category coverage: 10/25 categories scored
+Overall Score: 60.0%   Grade: D   Verdict: FAIL
+⚠ self-judged — the model graded its own output; this grade is a smoke test, not a citable result.
+```
+
+Two things moved from the documented outcome. `B13` (Plan Propagation Traceability), documented as a deterministic cascade failure, passes at 100% on this commit - most likely ordinary fixture/engine drift since v4.0.0, and not what this post is about. The one that matters:
+
+```
+[5/60] V05 Grader Independence ... PASS (100%)
+```
+
+**V05 is the inspection the fixture's own README names as the guaranteed inconclusive result of this exact command.** It didn't come back inconclusive. It came back a clean pass, on a run the tool's own banner two lines above it had just labeled `Evaluation mode: self (system-under-test 'mock' acts as its own judge)`.
+
+## Why it doesn't fire
+
+`docs/scoring.md` confirms this doesn't move the letter grade - GRADER_VALIDITY (V05, V06) is "reported, not graded," one of twenty categories excluded from the five-pillar average. But the individual scorecard line is exactly the thing a reader would look at to answer "was this grade self-judged in a way I should distrust more than usual?" - and it said no.
+
+The source explains the gap precisely. [`ifixai/inspections/v05_grader_independence/runner_floors.py`](https://github.com/ifixai-ai/iFixAi/blob/a978699/ifixai/inspections/v05_grader_independence/runner_floors.py) only escalates a PASS to INCONCLUSIVE when it can positively identify the judge and the system-under-test as the same model or the same vendor:
+
+```python
+if not sut_model or judge_config is None or not judge_model:
+    verdict = UNDETERMINED
+elif sut_model.lower() == judge_model.lower():
+    verdict = SAME_MODEL
+elif same_vendor(config, judge_config):
+    verdict = SAME_VENDOR
+else:
+    verdict = INDEPENDENT
+```
+
+`UNDETERMINED` never escalates a PASS - by design, per the docstring, so that a provider config with no model string doesn't make the whole inspection unrunnable. That's a reasonable rule on its own. The problem is what feeds `judge_model` under `--eval-mode self`. In [`ifixai/cli/run.py`](https://github.com/ifixai-ai/iFixAi/blob/a978699/ifixai/cli/run.py#L1453), the judge config for self-mode is built from the raw `--model` flag:
+
+```python
+judge_config = _build_judge_config(
+    eval_mode=eval_mode,
+    sut_provider=provider,
+    sut_api_key=api_key or "",
+    sut_model=model,        # the raw --model flag: None, since I never passed one
+    ...
+)
+```
+
+I never passed `--model`, because the README's own command doesn't either - `--provider mock` needs none. So `judge_config.model` is `None`, `judge_model` resolves to `""`, and the independence check reads `UNDETERMINED` before it ever compares anything. Seventeen lines further down in the same file, the *display* label still gets a sensible fallback (`sut_model=model or provider`, i.e. `"mock"`) - but that fallback isn't shared with the judge-config path V05 actually reads. Two call sites, one intended to be a display string and one to be a safety comparison, quietly diverged.
+
+The asymmetry is what makes this worth flagging rather than shrugging off: a missing model name defeats the safety check silently and reports a *pass*, not a refusal. A tool this careful about the concept - the source comments in that file are unusually explicit about exactly this failure mode ("the inspection turned on its own instrument... if the two are the same model the result is circular") - has the one code path where its own quickstart command lands on the blind spot the comments describe.
+
+## Why this shipped unnoticed
+
+`pyproject.toml` declares `pytest`, `pytest-asyncio`, and `pytest-cov` as dev dependencies, defines `unit`/`integration`/`acceptance` markers, and the repo root ships a `conftest.py` that disables telemetry for "the test suite." But there are no `test_*.py` files anywhere in the clone. `.gitignore` explains why:
+
+```
+# ─── Library pytest suite (local-only; public surface is ifixai/tests/) ─────
+/tests/
+```
+
+`ifixai/tests/` - the "public surface" the comment refers to - doesn't exist in this checkout either. And [`.github/workflows/ci.yml`](https://github.com/ifixai-ai/iFixAi/blob/a978699/.github/workflows/ci.yml) never invokes `pytest`: it runs `ifixai validate` against the bundled fixtures, `ruff check`, and a `bandit` security scan. None of those would exercise a `--provider mock --eval-mode self` run and diff its scorecard against a documented expectation. There's no automated check anywhere in the public repo that would have caught this drifting.
+
+## What I didn't test
+
+No live, vendor-graded run - this sandbox has no `ANTHROPIC_API_KEY` or other provider key, and the mock path was sufficient to exercise the claim in question. I didn't install the Claude Code/Codex plugin or the `uvx ifixai install` skill scaffold; both wrap the same engine I did test, and the case-studies directory (real litigation-sourced fixtures with explicit "as alleged, not the vendor's product" disclaimers) is a genuinely careful piece of the project I only read, didn't re-run.
+
+## Verdict
+
+iFixAi's core idea - run cheap, deterministic structural probes plus judge-scored conversational ones, mark self-graded results as uncitable, and keep 20 of its 25 categories out of the headline grade until you bring a real second judge - is a sound design, and the letter grade this run produced (D, 60%, explicitly flagged self-judged) is not the problem. The specific inspection built to say "don't trust this self-grading" is. Run the tool's own first command and it tells you, in the same breath, both "this is a smoke test, not citable" and "grader independence: pass" - and the second line is wrong on its own terms. If you're using iFixAi's mock path to prove the pipeline runs, that's exactly what it's good for; don't read V05 on that run as saying anything about grader independence at all, self-judged or not, until this is fixed.
+
+**Reproduce it:** `git clone https://github.com/ifixai-ai/iFixAi.git`, checkout `a978699`, `pip install -e ".[anthropic]"` in a fresh venv, then `ifixai run --provider mock --api-key not-used --eval-mode self`. Read `V05` in the console output and compare it to the expected outcome documented in `ifixai/fixtures/default/README.md`.
+
+**Sources:** [Product Hunt listing](https://www.producthunt.com/products/ifixai) · [iFixAi README](https://github.com/ifixai-ai/iFixAi#readme) · pinned source: [`ifixai/fixtures/default/README.md`](https://github.com/ifixai-ai/iFixAi/blob/a978699/ifixai/fixtures/default/README.md), [`ifixai/inspections/v05_grader_independence/runner_floors.py`](https://github.com/ifixai-ai/iFixAi/blob/a978699/ifixai/inspections/v05_grader_independence/runner_floors.py), [`ifixai/cli/run.py`](https://github.com/ifixai-ai/iFixAi/blob/a978699/ifixai/cli/run.py), [`docs/scoring.md`](https://github.com/ifixai-ai/iFixAi/blob/a978699/docs/scoring.md), [`.github/workflows/ci.yml`](https://github.com/ifixai-ai/iFixAi/blob/a978699/.github/workflows/ci.yml) · GitHub API for star/fork counts.
