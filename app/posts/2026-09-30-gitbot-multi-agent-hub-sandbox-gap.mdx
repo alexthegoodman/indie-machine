@@ -1,0 +1,261 @@
+---
+title: "Product Hunt Pick: GitBot Unifies Coding Agents, but Codex Sandboxes Bypass Tool Fences"
+date: 2026-09-30
+series: Product Hunt
+crate_versions: []
+repo_link: https://github.com/gitbot-hq/GitBot
+---
+
+As developers adopt multiple AI coding assistants, switching between terminal windows and remembering CLI flags quickly becomes friction. [GitBot](https://www.producthunt.com/posts/gitbot), launched today on Product Hunt, addresses this by providing a local web server and browser interface that unifies Claude Code, OpenAI Codex, and OpenCode under a single multi-agent dashboard. Instead of running ephemeral one-off CLI commands, GitBot lets you configure reusable "bots" with persistent instructions, tool restrictions, and dedicated conversation threads.
+
+The core value proposition is local control: GitBot runs on your machine using your existing CLI authentication, stores bot configurations in plain JSON files under `~/.gitbot`, and introduces a prerequisite setup gate that verifies system tools before letting a bot touch a project. When operating on Claude Code or OpenCode, GitBot provides fine-grained per-tool approval prompts and SDK hooks that block unapproved tools.
+
+I cloned the [open-source repository](https://github.com/gitbot-hq/GitBot), inspected its adapter architecture across all three agent harnesses, and wrote a BDD test harness under `ph-tests/gitbot/` to verify its store persistence, permission translations, and path boundaries. The setup state machine and Claude Code tool hooks hold up as designed. However, our testing surfaced three notable operational and security gaps: Codex cannot enforce tool allow-lists and silently defaults "ask before each tool" to unconfirmed workspace edits; the workspace directory check contains a prefix-matching flaw that allows access into sibling directories; and Windows path delimiters cause repository names to leak absolute file paths in permission broadcasts.
+
+## What ships
+
+GitBot is an open-source, local-first web interface and multi-agent hub licensed under MIT:
+- **Repository**: [`gitbot-hq/GitBot`](https://github.com/gitbot-hq/GitBot)
+- **Pinned commit**: `34135f2edaf249a44ec9924ba9e4052002e4a3eb` (v0.0.9, zero commits past release)
+- **Stack**: TypeScript 5.9.3, Node.js 18+ (tested on Node v24.11.1), `@anthropic-ai/claude-agent-sdk` 0.2.42, `@openai/codex-sdk` 0.155.1, `@opencode-ai/sdk` 1.2.15, Next.js static export
+- **Storage**: JSON collections (`~/.gitbot/bots.json` and `~/.gitbot/threads.json`) written atomically via tempfile renames
+- **Transport**: Node.js `http` server on port 3000 (configurable via `-p`) with Server-Sent Events (SSE) streaming
+
+The software provides three main operational surfaces:
+1. **The Bot Hub and Store (`/bots`, `/threads`)**: A management layer that organizes bots by name, persona mascot, system instructions, permission modes (`ask-permissions`, `auto-approve`, `plan`), and optional tool allow/deny lists.
+2. **The Agent Adapter Layer**: Concrete runtime wrappers around the underlying agent SDKs:
+   - `start-claude-code.ts`: Uses `@anthropic-ai/claude-agent-sdk` with `canUseTool` approval callbacks and `PreToolUse` hooks.
+   - `start-codex.ts`: Uses `@openai/codex-sdk` with sandbox modes (`read-only`, `workspace-write`, `danger-full-access`).
+   - `start-opencode.ts`: Manages background `opencode serve` instances via `@opencode-ai/sdk`.
+3. **The Static Web Client**: A Next.js export served from `dist/ui` featuring a multi-column thread view, animated SVG mascots, and a folder browser.
+
+## Setup and test boundary
+
+I evaluated GitBot on Windows 11 using Node.js v24.11.1 in an isolated directory at `ph-tests/gitbot/`:
+
+```bash
+git clone --depth 1 https://github.com/gitbot-hq/GitBot.git gitbot-src   # commit 34135f2
+cd gitbot-src
+npm install                                                            # 18 packages in 32s
+npm run build:cli                                                      # tsc -> dist/
+node --test ui/scripts/chat-permissions.test.mjs                       # 7 unit tests passed
+node --test ui/scripts/mascot-morph.test.mjs                            # 6 animation tests passed
+```
+
+The upstream unit test suites passed cleanly (13 passed across `chat-permissions`, `marketplace-publish`, `mascot-morph`, and `share`). One test file (`ui/scripts/bot-author-prompt.test.mjs`) failed under Windows default git checkout because it compares documentation markdown loaded from disk against in-memory JSON using strict string equality without normalizing Windows `\r\n` CRLF line endings.
+
+To verify the core runtime claims without transmitting credentials to external APIs, I built an isolated BDD test harness in `ph-tests/gitbot/gitbot.feature` driven by `gitbot.test.mjs`. All bot definitions and thread logs were isolated by overriding `process.env.GITBOT_DATA_DIR` to a scratch directory under `ph-tests/gitbot/output/data/`. All six scenarios passed in 217 ms.
+
+## Bot store and machine setup gating
+
+A persistent issue when running AI agents across different developer machines is missing system dependencies. A bot instructed to generate documentation might require the `gh` CLI, while a multimedia bot might require `ffmpeg`.
+
+GitBot addresses this through an explicit prerequisite state machine. When a bot is created with `setupInstructions`, GitBot sets `setupStatus: "pending"` and calls `ensureSetupThread()`:
+
+```typescript
+// src/bot-store.ts
+export interface Bot {
+  id: string;
+  name: string;
+  setupInstructions?: string;
+  setupStatus?: "pending" | "complete" | "failed";
+  setupThreadId?: string;
+  // ...
+}
+```
+
+When a user tries to start work on a regular chat thread for this bot, the server checks `botNeedsSetup(bot)`. If setup is pending or failed, the chat endpoint rejects the turn immediately with HTTP 409 Conflict:
+
+```typescript
+// src/server.ts
+if (!isSetup && botNeedsSetup(bot)) {
+  jsonError(res, 409, `${bot.name} still needs to set up this machine`, {
+    setupRequired: true,
+    setupThreadId: bot.setupThreadId,
+  });
+  return;
+}
+```
+
+Only the designated setup thread (`thread.kind === "setup"`) is permitted to execute. When the setup turn runs, `start-claude-code.ts` omits the bot's standard tool allow-list so the agent can inspect system packages. At the conclusion of the setup conversation, `recordSetupOutcome()` scans the assistant's response for terminal markers:
+
+```typescript
+// src/bot-prompt.ts
+export function recordSetupOutcome(botId: string, text: string): void {
+  if (text.includes("SETUP_COMPLETE")) {
+    setSetupStatus(botId, "complete");
+  } else if (text.includes("SETUP_FAILED:")) {
+    setSetupStatus(botId, "failed");
+  }
+}
+```
+
+Once `SETUP_COMPLETE` is recorded, `botNeedsSetup()` returns `false`, and regular chat threads are unlocked. In our harness, this gate worked reliably: regular turns were blocked while pending, the setup thread remained accessible, and the marker successfully unlocked the bot.
+
+## Permission mode translations across agents
+
+GitBot presents a clean UI with three permission modes:
+1. **Ask before each tool (`ask-permissions`)**: Prompt the developer before every tool execution.
+2. **Auto-approve (`auto-approve`)**: Allow tools to run autonomously.
+3. **Plan only (`plan`)**: Restrict the agent to read-only exploration without file modifications.
+
+However, the underlying agent CLIs have fundamentally different execution architectures. GitBot translates these three UI modes into internal `PermissionMode` values inside `src/server-common.ts`:
+
+| UI Bot Mode | Claude Code Session | OpenCode Session | Codex Session | Codex Sandbox Mode |
+|---|---|---|---|---|
+| `ask-permissions` | `ask-permissions` | `ask-permissions` | `allow-all-edits` | `workspace-write` |
+| `auto-approve` | `yolo` | `yolo` | `yolo` | `danger-full-access` |
+| `plan` | `yolo` (`mode: "plan"`) | `yolo` (`mode: "plan"`) | `yolo` (`mode: "plan"`) | `read-only` |
+
+Notice the row for `ask-permissions`:
+- For Claude Code and OpenCode, `ask-permissions` routes tool calls through `canUseTool` callbacks, pausing execution until the user clicks approve in the browser.
+- For Codex, `ask-permissions` translates to `allow-all-edits`, which sets Codex's sandbox to `workspace-write`!
+
+The code in `src/server-common.ts` documents why this happens:
+
+```typescript
+// src/server-common.ts
+export function botPermissionToSession(
+  botMode: "ask-permissions" | "auto-approve" | "plan",
+  agent: "claude-code" | "opencode" | "codex"
+): { permissionMode: PermissionMode; mode?: "plan" | "build" } {
+  switch (botMode) {
+    case "auto-approve": return { permissionMode: "yolo" };
+    case "plan": return { permissionMode: "yolo", mode: "plan" };
+    default: return { permissionMode: agent === "codex" ? "allow-all-edits" : "ask-permissions" };
+  }
+}
+```
+
+Because `codex exec` operates non-interactively with its internal approval policy hardcoded to `never` in `@openai/codex-sdk` 0.155.1, it has no callback mechanism to prompt the user during a turn. GitBot accommodates this by assigning Codex the `workspace-write` sandbox. The consequence is significant: a developer who configures a Codex bot with "Ask before each tool" expecting confirmation before files are touched will find that the bot modifies workspace files without any approval dialog.
+
+## Tool fences: Claude Code hooks vs Codex unenforceability
+
+GitBot allows bots to specify an `allowedTools` list (for example, limiting a reviewer bot to `Read` and `Grep`). Here again, the enforcement capabilities diverge across agents.
+
+### Claude Code: In-process PreToolUse hook
+
+For Claude Code, `start-claude-code.ts` implements a multi-layer fence. Built-in tools are constrained through the SDK's `tools` parameter. To prevent tools exposed by project `.mcp.json` servers from slipping past, GitBot attaches an SDK `PreToolUse` hook:
+
+```typescript
+// src/start-claude-code.ts
+function allowListHooks(allowedTools: string[], botName: string): Options["hooks"] {
+  const allowed = new Set(allowedTools.map((t) => t.trim().toLowerCase()).filter(Boolean));
+  return {
+    PreToolUse: [{
+      hooks: [async (input) => {
+        const toolName = (input as PreToolUseHookInput).tool_name ?? "";
+        if (allowed.has(toolName.toLowerCase())) return {};
+        return {
+          hookSpecificOutput: {
+            hookEventName: "PreToolUse",
+            permissionDecision: "deny",
+            permissionDecisionReason: `${botName} is only allowed these tools: ${allowedTools.join(", ")}`,
+          },
+        };
+      }],
+    }],
+  };
+}
+```
+
+In Scenario 3 of our test harness, calling `Bash` or an undeclared MCP tool `mcp__github__create_issue` on a bot restricted to `Read` and `Grep` was immediately intercepted and rejected with the specified denial reason.
+
+### Codex: Unenforceable tool limits
+
+The Codex SDK has no equivalent tool-filtering hook or allowed tools parameter. When `start-codex.ts` receives a bot preset containing `allowedTools` or `disallowedTools`, it checks whether unenforceable tools exist:
+
+```typescript
+// src/start-codex.ts
+const unenforceableTools = [
+  ...(store.botPreset?.allowedTools ?? []),
+  ...(store.botPreset?.disallowedTools ?? []),
+];
+if (unenforceableTools.length > 0) {
+  emitEvent(store, "agent_error", {
+    message: `Tool limits are not enforced on Codex. ${store.botPreset?.name ?? "This bot"} runs with every tool its sandbox allows.`,
+  });
+}
+```
+
+GitBot emits an `agent_error` warning to the client stream, but continues the run with every tool permitted by the sandbox. If an audit bot on Codex is configured with `allowedTools: ["Read"]` in "ask-permissions" mode, it runs in the `workspace-write` sandbox and can execute arbitrary file modifications.
+
+## Security gaps: Prefix collision traversal and Windows path leakage
+
+Probing GitBot's file handling in `src/workspace.ts` and `src/server-common.ts` uncovered two concrete boundary defects.
+
+### 1. Directory boundary bypass via prefix collision
+
+To browse files in the UI, GitBot provides `listDir` and `readFile` endpoints. Both functions attempt to sandbox requests within the selected repository using `startsWith`:
+
+```typescript
+// src/workspace.ts
+export async function listDir(dirPath: string, repoRoot: string): Promise<DirEntry[]> {
+  const resolvedDir = resolve(dirPath);
+  const resolvedRoot = resolve(repoRoot);
+  if (!resolvedDir.startsWith(resolvedRoot)) {
+    throw new Error("Path is outside the selected repository");
+  }
+  // ...
+}
+```
+
+This check suffers from the classic path prefix collision vulnerability: it does not append a path separator (`path.sep`) to `resolvedRoot`.
+
+In Scenario 4 of our test harness, we initialized a workspace containing two sibling directories:
+- `workspace/target-repo` (the selected repository root)
+- `workspace/target-repo-secret` (a sibling directory containing `api_keys.env`)
+
+When `workspace.listDir(siblingDir, repoRoot)` was called, `resolvedDir.startsWith(resolvedRoot)` evaluated to `true` because the string `"target-repo-secret"` begins with `"target-repo"`. GitBot listed the contents of the sibling folder and returned the contents of `api_keys.env` via `workspace.readFile()`.
+
+The correct guard requires checking for an exact match or appending the path separator:
+
+```typescript
+const isInside = resolvedPath === resolvedRoot || resolvedPath.startsWith(resolvedRoot + path.sep);
+```
+
+### 2. Windows backslash path leakage in permission broadcasts
+
+GitBot aggregates active permissions across sessions in `buildPermissionsDump()`, which broadcasts pending tool calls to connected clients. To extract a friendly repository name, `src/server-common.ts` splits the path on forward slashes:
+
+```typescript
+// src/server-common.ts
+export function buildPermissionsDump(): PermissionDumpItem[] {
+  // ...
+  for (const store of sessions.values()) {
+    const repoName = store.repoPath.split("/").filter(Boolean).pop() ?? store.repoPath;
+    // ...
+  }
+}
+```
+
+On POSIX systems, `"/home/user/projects/web-app".split("/").pop()` cleanly produces `"web-app"`. On Windows, where paths use backslashes (`D:\projects\common\ph-tests\gitbot\output\workspace\my-app`), splitting by `"/"` fails to match. `repoName` evaluates to the complete absolute drive and folder path. In Scenario 5 of our harness, this was verified: `item.repoName` leaked `D:\projects\common\...` instead of `"my-app"`.
+
+Using `path.basename(store.repoPath)` avoids OS delimiter divergence.
+
+### 3. Unauthenticated network binding
+
+GitBot is designed to let developers control agents from phones or tablets on a local network, generating a terminal QR code on launch. However, the HTTP server has zero authentication: no session tokens, no API keys, and no CSRF protection. Anyone who can reach the open port on a shared local network (e.g., in a coworking space or coffee shop) can trigger agent sessions, read repository files, or execute shell tools with the host user's full machine privileges. GitBot warns about this in its README, but does not enforce loopback binding by default.
+
+## Marketplace proxy and local failover
+
+GitBot includes an in-app marketplace where users can install community bots curated in `gitbot-hq/Library`. To prevent baking API keys into the static client export, `handleMarketplaceRoutes()` in `src/marketplace-proxy.ts` forwards `/marketplace/*` requests to an upstream service (defaulting to `https://uat.revise.network/gitbot/api`).
+
+In Scenario 6 of our test harness, we verified that:
+- Allowed paths (such as `GET /marketplace/v1/bots`) proxy cleanly and forward HTTP headers (`ETag`, `Content-Type`).
+- Disallowed methods (such as `DELETE /marketplace/v1/bots/slug`) are rejected locally with HTTP 404 `{ error: { code: "NOT_FOUND" } }`.
+- When the upstream marketplace is offline or unreachable, GitBot catches the network failure and returns HTTP 502 with `{ error: { code: "MARKETPLACE_UNAVAILABLE", message: "Marketplace is unavailable right now" } }`.
+
+## The verdict
+
+| Dimension | Score | Assessment |
+|---|---|---|
+| **Multi-Agent Ergonomics** | 8/10 | Unifies Claude Code, Codex, and OpenCode behind a single browser tab with clean thread history and reusable bot definitions. |
+| **Prerequisite Verification** | 9/10 | Setup instructions enforce machine preparation before chat turns can run, preventing agents from failing mid-task on missing tools. |
+| **Permission Transparency** | 5/10 | Claude Code permissions work as expected, but mapping Codex "Ask before each tool" to silent `workspace-write` violates user expectations. |
+| **Tool Fence Rigor** | 6/10 | Claude Code PreToolUse hooks reliably stop unapproved built-in and MCP tools; Codex lacks tool filtering entirely. |
+| **Path and Network Security** | 4/10 | String `startsWith` prefix collision permits reading sibling directories; unauthenticated port exposure makes LAN usage risky. |
+
+GitBot offers a clean and practical desktop hub for developers juggling multiple AI coding CLIs. The bot store and setup gating state machine are genuinely well-conceived patterns that make agent workflows reproducible across different machines.
+
+However, if you test it with OpenAI Codex, treat the permission controls with caution: Codex will run in an unconfirmed `workspace-write` sandbox and will ignore tool allow-lists. Furthermore, until the path boundary checks append proper directory separators, avoid running GitBot in workspaces where sensitive sibling folders share a name prefix.
