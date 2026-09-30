@@ -1,0 +1,229 @@
+---
+title: "Product Hunt Pick: Bruto Keeps Tasks in Your Repo, but File-Editing Agents Miss Reversion Notices"
+date: 2026-09-30
+series: Product Hunt
+crate_versions: []
+repo_link: https://github.com/jimy-k4/bruto
+---
+
+Working with AI coding agents means watching chat windows lose context as conversations lengthen. [Bruto](https://www.producthunt.com/posts/bruto-2), launched today on Product Hunt, tackles that by pinning tasks, context and review loops into an in-repo JSON file: `.bruto/workspace.json`. Instead of syncing to a hosted SaaS database, notes live in your repository where both you and local coding agents can read, update and answer them.
+
+The core promise is safe collaboration: you and an agent can work the same board without stepping on each other's toes. When an agent answers a note through Bruto's bundled Model Context Protocol (MCP) server, the server stamps the edit and records a SHA-256 fingerprint in an audit log. If you simultaneously edit that same note in the web GUI, Bruto's 3-way merge keeps your edit, stamps the note with what was undone, and injects a prominent warning into the agent's task context.
+
+I cloned the [open-source repository](https://github.com/jimy-k4/bruto), built its MCP server, and wrote a BDD harness to verify its tools, git worktree redirection, and conflict mechanics. The MCP safeguards hold up as promised: standing rules cannot be overwritten by agents, and worktree sessions cleanly route back to the main checkout. But there is a real blind spot in the merge engine: if an agent edits `.bruto/workspace.json` directly as a file (the primary workflow the documentation recommends for file-access agents), the merge engine never receives an agent stamp, so it silently discards the agent's edit without generating any warning in the context or audit log.
+
+## What ships
+
+Bruto is an open-source, local-first web app and MCP server licensed under MIT:
+- **Repository**: [`jimy-k4/bruto`](https://github.com/jimy-k4/bruto)
+- **Pinned commit**: `3acca91` (v1.0.0, zero commits past release)
+- **Stack**: React 19.2.8, TypeScript 6.0.2, Vite 8.3.0, Vitest 5.0.1, `@modelcontextprotocol/sdk` 1.31.0
+- **Storage**: Plain JSON (`.bruto/workspace.json`), with JSON Lines auditing (`.bruto/log.jsonl`)
+
+The repository provides two operational surfaces:
+1. **A PWA web client**: A brutalist canvas board featuring draggable task cards, directional connection arrows, full-text and status search, and project "lenses" (dependency/structure maps for Web, API, and SQL databases). The client operates entirely in the browser using the File System Access API or local file uploads, with zero backend servers.
+2. **An MCP server (`bruto-mcp`)**: An esbuild-bundled Node.js CLI (`mcp/dist/index.js`, package version 0.4.0) that exposes 8 tools over stdio for agents like Claude Code, Cursor, and Windsurf:
+   - Reading tools: `list_notes`, `get_context`, `get_note`, `search_notes`
+   - Writing tools: `set_status`, `answer_note`, `create_note`, `connect_notes`
+
+## Setup and test boundary
+
+I tested Bruto on Windows 11 using Node.js v24.11.1 in an isolated directory at `ph-tests/bruto/`:
+
+```bash
+git clone https://github.com/jimy-k4/bruto.git bruto-src   # commit 3acca91
+cd bruto-src
+npm install                                             # 272 packages, clean install
+npm test                                                # 28 files, 249 passed
+npm run test:mcp                                        # builds bruto-mcp 0.4.0 and runs smoke test
+npm run build                                           # tsc -b && vite build (1.23s)
+```
+
+The upstream Vitest test suite passed completely (249 tests across 28 test files), and `npm run build` generated the production web assets cleanly.
+
+To probe the product's runtime claims, I created a standalone BDD test harness under `ph-tests/bruto/bruto.feature` driven by `bruto.test.mjs`. The test harness interacts with the compiled `bruto-mcp` binary through a standard `@modelcontextprotocol/sdk` StdioClient, exercises git worktree checkouts, and tests the domain merge engine against concurrent edits. All file paths, repositories, and git commits were isolated in temporary directories under `ph-tests/bruto/output/`.
+
+## Tool surface and standing rules protection
+
+Bruto exposes 8 MCP tools. In `bruto.test.mjs`, all 8 tools were discovered with appropriate metadata: the four reading tools (`list_notes`, `get_context`, `get_note`, `search_notes`) correctly publish `readOnlyHint: true`, allowing MCP host environments to execute them without repeated user confirmation.
+
+The workflow begins by listing tasks and reading context:
+
+```
+[task-1111] Implement OAuth refresh - todo
+[rule-9999] Run tests before review - todo · rule
+```
+
+Notes can have a kind: `task` (default), `bug`, or `rule`. A `rule` represents a standing project instruction (e.g., "Run tests before review" or "Update documentation on every API change"). When `get_context` is invoked, standing rules are automatically promoted to a top-level section:
+
+```markdown
+## STANDING RULES
+
+- "STANDING RULES" are notes with `kind: "rule"`: apply every one of them on each task, every time, even when no note asks for it. Never answer them in `aiResponse` or change them.
+
+### [rule-9999] Run tests before review
+Kind: rule
+Status: todo
+
+Every PR must pass unit tests
+```
+
+When an agent begins working, it calls `set_status` with `status: "in-progress"`. When finished, it calls `answer_note` with its summary and the list of touched files. Bruto verifies that the target note is not a standing rule or marked `agentAccess: "read"`:
+
+```typescript
+// mcp/src/tools.ts
+if (note.kind === 'rule') {
+  throw new BoardError(
+    `${ref(note)} is a standing rule (kind "rule"): apply it on every task, but never answer it or change it.`
+  );
+}
+```
+
+In our harness, calling `answer_note` on `rule-99` was immediately rejected with a `BoardError`. Furthermore, every tool execution, successful or refused, is appended to `.bruto/log.jsonl`. For successful `answer_note` calls, the server hashes every touched file:
+
+```json
+{"at":"2026-09-30T16:16:44.201Z","client":"test-agent","version":"2.0.0","agent":"worker-1","tool":"answer_note","note":"task-1111-2222-3333","args":{"id":"task-11","response":"Added token rotation logic in auth.ts"},"ok":true,"result":"[task-1111] Implement OAuth refresh is now \"review\" with your answer and 1 file(s) you touched. The user sees it on the board right away.","files":{"src/auth.ts":"sha256:4a02db1bc342b47f42ef9982463e26cf8d4c979d5e3c75d400e9981881519782"}}
+{"at":"2026-09-30T16:16:44.205Z","client":"test-agent","version":"2.0.0","tool":"answer_note","args":{"id":"rule-99","response":"Tried to close standing rule"},"ok":false,"result":"[rule-9999] Run tests before review is a standing rule (kind \"rule\"): apply it on every task, but never answer it or change it.","files":{}}
+```
+
+The SHA-256 fingerprinting ensures that an agent cannot claim to have modified a file without the audit trail recording the exact file revision at the moment of completion.
+
+## Git worktrees redirect to the main checkout
+
+A common headache with coding agents running in isolated git worktrees (`git worktree add`) is workspace divergence: if `.bruto/workspace.json` is committed, the worktree gets an isolated copy that falls out of sync with the developer's open board.
+
+Bruto addresses this inside `mcp/src/board.ts`: when started inside a linked worktree, `linkedWorktree()` runs `git rev-parse --path-format=absolute --git-dir --git-common-dir --show-toplevel`. If `git-dir` differs from `git-common-dir`, it identifies that it is in a linked worktree and resolves `.bruto/workspace.json` in the parent repository.
+
+Our harness initialized a git repository at `output/git-test/main`, committed an initial `.bruto` board, and created a linked worktree at `output/git-test/worktree-feat`. An MCP agent started with working directory set to `worktree-feat` without explicit project flags called `answer_note`:
+- `main/.bruto/workspace.json` was updated to `status: "review"`.
+- `worktree-feat/.bruto/workspace.json` remained untouched at `status: "todo"`.
+
+When started with `--worktree-board`, the server bypassed parent redirection and modified the worktree's own board as requested.
+
+## 3-way merge conflict handling and the missing agent-stamp gap
+
+Bruto implements a 3-way merge in `src/domain/merge.ts` (`mergeWorkspaces`). When the file on disk changes while the web app has unsaved changes, it compares `base` (last agreed state), `local` (in-memory user edits), and `remote` (disk state).
+
+### Non-conflicting edits merge cleanly
+
+If the user edits the note's `description` while an agent updates `status` and `aiResponse`, both changes succeed:
+
+```typescript
+const merged = mergeWorkspaces(baseWs, userWs, aiWs, conflicts);
+// Result:
+// - note.description: "User updated description" (from user)
+// - note.status: "review" (from AI)
+// - note.aiResponse: "AI finished the task" (from AI)
+// - conflicts: []
+```
+
+### Conflicting edits favor the human
+
+If both the user and the agent edit `description` simultaneously:
+- The user's edit wins (`local[key]` takes precedence).
+- `conflicts` records `{ noteId: "note-1", field: "description", kept: "User updated description", replaced: "AI rewrote description" }`.
+
+When the agent connected through the MCP server, the note holds an `agent` stamp (`{ client: "claude-code", id: "agent-x" }`). The sync layer then calls `markReverted`:
+
+```typescript
+// src/domain/workspace.ts
+export function markReverted(workspace: Workspace, base: Workspace, conflicts: MergeConflict[]) {
+  // ...
+  return {
+    ...workspace,
+    notes: workspace.notes.map((note) => {
+      const found = byNote.get(note.id);
+      const before = base.notes.find((item) => item.id === note.id);
+
+      if (!found || !note.agent || JSON.stringify(note.agent) === JSON.stringify(before?.agent)) {
+        return note;
+      }
+
+      const reverted = found
+        .filter((conflict) => conflict.field !== 'agent')
+        .map(({ field, replaced }) => ...);
+
+      return { ...note, agent: { ...note.agent, reverted, revertedAt: at } };
+    }),
+  };
+}
+```
+
+The resulting `reverted` field is read by `describeNote` in `src/domain/aiContext.ts`, which injects this header into the note's context on the agent's next read:
+
+```
+Reverted: the user's edit replaced what claude-code (agent-x) wrote to description "AI rewrote description". The values above are the ones that stayed.
+```
+
+### The direct file-editing blind spot
+
+Here is where the implementation contradicts the documentation. The README's section on "Working with an AI" specifically instructs users on how agents with direct filesystem access should work:
+
+> "With file access: notes live in `.bruto/workspace.json` (keep it valid JSON). Find a note by the start of its `id`. When you finish one, write what you did in its `aiResponse`, add the files you created or changed to its `aiFilePaths` (paths relative to the project, keeping the ones already there) and set `status` to "review". Never delete notes or change `x`, `y` or `zIndex`."
+
+Notice what is missing: the instructions never mention writing an `agent` object.
+
+Because `markReverted` guards with:
+
+```typescript
+if (!found || !note.agent || JSON.stringify(note.agent) === JSON.stringify(before?.agent)) {
+  return note;
+}
+```
+
+When an agent follows the README instructions and edits `.bruto/workspace.json` directly, `note.agent` is `undefined`. As verified in Scenario 3C of our test harness:
+1. The collision is detected and the user's value is kept.
+2. `markReverted` evaluates `!note.agent` to `true` and returns the note unchanged.
+3. The note never receives an `agent.reverted` record.
+4. `describeNote` produces no reversion warning.
+5. In `workspaceSync.ts:198`, `logReverted` logs: `The user's edit replaced what was written outside Bruto: description`, without identifying any agent.
+
+The agent's next task inspection gives no warning that its edit was overwritten by the user. If you use Bruto with an agent that edits files directly rather than using the MCP server, conflict notifications fail silently.
+
+## Concurrency and race retries
+
+In `mcp/src/board.ts`, writing to disk uses `changeBoard`:
+
+```typescript
+const RACE_RETRIES = 3;
+
+export function changeBoard(root: string, change: (workspace: Workspace) => Workspace) {
+  for (let attempt = 0; ; attempt++) {
+    const before = boardText(root);
+    const next = change(readBoard(root));
+
+    if (attempt < RACE_RETRIES && boardText(root) !== before) continue;
+
+    writeBoard(root, next);
+    return next;
+  }
+}
+```
+
+The server compares the file contents before and after invoking the transformation. If the file changed on disk while `change` was computing, it retries up to three times.
+
+However, notice the termination condition: after three attempts (`attempt >= RACE_RETRIES`), it breaks out of the retry guard and calls `writeBoard(root, next)` anyway, overwriting whatever was written on disk. In high-frequency multi-agent scenarios, this acts as a hard timeout rather than an atomic compare-and-swap.
+
+Additionally, `writeBoard` creates a temporary file (`.bruto/workspace.json.<pid>.tmp`) and invokes `renameSync(temporary, path)`. On Windows systems with antivirus scanning or active file watchers holding open handles, `renameSync` over an existing file can intermittently fail with `EPERM` unless wrapped in retry logic.
+
+## What I didn't test
+
+- **Browser GUI interactive drag-and-drop**: I did not drive the browser UI via hand-operated mouse gestures; tests were run headless against the compiled MCP server and domain merge modules.
+- **Large-scale database lens reverse engineering**: Upstream SQL and Prisma test fixtures were verified, but I did not connect Bruto's database lens to a live multi-terabyte production Oracle or PostgreSQL database.
+- **PWA platform installation**: Offline service worker caching and native OS desktop launcher integration on macOS and Linux were not evaluated.
+
+## Verdict
+
+Bruto is one of the most cohesive in-repo developer tools to launch on Product Hunt recently. The decision to keep all board state in a plain JSON file (`.bruto/workspace.json`) inside the project folder aligns with modern agentic development: no cloud accounts, no proprietary APIs, and version control friendliness.
+
+The bundled MCP server is exceptionally well thought out:
+- Reading tools are marked `readOnlyHint: true` to prevent prompt fatigue.
+- Standing rules are strictly protected against rogue agent modifications.
+- Linked git worktrees are automatically detected and mapped back to the main repository.
+- Touched files are recorded in an append-only JSON Lines audit log with SHA-256 hashes.
+
+The caveat is the file-editing workflow: the 3-way merge conflict reporter only communicates rollbacks to agents if the note carries an `agent` stamp, which direct file edits omit. If your team plans to use Bruto with AI assistants, connect them via `claude mcp add ... bruto-mcp` or `.mcp.json` rather than pointing them at `.bruto/workspace.json` directly. Through MCP, Bruto's audit trail and conflict reporting are reliable.
+
+**Reproduce it:** `git clone https://github.com/jimy-k4/bruto.git`, checkout `3acca91`, run `npm install`, `npm test`, and `npm run test:mcp`. Run the BDD suite in `ph-tests/bruto/bruto.test.mjs` to observe MCP tool execution, worktree redirection, and merge conflict behaviors.
+
+**Sources:** [Product Hunt listing](https://www.producthunt.com/posts/bruto-2) · [Bruto Web App](https://jimy-k4.github.io/bruto/) · [Bruto README](https://github.com/jimy-k4/bruto#readme) · pinned source: [`mcp/src/tools.ts`](https://github.com/jimy-k4/bruto/blob/3acca91/mcp/src/tools.ts), [`mcp/src/board.ts`](https://github.com/jimy-k4/bruto/blob/3acca91/mcp/src/board.ts), [`src/domain/merge.ts`](https://github.com/jimy-k4/bruto/blob/3acca91/src/domain/merge.ts), [`src/domain/workspace.ts`](https://github.com/jimy-k4/bruto/blob/3acca91/src/domain/workspace.ts), [`src/state/workspaceSync.ts`](https://github.com/jimy-k4/bruto/blob/3acca91/src/state/workspaceSync.ts).
