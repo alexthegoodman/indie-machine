@@ -1,0 +1,240 @@
+---
+title: "Firetower Orchestrates Remote Coding Agents, but Worktree Sweeps Wipe Transcripts Instantly"
+date: 2026-10-01
+series: Product Hunt
+crate_versions: []
+repo_link: https://github.com/firetower-cloud/firetower
+---
+
+Running coding agents like Claude Code, OpenAI Codex, or Kimi Code directly in a local laptop terminal quickly runs into practical walls. A closed laptop lid kills running sessions, heavy multi-agent compilation saturates local CPU cores, and switching branches requires stashing dirty work. [Firetower](https://www.producthunt.com/products/firetower), launched today on Product Hunt by Westlabs, tackles this problem from the opposite direction. Instead of running agents locally and tunneling outward, Firetower acts as a dedicated control plane that orchestrates coding agents on remote servers, bare-metal VMs, or local daemon machines through SSH and WireGuard or Tailscale tunnels.
+
+The architectural premise is sound: the control plane server manages user accounts, repositories, secrets, and task dispatch, while worker daemons run on persistent hosts where they cut isolated Git worktrees, manage background tmux sessions, and stream live terminal frames back to desktop or mobile clients. The core systems are written in Rust, keeping the control plane lean and responsive.
+
+I cloned the [open-source repository](https://github.com/firetower-cloud/firetower), built the workspace crates on Windows 11, evaluated the Tauri 2 desktop client, and ran an isolated BDD test harness under `ph-tests/firetower/` to verify session lifecycles, normalisation pipelines, dotenv parsing, and worktree teardown routines. All 200 upstream Rust unit tests in `ft-core` and `ft-proto` passed, and our seven BDD scenarios verified the core claims. However, our investigation surfaced four operational gaps: finished workspaces are purged from the database every 60 seconds with zero grace period, permanently erasing conversation transcripts; idle sessions never expire on their own; worktree deletions are not synchronized to remote workers during database purges; and the headless MCP approval tool waits indefinitely without a timeout, causing agent deadlocks when a user is away.
+
+## What ships
+
+Firetower is licensed under AGPL-3.0-only:
+- **Repository**: [`firetower-cloud/firetower`](https://github.com/firetower-cloud/firetower)
+- **Pinned commit**: `b58021d72cbafff2a82308a2d61fb3ec4499efee` (release tag `firetower-v0.42.0`, desktop tag `desktop-v0.16.0`)
+- **Control Plane Stack**: Rust 1.85 (2021 edition), Tokio 1.53, Axum 0.8, SQLx 0.8 (PostgreSQL + SQLite), Utoipa 5 (OpenAPI with 93 endpoints), Hyper 1
+- **Desktop Stack**: Tauri 2.11 with Vite, Next.js, and native Windows/macOS window decorations (`windows` 0.61, `webview2-com` 0.38, `notify-rust` 4.18)
+- **Protocol**: `ft-proto` streaming frame codec with base64 chunks, multiplexed tunnels, and typed agent lifecycles
+
+The platform splits responsibility into three decoupled tiers:
+1. **The Core Domain (`crates/ft-core`)**: A pure Rust library with zero asynchronous runtime and zero I/O. It models the session state machine (`SessionStatus`), turn normalization for Claude Code and Codex, multi-checkout path resolution, and dotenv variable validation.
+2. **The Control Plane (`crates/ft-server` and `crates/ft-cli`)**: An Axum HTTP/WebSocket server managing fleet orchestration, SSH key generation, envelope encryption for secrets (`XChaCha20-Poly1305` with `HMAC-SHA256`), and database sweeps.
+3. **The Worker Daemon (`crates/ft-worker`)**: A daemon running on worker machines. It maintains bare git mirrors, provisions worktrees on demand, wraps agents inside tmux sessions, and provides an internal MCP server (`mcp__firetower__approve`) to intercept tool execution.
+
+## Setup and test boundary
+
+I evaluated Firetower on Windows 11 using Node.js v24.11.1 and Rust 1.90.0 in an isolated directory at `ph-tests/firetower/`:
+
+```bash
+git clone --depth 1 https://github.com/firetower-cloud/firetower.git firetower-src # commit b58021d
+cd firetower-src
+cargo check -p ft-core                                                        # 20.0s, clean
+cargo test -p ft-core -p ft-proto                                             # 200 passed in 1.25s
+cargo check -p ft-server                                                      # 55.9s, clean
+cargo check --manifest-path desktop/src-tauri/Cargo.toml                      # 1m 40s, clean
+```
+
+The core libraries and the Tauri desktop application built cleanly on Windows. However, compiling `ft-worker` directly on Windows fails with 13 compiler errors. The worker daemon unconditionally imports POSIX-only items:
+
+```rust
+// crates/ft-worker/src/agentd.rs:35
+use tokio::net::{UnixListener, UnixStream};
+// crates/ft-worker/src/agentd.rs:618
+if unsafe { libc::kill(pid as libc::pid_t, libc::SIGINT) } != 0 { ... }
+```
+
+Because `UnixListener` is gated behind `cfg(unix)` in Tokio and `libc::kill` does not exist on Windows, `ft-worker` is strictly a Linux and macOS daemon. On Windows, developers can run the control plane and desktop client natively, but worker daemons must live in Linux containers, WSL2, or remote servers.
+
+To verify runtime behavior without connecting production servers or external API keys, I built an isolated BDD test harness in `ph-tests/firetower/firetower.feature` driven by `firetower.test.mjs`. All seven scenarios passed in 2.3 seconds.
+
+## Session state machine and resting inbox states
+
+A central design choice in Firetower is distinguishing what a session process is doing from what an agent conversation is saying. The session lifecycle is governed by a strict state machine in `crates/ft-core/src/status.rs`:
+
+```rust
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, ToSchema)]
+pub enum SessionStatus {
+    Starting,
+    Working,
+    Resting,
+    Resumed,
+    Failed,
+    Ended,
+}
+```
+
+Transitions are enforced through `transition_to(target)`:
+- `Starting -> Working`: The agent process has booted inside its tmux session.
+- `Working -> Resting`: The agent finished its turn and is waiting for developer input.
+- `Resting -> Resumed -> Working`: The developer sent a new instruction or answered a prompt.
+- `Ended`: Strictly terminal. No session can leave `Ended`.
+
+Invalid transitions are rejected immediately. A session in `Starting` cannot transition directly to `Resting`, and an `Ended` session refuses any further transition.
+
+In Firetower's web and desktop clients, `Resting` represents the "inbox" state. Sessions where the agent is busy compiling or running tests stay in `Working`, while sessions that need human attention drop into the inbox view.
+
+## The 60-second database sweep vs. idle workspace accumulation
+
+On Product Hunt, a user asked what happens to workspaces left idle for days without anyone closing them, and whether anything expires automatically. The founder responded: *"When you close the workspace it sweeps everything that needs to be cleaned automatically :)"*
+
+Examining `crates/ft-server/src/reclaim.rs` and `crates/ft-server/src/db.rs` reveals how reclamation actually operates:
+
+```rust
+// crates/ft-server/src/db.rs:367
+let rows = sqlx::query_scalar::<_, String>(
+    "SELECT w.id FROM workspaces w
+      WHERE EXISTS (SELECT 1 FROM sessions s WHERE s.workspace_id = w.id)
+        AND NOT EXISTS (
+              SELECT 1 FROM sessions s
+               WHERE s.workspace_id = w.id AND s.status <> 'Ended')
+      ORDER BY w.updated_at
+      LIMIT $1",
+)
+```
+
+The sweep query enforces two conditions:
+1. The workspace must have at least one session.
+2. **Every session in the workspace must have status `Ended`.**
+
+This creates a sharp dichotomy:
+
+### 1. Idle workspaces never expire on their own
+If an agent finishes its work and sits in `Resting`, or gets blocked waiting on a user permission prompt, its status is not `Ended`. As a result, `workspaces_to_purge` ignores it indefinitely. If a developer launches ten agents and leaves them running over the weekend without explicitly clicking "End Session", every workspace, git branch, tmux session, and database record remains allocated forever.
+
+### 2. Ended workspaces are destroyed with zero grace period
+Once a workspace's sessions are transitioned to `Ended` (for example, when a user clicks close), the control plane's background watcher (`reclaim::watch`) sweeps every 60 seconds:
+
+```rust
+// crates/ft-server/src/reclaim.rs:18
+// **There is no grace period.** A workspace that ends is reclaimed within the
+// minute, and its conversation goes with it. That is a deliberate decision
+// taken while the growth was the urgent problem; retention is a later feature
+// and belongs here, as one predicate in `workspaces_to_purge`.
+```
+
+When `purge_workspace` runs, PostgreSQL executes `DELETE FROM workspaces WHERE id = $1`. Because foreign keys use `ON DELETE CASCADE`, this instantly deletes:
+- All session metadata rows
+- All checkout records and branches
+- **The entire raw transcript in `agent_lines`**, including all thoughts, tool executions, terminal outputs, and screenshot images.
+
+If you finish a task, close the workspace, and realize five minutes later that you wanted to review the agent's explanation of a bug fix, the entire transcript is already gone.
+
+## The worktree deletion disconnect
+
+A related question on Product Hunt asked: *"who cleans up the worktrees once a branch is merged? on a small server i'd worry about disk filling up after a few weeks of agents"*.
+
+In `crates/ft-worker/src/lib.rs`, worktree removal on the remote server is handled only when the worker receives a `ToWorker::Destroy` message:
+
+```rust
+// crates/ft-worker/src/lib.rs:768
+for c in self.store.checkouts_of(&session_id).await.unwrap_or_default() {
+    let mirror = self.git.mirror_path(&c.slug);
+    let dest = workspace.join(&c.path);
+    if let Err(e) = self.git.remove_worktree_at(&mirror, &dest).await {
+        tracing::error!(session = %session_id, repo = %c.slug, "removing the worktree: {e:#}");
+    }
+}
+```
+
+However, in `crates/ft-server/src/reclaim.rs`, the background `sweep` task **only** calls `state.db.purge_workspace(workspace)`. It does not send `ToWorker::Destroy` over the network.
+
+`ToWorker::Destroy` is only dispatched in two places:
+1. When a user actively deletes a session while the host is connected (`api/sessions.rs:1116`).
+2. When an offline host reconnects and replays entries from `owed_teardowns` (`fleet.rs:1704`).
+
+If a session ends through normal completion and is swept by `reclaim::watch`, or if a host is disconnected during cleanup, the database row is purged before the worker can confirm removal. Once the database row is gone, `owed_cleanup_on` can no longer find it. The physical worktree on the worker server, along with its `.firetower` socket directory and git checkout, remains stranded on disk.
+
+## Headless approval deadlock
+
+When running coding agents locally, approval prompts pause execution in the terminal until you press `y` or `n`. On a headless remote worker, there is no interactive TTY attached to a human.
+
+Firetower solves this by providing a dedicated MCP server configuration in `crates/ft-worker/src/approver.rs`. When Firetower boots an agent like Claude Code, it passes an MCP server named `firetower` that exposes the tool `mcp__firetower__approve`.
+
+When the agent attempts an action requiring permission (such as `Write` or `Bash`), Claude Code calls `tools/call` on `mcp__firetower__approve`. The approver writes a request frame to the session socket and waits for a reply:
+
+```rust
+// crates/ft-worker/src/approver.rs:11
+// The wait has no timeout on purpose: the person being asked may be asleep,
+// and an agent that gave up and denied would be worse than one that waited.
+let mut frames = BufReader::new(client.into_stream()).lines();
+while let Some(frame) = frames.next_line().await? {
+    if let FromAgent::Decided { result } = frame {
+        return Ok(result);
+    }
+}
+```
+
+The author's rationale is understandable: an automatic denial while the developer is asleep ruins an overnight run. But in practice, this introduces an indefinite deadlock. If a developer steps away from their laptop and push notifications are not configured (the founder noted on Product Hunt that mobile push notifications are still landing), the agent blocks forever in `tmux`. It holds file locks in its worktree, continues consuming memory, and prevents the session from transitioning to `Resting`.
+
+The approver does include one helpful optimization: when a user approves a tool with the "always" option, the approver stores the decision in memory (`settled: Arc<Mutex<HashSet<String>>>`). Subsequent identical tool invocations in the same session return immediately without hitting the network.
+
+## Multi-checkout collision resolution and branch sanitization
+
+Modern software development often involves coordinating changes across multiple repositories simultaneously (e.g. an API backend and a frontend client). Firetower supports multi-repository sessions through `Checkout` collections in `crates/ft-core/src/session.rs`.
+
+A problem arises when multiple repositories share the same repository name (e.g. `acme/api` and `corp/api`). If both are mounted into a single workspace, their checkout paths collide. Firetower prevents this through `checkout_dir`:
+
+```rust
+// crates/ft-core/src/session.rs:95
+pub fn checkout_dir(slug: &str, taken: &[String]) -> String {
+    let leaf = slug.rsplit('/').next().unwrap_or(slug);
+    let safe = |name: &str| -> String { ... };
+    let candidate = safe(leaf);
+    if !taken.contains(&candidate) {
+        return candidate;
+    }
+    safe(slug)
+}
+```
+
+The first repository gets the simple leaf name `api`. When the second checkout evaluates, it notices `api` is in `taken` and expands the slug to `corp-api`. Our BDD harness verified that collisions resolve predictably into distinct directories.
+
+Additionally, branch names generated from user task descriptions are sanitized via `slugify`:
+
+```rust
+// crates/ft-core/src/session.rs:175
+pub fn slugify(prompt: &str) -> String { ... }
+```
+
+Characters that violate Git ref conventions (`~`, `^`, `:`, `?`, `*`, `[`, `\`, `..`, and `@`) are stripped, ensuring that automated `git checkout -b` commands never fail due to invalid ref syntax.
+
+## Dotenv syntax strictness
+
+Firetower allows users to paste existing `.env` files into a workspace secret configuration. In `crates/ft-core/src/dotenv.rs`, `parse` cleans input lines by stripping `export `, removing whitespace, and stripping enclosing single or double quotes.
+
+However, `check` applies strict POSIX shell variable name validation:
+
+```rust
+// crates/ft-core/src/dotenv.rs:83
+pub fn check(name: &str) -> Result<(), String> {
+    if name.is_empty() {
+        return Err("a variable needs a name".into());
+    }
+    let mut chars = name.chars();
+    let first = chars.next().unwrap_or_default();
+    if !(first.is_ascii_alphabetic() || first == '_') {
+        return Err(format!("`{name}` can't start with `{first}`"));
+    }
+    if let Some(bad) = chars.find(|c| !(c.is_ascii_alphanumeric() || *c == '_')) {
+        return Err(format!("`{name}` can't contain `{bad}`"));
+    }
+    Ok(())
+}
+```
+
+As the comment notes, this strictness exists because `tmux -e` rejects hyphenated variables like `my-var`. However, modern developer environments frequently use tools with hyphenated or dotted environment keys. In Firetower, any variable containing a hyphen or beginning with a digit is rejected and placed in `out.rejected`. If a user pastes a `.env` file containing twenty keys and one contains a hyphen, that key is omitted from the agent's environment without blocking the launch, which can lead to hard-to-diagnose missing secret errors at runtime.
+
+## The verdict
+
+Firetower delivers a clean, high-performance architecture for offloading coding agents from personal laptops onto dedicated remote infrastructure. Its pure Rust domain layer (`ft-core`) and protocol crate (`ft-proto`) are well-tested, modular, and fast. The Tauri 2 desktop client compiles smoothly on Windows and provides native system tray integrations.
+
+However, developers deploying Firetower to production servers should be mindful of its operational edges:
+1. **Archive transcripts before ending sessions**: Because `reclaim::watch` purges ended workspaces within 60 seconds with zero grace period, any transcript or tool log you wish to keep must be exported before marking a session ended.
+2. **Explicitly end idle sessions**: Workspaces where agents are idle in `Resting` or blocked on approvals never auto-expire, and will consume server memory and worktree directories until closed manually.
+3. **Monitor remote disk usage**: Check the worker host's `repos/` and `worktrees/` directories periodically, as purges executed on the control plane database do not actively clean up orphaned worktrees on disconnected workers.
+4. **Run workers on Linux**: While the desktop client and control plane run on Windows, worker daemons require Linux or macOS due to hardcoded Unix domain socket and POSIX signal dependencies.
