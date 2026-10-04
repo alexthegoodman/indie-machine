@@ -1,0 +1,111 @@
+---
+title: "SCMD Reviews Claude Code Memories Safely, but Edits Mangle Hyphen-Style Index Lines"
+date: 2026-10-03
+series: Product Hunt
+crate_versions: []
+repo_link: https://github.com/nelsonjohnsolo/scmd
+---
+
+Claude Code writes persistent memories as markdown files under `~/.claude/projects/<project>/memory/` and reads them back at the start of later sessions. They accumulate. Some go stale, and some record things you never meant to keep. [SCMD](https://www.producthunt.com/products/scmd), which ranked 7th on Product Hunt today, is a local review deck for that pile: one card per memory, with keep, delete, skip, undo and edit, and nothing written until you confirm a batch.
+
+It is a single Node file plus a single HTML page, MIT licensed, with no npm dependencies. I cloned it, ran its test suite, and drove the real server against synthetic memory directories. The write path is more careful than I expected. One edge in how it rewrites `MEMORY.md` is not, and that is the part worth knowing before you point it at a real memory directory.
+
+![The SCMD review deck on four synthetic memories: a feedback card with Delete, Skip, Keep and Undo buttons, and the line "Nothing is written until you apply."](/images/scmd-review-deck.png)
+
+## What I ran
+
+- **Repository**: [`nelsonjohnsolo/scmd`](https://github.com/nelsonjohnsolo/scmd)
+- **Pinned commit**: `c4c493ab6f43b358d80b53982ed8cb25fe59ff7c` (`@nelsonjohnsolo/scmd` 0.1.1)
+- **Environment**: Windows 11 Pro, Node.js v24.11.1, built from source, not from the npm tarball
+- **Size**: `server.js` is 5,841 lines, `index.html` about 157 KB, no runtime dependencies
+
+The project's own suite is `node --test test/*.test.js`, 387 tests. On a default Windows checkout (git `core.autocrlf=true`) 340 pass and 21 fail. On an LF checkout of the same commit, 345 pass and 16 fail. The five that disappear are tests that parse `README.md` and `plugin/commands/run.md` and choke on CRLF line endings.
+
+I opened a few of the remaining failures. They are Windows assumptions in the tests, not in the server: a `spawn EINVAL` when a test launches a `.cmd` shim, a restore test expecting file mode `0o640` where Windows reports `0o666`, fake `claude` executables written as POSIX scripts, and a path regex that treats backslashes as regex syntax. I did not triage all sixteen. The README says Windows support is best effort and requires Git Bash for the plugin launcher, so none of this is a surprise.
+
+For the rest I wrote a harness in `ph-tests/scmd/`. `scmd.feature` describes twelve scenarios and `scmd.test.mjs` runs them as 15 test cases (one scenario has four examples). Each case spawns the real `server.js` with `--root` and `--state-dir` pointing into a temp directory, then talks to its HTTP API. No real `~/.claude` is read, and the only traffic is loopback.
+
+```bash
+git clone --depth 1 https://github.com/nelsonjohnsolo/scmd.git scmd-src   # c4c493a
+node --test scmd.test.mjs     # 15 pass, 0 fail
+node shots.mjs                # headless Edge capture of the deck
+```
+
+## What held up
+
+**Reviewing writes nothing.** I hashed the whole memory tree before and after listing projects, reading a card and opening the trash. The hash is identical, and `--state-dir` still does not exist. That matches the README's claim that decisions stay staged until Apply.
+
+**The API is token and Host gated.** Without the launch token, `/api/projects` and `/api/apply` return 401. With the token but `Host: evil.example`, 403. A rejected `POST /api/apply` left the memory file's SHA-256 unchanged.
+
+**Stale decisions are refused.** Every decision carries the content hash the card was loaded with. I appended a line to a memory after loading its card and then applied a delete with the old hash. The result was `skipped: changed-since-read`, the file survived, and the trash stayed empty.
+
+**Ids cannot leave the tree.** I sent delete decisions for `../../outside.md`, `<project>/../../outside.md`, `C:\outside.md` and `/outside.md`, each with the correct hash of a real file outside the memory root. All four came back `error` and the file was untouched.
+
+**Delete and restore round-trip exactly.** With a CRLF `MEMORY.md` indexing three memories, deleting the middle one moved it to the trash run, removed only its index line, and left the other two lines with their CRLF endings. Restoring it put back the memory file and the `MEMORY.md` bytes identical to the originals. That is the part of a cleanup tool people actually worry about, and it is done properly.
+
+**Both frontmatter layouts parse.** Memory files with a top-level `type:` and with `type:` nested under `metadata:` both produce cards with the right type. Keep is stored by content hash in `reviewed.json`: it counts as reviewed, and returns to unreviewed as soon as the file changes. Keep never touches the memory file.
+
+**Origin lookup copes with Windows transcripts.** A session `.jsonl` whose `Write` tool call records a backslash path (`D:\...\memory\project_note.md`) resolved to the originating session and the project's real path. This is the "why was this saved?" link on the card.
+
+The README says "no telemetry". I checked the source: the only `http` use is the server, there is no client, and `spawn` appears only for the browser opener and the optional Claude rewrite. That fits the claim.
+
+## Where it gets rough
+
+### Edits append to hyphen-style index lines
+
+When you accept an edit, SCMD rewrites the matching line in `MEMORY.md` so the hook reflects the new description. Here is the logic, from `server.js`:
+
+```js
+// server.js:2988
+const link = matchIndexLine(content);
+const separatorAt = link ? content.indexOf(' \u2014 ', link.raw.length) : -1;
+const prefix = Buffer.from(separatorAt >= 0
+  ? content.slice(0, separatorAt + 3)
+  : `${content} \u2014 `);
+```
+
+It only recognises a spaced em dash as the separator between link and hook. If it finds one, it replaces everything after it. If it does not, it appends the separator and the new description to whatever is already there.
+
+My test index had one line of each style, and I edited both memories' descriptions:
+
+```text
+before:  - [A](a.md) <em dash> old A
+         - [B](b.md) - old B
+after:   - [A](a.md) <em dash> NEW A
+         - [B](b.md) - old B <em dash> NEW B
+```
+
+The em dash line is replaced cleanly. The hyphen line keeps its old hook and gains the new text after it, with an em dash that no other line in the file uses. Run a few edits over an index written with hyphens and the lines grow a chain of hooks. CRLF is preserved in both cases. A neighbouring function, `appendIndexLine`, writes new lines in the em dash form too, so an index with mixed separators is where this ends up.
+
+This only matters if your index uses hyphens, but that is a normal way to write one. The README says an accepted edit writes "its matching `MEMORY.md` line" and does not mention the separator convention.
+
+### `./file.md` links are invisible to the index logic
+
+An index line written as `- [B](./b.md) - hook` is not matched to `b.md`. The project reports `b.md` as unindexed. Deleting the memory then leaves the line in `MEMORY.md`, and the project's `dangling` list stays empty, so the stale entry is never flagged either. Claude Code itself writes plain `file.md` links, so I would call this an edge. It bites if you or another tool hand-wrote the index.
+
+### Memory-to-memory `[[links]]` are not tracked
+
+I made memory `a` reference memory `b` with `[[b]]` and deleted `b`. The apply result contains `action`, `id` and `status` and nothing else. No warning, no dangling count, and `a` still points at `b`. The trash makes this recoverable, so it is a missing guard rather than data loss. If your memories link to each other, check the survivors by hand after a big cleanup.
+
+### The server leaves quickly if no page connects
+
+Started with `--no-open` and never visited, the process exited by itself 10.0 seconds later with code 0. That matches `NO_CLIENT_EXIT_MS = 10_000` in the source. For the intended flow, where the plugin or `npx` opens your browser, this is a sensible cleanup. If your browser is slow to open or you script SCMD, it can disappear from under you.
+
+## What I did not test
+
+- **Rewrite with Claude.** It shells out to the local Claude Code CLI under a logged-in account. I did not point it at one. The upstream rewrite tests are among the ones that fail on Windows, so I have no evidence either way.
+- **The published package and the plugin.** I ran from a source clone. I did not install the npm tarball, diff it against the repo, or run `/plugin marketplace add`.
+- **The deck beyond one render.** I captured the page with headless Edge from our run, but I did not click through keep, delete and undo in the browser. The API behaviour above is tested; the UI wiring on top of it is not.
+- **Real data at scale.** Synthetic directories of two to four memories, no symlinks, no thousand-file corpora.
+
+## The verdict
+
+SCMD does the part that has to be right. Review is read-only, mutations are hash-guarded, ids are confined to the tree, deletes are restorable down to the byte, and the code makes no outbound requests. For its stated job it is a better way to prune Claude Code memory than opening files one at a time.
+
+Three practical notes:
+
+1. **Before editing, look at your `MEMORY.md`.** If it uses hyphens between link and hook, edit memories by hand and let SCMD handle keep and delete. Or normalise the index to the em dash form first.
+2. **Use plain `file.md` links** in the index, or SCMD will not know which lines belong to which memory.
+3. **After deleting memories that others link to**, grep for `[[name]]` yourself.
+
+On Windows, expect the plugin launcher to need Git Bash and a good share of the upstream suite to fail for reasons that are about the tests, not the tool.
