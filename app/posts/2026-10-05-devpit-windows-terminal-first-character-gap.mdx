@@ -1,0 +1,136 @@
+---
+title: "I Put devpit Through Its Paces on Windows - Here's What Broke"
+date: 2026-10-05
+series: Product Hunt
+crate_versions: []
+repo_link: https://github.com/jholhewres/devpit
+---
+
+Running several Claude Code sessions at once is easy. Knowing which one is waiting on you, what each has cost, and which branch it is touching is the hard part. [devpit](https://www.producthunt.com/products/devpit), which ranked 8th on Product Hunt today, is a native desktop app for that. It puts a terminal per project next to a kanban board whose columns run steps: an agent turn, a session, or your own command. Each card gets its own git worktree, and each agent call gets a spending cap and a recorded cost.
+
+It is a Tauri app with about 43,000 lines of Rust in nine library crates (tests included), Apache-2.0. I built it from source on Windows, drove the real window through a sandboxed home with a stubbed `claude`, and ran its Rust test suite plus a harness against the crates that carry its main claims. The board mechanics are solid. The Windows edges are where it shows: the first command typed into a fresh terminal lost its first character in every run, a local clone path with backslashes is refused, and a built-in price table is two models behind.
+
+![devpit's board on Windows: a card titled "x; echo PWNED > pwned.txt" in the refine lane, which runs a command step called print-context.](/images/devpit-board-step-run.png)
+
+## What I ran
+
+- **Repository**: [`jholhewres/devpit`](https://github.com/jholhewres/devpit)
+- **Pinned commit**: `e4bacf1840354c4aacd936e0b591471a518fc49d` (0.1.35, committed 2026-10-04). The working tree differs from it only by line endings
+- **Environment**: Windows 11 Pro, Rust 1.93.0 (the repo's `rust-toolchain.toml`), Node 24.11.1, WebView2 runtime, debug build from source. Not the installer
+- **Build**: `pnpm install --frozen-lockfile` (48.6 s), `cargo install psmux --version 3.3.8 --locked --root target/psmux` (what the repo's `make windows-bin` does), then `tauri build --debug --no-bundle`, which finished in 4 min 15 s with the library crates already compiled. No patches. `make` and a working `pnpm` shim were not on this machine, so I called the same steps by hand
+
+The real window was driven by `ph-tests/devpit/drive.mjs`. It launches `devpit-desktop.exe` with `HOME`, `USERPROFILE` and `DEVPIT_HOME` pointing into a sandbox, a `claude.exe` first on `PATH` that runs upstream's own end-to-end stub (`e2e/stub/claude.mjs`, no network, no account), and the account origin pointed at a closed port. It talks to WebView2 over the DevTools protocol, seeds the board through the app's own commands the way upstream's e2e does, and saves screenshots. The harness for the crates is `harness/tests/devpit.rs`, with `devpit.feature` describing the scenarios. No real `~/.claude` or `~/.devpit` was read.
+
+```bash
+git clone --depth 1 https://github.com/jholhewres/devpit.git devpit-src   # e4bacf1
+node drive.mjs                                                            # real window, sandbox home
+cd harness && CARGO_TARGET_DIR=../devpit-src/target cargo test -- --nocapture --test-threads=1   # 13 tests
+```
+
+## What held up in the real app
+
+**A command step gets its context through the environment.** I made a card titled `x; echo PWNED > pwned.txt`, put it in a lane running `printf "title=[%s] branch=[%s]\n" "$DEVPIT_CARD_TITLE" "$DEVPIT_BRANCH"`, and moved it in. The run finished `ok` with exit code 0 in 26 ms:
+
+```text
+title=[x; echo PWNED > pwned.txt] branch=[devpit/x-echo-pwned-pwned-txt-dw2wj2xm]
+err-line
+.../.devpit/worktrees/prj_01M468.../card_01M468CQ13E2D3VTKGDW2WJ2XM
+```
+
+The title arrived verbatim and no `pwned.txt` exists anywhere in the sandbox, in the project or in the card's checkout. The working directory of the run was a worktree under the app's home, not inside the repository. It was made when the card moved into a lane with a step, which matches the README's "a git worktree per card, made when a step needs one". The same behaviour reproduced against the crates directly in the harness.
+
+**Worktrees do what the docs say.** In the harness, `create` recorded the SHA of `main` as the base, and after I committed to `main` the card's merge-base stayed put. It refuses the main checkout and an existing path. `remove` refused a dirty worktree (`2 file(s) and 3 line(s) are not committed`), and a forced remove deleted the folder and left the branch.
+
+**Terminals open and run commands.** Ctrl+T opened "Terminal 1" on the bundled psmux 3.3.8: a `tmux.exe` server named `devpit_prj_<id>` running a PowerShell pane in the project folder. A second command typed into it ran in 40 ms and printed its output as a block. Closing the app leaves that server running, as designed ("sessions that outlive the window"), so anything that scripts the app has to stop it afterwards. I used `tmux kill-server` against the sandbox home, which shut it down cleanly.
+
+**The ceilings hold.** In the harness a loop printing 50,000 lines was cut at 34,379 lines and 2,097,119 text bytes with `output_cut: true`, a 20,000 character line was cut at 8,192, a one second timeout against `sleep 20` returned in 1.09 s, and manifests naming an unknown `{{key}}` are refused by name.
+
+**Branch names survive awkward titles.** Unicode, `../../etc/passwd`, backslashes, emoji, an empty title, `--force`, `x.lock`, `a..b` and a 200 character title all passed `git check-ref-format --branch`. The branch is the title slug plus the last eight alphanumerics of the card id, so two same-titled cards whose ids share that tail would collide. I do not know what real ids look like.
+
+## Where it gets rough
+
+### The first command in a new terminal loses its first character
+
+![The terminal block shows "echo hello-from-psmux" as the command, and PowerShell's error: 'cho' is not recognized.](/images/devpit-terminal-first-char.png)
+
+I typed `echo hello-from-psmux` into the new terminal's input and pressed Enter. The block header shows the full command. PowerShell received `cho hello-from-psmux`:
+
+```text
+cho : The term 'cho' is not recognized as the name of a cmdlet, function, script file, or operable program.
+```
+
+It happened on three runs out of three, with an 8 second, an 8 second and a 25 second wait after opening the terminal, so it is not a plain startup race. The second command in the same terminal, `echo second-command`, arrived intact. The app evidently had the whole line, since the block header is correct, so the character goes missing between the input box and the shell. I did not isolate which layer drops it: the app's first write, psmux, or PowerShell's line editor.
+
+The caveat is that my input was synthetic. I used DevTools `Input.insertText` followed by an Enter key event, not a keyboard. A person typing a first command may not hit this. A scripted or pasted first command might.
+
+### `folder_for` rejects a Windows path
+
+Cloning from a local path goes through `folder_for` in `crates/git/src/clone.rs`, which splits on `/` and `:` and then refuses any name containing a backslash. The upstream test that clones a local repository fails here:
+
+```text
+clone: Unreadable { command: "clone", detail: "no folder name can be taken from
+C:\Users\alext\AppData\Local\Temp\.tmp2ru7W6\origin" }
+```
+
+and the harness confirms the function, not the test, is at fault:
+
+```text
+https://github.com/o/repo.git -> Some("repo")
+git@github.com:o/repo.git     -> Some("repo")
+C:/Users/me/origin            -> Some("origin")
+C:\Users\me\origin            -> None
+```
+
+Remote URLs are unaffected. I did not click through the clone dialog.
+
+### stdout and stderr are not kept in order
+
+The runner's comment says merging both streams keeps the order a person would have seen in a terminal. It reads each pipe on its own thread and merges them through one channel. For `echo out; echo err 1>&2`, 100 runs through the crate gave 94 in order and 6 swapped. One of my own runs of the real app showed `err-line` before the `title=` line for a command that prints them the other way round. For test output you read later this is harmless. For a log you diff, it is not stable.
+
+### The price table is behind two models
+
+The spend history screen prices transcripts from a table built into `spend_prices.rs`. I compared it with [Anthropic's pricing page](https://platform.claude.com/docs/en/about-claude/pricing), fetched today. Seven of nine models I checked match. Two do not:
+
+| Model | devpit input / output / cache read | Published |
+|---|---|---|
+| `claude-opus-5-5` | $5 / $25 / $0.50 | $4 / $20 / $0.20 |
+| `claude-fable-5-1` | $10 / $50 / $1.00 | $10 / $50 / $0.25 |
+
+Prefix matching is the cause: `names("opus-5")` accepts `opus-5-5` because the next character is a hyphen, not a digit, so Opus 5.5 gets Opus 5 prices, and Fable 5.1 lands on the Fable 5 row. The published cache-read rate is 0.05x of input for Opus 5.5 and 0.025x for Fable 5.1, where the table assumes 0.1x for everything.
+
+It is bounded. The cost on a card comes from the CLI's own `total_cost_usd` (`driver.rs:113`, `headless_stream.rs`), not from this table. Only the Spend history screen uses it. I did not measure how large the error is on real transcripts. The one thing I would expect is that cache reads, usually the biggest token bucket in a long agent session, are where it shows.
+
+### The upstream test suite is written for Linux and macOS
+
+```bash
+cargo test --no-fail-fast --workspace --exclude devpit-desktop --exclude xtask
+```
+
+`devpit-core`'s tests do not compile on Windows: `crates/core/src/tree_tests.rs:81` calls `std::os::unix::fs::symlink` unguarded, in the test that checks a symlink out of the project is refused. Two agentcli tests then hang. `a_hook_says_which_pane_it_fired_in` runs the generated hook through `sh -c` and blocks on `listener.accept()`. On Windows the hook is deliberately `<current exe> hook --wait ...`, and under the test harness the current exe is the test binary, so nothing posts and `accept()` has no timeout.
+
+With `devpit-core` excluded and those two skipped, 626 pass and 21 fail. Eighteen are POSIX assumptions: `curl` in the hook text, `echo`, `cat` and `sh -c` spawned as programs, `/w/bash/rcfile` paths, `:` as the `PATH` separator, `/` in transcript paths, and `\n` against `\r\n` after `autocrlf`. One is the `folder_for` bug above, one is a pty test expecting a child to exit without being force-killed, and one, `a_colon_in_the_path_does_not_swallow_the_line_number`, I did not open. A compile error and two hangs suggest the Rust suite is not run on Windows upstream. I did not look at their CI configuration.
+
+### `spend_scan` counts lines, and the dedupe is a layer up
+
+The module comment says a message is counted once. `records_in` returned three records for three transcript lines of one message, all with key `msg1:req1`. The dedupe is `seen.insert(record.key.clone())` in `apps/desktop/src/spend_history.rs:191`, which I read but did not run. One synthetic message priced at $0.05325 on Sonnet 4.5, which matches the hand sum.
+
+## What I did not test
+
+- **A real agent.** The `claude` was upstream's stub. No real turn ran, so cost recording, the spending cap in practice, agent steps, chat and the orchestrator are untested. The harness only checks that `--max-budget-usd 0.5` reaches the argument line.
+- **Dragging cards.** I moved the card with the app's own command, not the mouse. I saw the board render the result.
+- **The installer, updater and release build.** I ran a debug build from source.
+- **Real keyboard input** in the terminal, and anything beyond the first two commands.
+- **Telemetry and the account flow.** The README says local first with an optional account. I pointed the account origin at a closed port and did not audit outbound requests.
+- **Linux, macOS and WSL.**
+
+## The verdict
+
+On Windows the product I could drive is real and mostly sound. The context-through-environment rule holds in the running app, worktrees are made outside the repo from a pinned SHA and refuse to throw away uncommitted work, terminals come up on the bundled psmux, and the output ceilings are real. Whether it keeps a fleet of Claude Code agents legible is the part I did not test, because I never ran a real agent.
+
+Practical notes:
+
+1. **On Windows, send a throwaway first command** to a new terminal, or check what the shell received. A first line that loses a character fails with a confusing "command not found" for the wrong name.
+2. **Cloning from a local backslash path will fail** until `folder_for` handles `\`. Use a URL or forward slashes.
+3. **Treat the Spend history screen as an estimate** for Opus 5.5 and Fable 5.1. Card costs come from the CLI.
+4. **Do not rely on stdout and stderr order** in a command step's output.
+5. **Run the Rust tests under WSL**, where the README says the Linux build runs.
