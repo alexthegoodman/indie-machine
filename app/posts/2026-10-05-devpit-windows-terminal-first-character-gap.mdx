@@ -8,7 +8,7 @@ repo_link: https://github.com/jholhewres/devpit
 
 Running several Claude Code sessions at once is easy. Knowing which one is waiting on you, what each has cost, and which branch it is touching is the hard part. [devpit](https://www.producthunt.com/products/devpit), which ranked 8th on Product Hunt today, is a native desktop app for that. It puts a terminal per project next to a kanban board whose columns run steps: an agent turn, a session, or your own command. Each card gets its own git worktree, and each agent call gets a spending cap and a recorded cost.
 
-It is a Tauri app with about 43,000 lines of Rust in nine library crates (tests included), Apache-2.0. I built it from source on Windows, drove the real window through a sandboxed home with a stubbed `claude`, and ran its Rust test suite plus a harness against the crates that carry its main claims. The board mechanics are solid. The Windows edges are where it shows: the first command typed into a fresh terminal lost its first character in every run, a local clone path with backslashes is refused, and a built-in price table is two models behind.
+It is a Tauri app with about 43,000 lines of Rust in nine library crates (tests included), Apache-2.0. I built it from source on Windows, drove the real window through a sandboxed home with a stubbed `claude`, and ran its Rust test suite plus a harness against the crates that carry its main claims. I came away impressed by how carefully it is built, and the board mechanics are solid. The Windows edges are where it shows: the first command typed into a fresh terminal lost its first character in every run, a local clone path with backslashes is refused, and a built-in price table is two models behind.
 
 ![devpit's board on Windows: a card titled "x; echo PWNED > pwned.txt" in the refine lane, which runs a command step called print-context.](/images/devpit-board-step-run.png)
 
@@ -46,6 +46,22 @@ The title arrived verbatim and no `pwned.txt` exists anywhere in the sandbox, in
 **The ceilings hold.** In the harness a loop printing 50,000 lines was cut at 34,379 lines and 2,097,119 text bytes with `output_cut: true`, a 20,000 character line was cut at 8,192, a one second timeout against `sleep 20` returned in 1.09 s, and manifests naming an unknown `{{key}}` are refused by name.
 
 **Branch names survive awkward titles.** Unicode, `../../etc/passwd`, backslashes, emoji, an empty title, `--force`, `x.lock`, `a..b` and a 200 character title all passed `git check-ref-format --branch`. The branch is the title slug plus the last eight alphanumerics of the card id, so two same-titled cards whose ids share that tail would collide. I do not know what real ids look like.
+
+## What I liked
+
+Most of what I enjoyed is not in the feature list.
+
+**It is easy to try safely.** By the Makefile's own description, a debug build keeps its state in `~/.devpit-dev` instead of `~/.devpit`, so a development copy cannot touch the installed one. I set `DEVPIT_HOME` myself, so I did not exercise that default. `DEVPIT_HOME`, an account origin override and a pluggable update feed are environment variables, and I used all three. The repo ships an end-to-end stub of the `claude` CLI that answers from recorded fixtures with no network and no account, and its e2e runner is written to refuse the real home. I reused the stub but did not run their runner. That is why I could drive the whole app on a laptop with no plan attached, and it is the reason a review like this one is practical at all.
+
+**It builds from a clean clone.** Locked JS dependencies installed in under a minute, the pinned psmux built with one command the Makefile documents, and the app compiled in 4 min 15 s with no patches and no errors on Windows. For a project at 0.1.35 that is not a given.
+
+**The design is written down, and the code agrees with it.** `docs/the-model.md` names seven objects and says "if something is not one of these, it does not get in". The comments say why, not what: worktrees live outside the repo because inside they would show up in the file tree and in every watcher, the base is stored as a SHA so a card's diff cannot change on its own, and branches carry a `devpit/` prefix so a bulk delete cannot catch something you made by hand. I checked the first two against the running behaviour and they hold.
+
+**Windows is a real target, not an afterthought.** The installer carries psmux, the hook on Windows is the app's own binary instead of a `curl` that is not there, and the terminal gets a PowerShell pane in the project folder. I found rough edges, below, but the terminals, the board, the step runner and the worktrees all worked on a platform most tools in this category skip.
+
+**It is quick and it stays out of the way.** A command step finished in 26 ms and a terminal command in 40 ms. Sign-in is offered as "free, and optional", the README says plainly that the project is early, and everything lives in a folder you own.
+
+**The release discipline shows.** Version 0.1.35 was committed the day before I cloned it, with a changelog written for users and a contributor guide that describes thirteen architecture guards enforced by `cargo xtask check`. I read the guard list but did not run it.
 
 ## Where it gets rough
 
@@ -125,7 +141,7 @@ The module comment says a message is counted once. `records_in` returned three r
 
 ## The verdict
 
-On Windows the product I could drive is real and mostly sound. The context-through-environment rule holds in the running app, worktrees are made outside the repo from a pinned SHA and refuse to throw away uncommitted work, terminals come up on the bundled psmux, and the output ceilings are real. Whether it keeps a fleet of Claude Code agents legible is the part I did not test, because I never ran a real agent.
+devpit is a thoughtful, honestly described tool made by someone who cares about the details, and the problems I found are the kind a young Windows port has, not signs of a shaky core. On Windows the product I could drive is real and mostly sound. The context-through-environment rule holds in the running app, worktrees are made outside the repo from a pinned SHA and refuse to throw away uncommitted work, terminals come up on the bundled psmux, and the output ceilings are real. Whether it keeps a fleet of Claude Code agents legible is the part I did not test, because I never ran a real agent.
 
 Practical notes:
 
