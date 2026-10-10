@@ -1,0 +1,271 @@
+---
+title: "Lune Review: Scientific Search Engine for AI Agents Enforces Calibrated Abstention and Context Slimming"
+date: 2026-10-10
+series: Product Hunt
+crate_versions: []
+repo_link: https://github.com/RetrogradeLabs/lune-mcp-server
+scores:
+  usability: 8
+  accessibility: 8
+  security: 8
+  performance: 9
+  setup_time: 9
+---
+
+Autonomous AI coding agents, technical assistants, and LLM-driven research pipelines have a well-documented weakness when tasked with scientific reasoning: web search retrieves noisy, unverified information. Asking an agent to survey prior work, check the novelty of an algorithmic idea, or verify an empirical baseline usually causes it to scrape blogs, unreviewed forum threads, vendor documentation, and superficial marketing pages. Even worse, models frequently fabricate citations, hallucinate author lists, or blend separate papers into composite memories that sound plausible but do not exist in the literature. [Lune Research](https://luneresearch.com), featured on [Product Hunt](https://www.producthunt.com/posts/lune) today, attacks this problem directly by providing a dedicated search engine and Model Context Protocol (MCP) server engineered specifically for scientific AI agents.
+
+Lune is developed by Retrograde Labs, a research-focused engineering team founded by Tony (Lipeng) He. The platform is designed for research scientists, machine learning engineers, and technical teams who want their AI agents (including Claude Code, Codex, Cursor, and ChatGPT) to ground their decisions in peer-reviewed literature rather than open-web noise. Lune indexes full-text papers strictly from top-tier computer science venues (A and A* conferences such as NeurIPS, ICML, ICLR, CVPR, ACL, EMNLP, USENIX Security, and ACM CCS), including equations, footnotes, and appendices. The pricing model starts with a genuinely useful Free tier providing 10 queries per day at zero cost with no feature gates. Above that, the Pro tier costs $4.99 per month (or $47.90 per year) for 300 daily requests, the Max tier costs $9.99 per month for 600 daily requests, and extra batch credits can be purchased at $0.99 per 300 requests without expiration.
+
+I cloned the official open-source repository [RetrogradeLabs/lune-mcp-server](https://github.com/RetrogradeLabs/lune-mcp-server) at release commit `234d018` (version 3.0.0), ran its full upstream test suite (674 passing tests across unit and integration tiers), and developed an automated BDD test suite in `ph-tests/lune/` to verify fuzzy conference resolution, response context slimming, quota lane isolation, error mapping, prompt citation invariants, and schema bounds. Lune demonstrates outstanding architectural discipline: its calibrated abstention thresholds derived from Cohere Rerank v3.5 actively protect agents from low-confidence hallucination, and its response projectors aggressively strip database clutter before payloads reach the LLM's context window.
+
+![Lune Research hero card showing scientific AI agent search engine](/images/lune-hero-card.png)
+
+## Scorecard
+
+Here is our standardized evaluation across core engineering concerns, scored from 1 to 10 (where below 3 is nonexistent and 8 or above is considered world-class):
+
+| Concern | Score | Rationale |
+|---|---|---|
+| **Usability** | **8 / 10** | Immediate installation via `npx @retrograde-labs/lune-mcp-server` or hosted Streamable HTTP endpoint. Twelve clean, intuitive tools paired with six high-level prompt templates (`/literature_review`, `/verify_draft`). Agents understand tool contracts immediately. |
+| **Accessibility** | **8 / 10** | Clear, clean web documentation and dashboard. All error messages provide explicit, human-readable remediation guidance and direct links to resolution paths, avoiding opaque numeric codes or unhandled rejections. |
+| **Security** | **8 / 10** | Strict OAuth 2.0 PKCE S256 authentication with dynamic client registration (RFC 7591). Tokens are never echoed in logs or error envelopes. FastAPI nested error details are safely unwrapped without exposing internal server provenance. |
+| **Performance** | **9 / 10** | Sub-millisecond local schema validations, in-process and Redis response caching, and aggressive context slimming. Upstream integration and unit suites (674 tests) run in under 12 seconds with Bun and Vitest. |
+| **Setup Time** | **9 / 10** | Zero configuration required to connect. Hosted Streamable HTTP endpoint signs in through browser OAuth with one command in Claude Code (`claude mcp add --transport http lune https://mcp.luneresearch.com`). |
+
+## Product History and Company Background
+
+Retrograde Labs was founded with a clear thesis: as artificial intelligence transitions from conversational chat to autonomous agentic execution, the bottleneck to productivity is not model capacity but factual trust. In software engineering, code syntax is verifiable by compilers and unit tests; in scientific research, machine learning engineering, and systems design, correctness is governed by published literature.
+
+General-purpose search engines like Google, Bing, and Exa.ai optimize for web-scale discovery, but web indexing is full of SEO farms, outdated tutorials, preprint drafts that failed peer review, and marketing hype. When an AI agent performs a literature review via standard web search tools, it routinely extracts secondary summaries or conflates preprint claims with verified conference results.
+
+To solve this, Retrograde Labs built Lune Research as an authoritative evidence layer. Rather than ingesting the entire uncurated internet or bulk scraping unverified preprint servers, Lune restricts its primary index to peer-reviewed papers from CORE A and A* venues. The system indexes not just paper abstracts, but the complete parsed text, section hierarchies, tables, figures, equations, and citation graphs.
+
+The launch of Lune version 3.0.0 on Product Hunt marks the transition to a universal Model Context Protocol server. By standardizing on MCP over stdio and Streamable HTTP, Lune allows researchers to plug deep academic literature retrieval into any compliant client, from CLI agents like Claude Code to desktop IDEs like Cursor and Codex.
+
+## What Ships and What I Ran
+
+The open-source repository provides the client-facing MCP server implementation that connects agents to the Lune search and verification API:
+
+- **Repository**: [`RetrogradeLabs/lune-mcp-server`](https://github.com/RetrogradeLabs/lune-mcp-server)
+- **Pinned Commit**: `234d01886898cd470f6bb33240736c8243a35951` (v3.0.0, October 10, 2026)
+- **License**: MIT (`LICENSE`)
+- **Runtime Stack**: TypeScript 6, Node.js (>=22), Bun 1.4.2, `@modelcontextprotocol/server` 2.0.0, Zod 4.6.5, Ky 2.2.0, Ajv 2020 8.20.0, Vitest 5.0.1
+- **Supported Transports**: Local stdio (via `lune-mcp` CLI) and remote Streamable HTTP (`https://mcp.luneresearch.com`)
+- **Test Environment**: Windows 11 Pro (x64), Bun 1.4.2, Node.js v24.11.1
+
+I verified the upstream test suite by executing both unit and integration test suites:
+
+```bash
+# Clone upstream at pinned commit 234d018
+git clone --depth 1 https://github.com/RetrogradeLabs/lune-mcp-server.git ph-tests/lune-src
+cd ph-tests/lune-src && bun install
+
+# Run upstream unit test suite (509 tests)
+bun x vitest run tests/unit/
+
+# Run upstream integration test suite (165 tests)
+bun x vitest run tests/integration/
+```
+
+All 674 upstream tests passed cleanly in under 12 seconds total runtime.
+
+To evaluate Lune's behavioral invariants, context window preservation, error mapping, and safety boundaries under isolated conditions, I created an automated BDD test suite in `ph-tests/lune/`. The specification `lune.feature` defines 12 scenarios executed by `lune.test.mjs`:
+
+```bash
+bun test ph-tests/lune/lune.test.mjs
+```
+
+All 12 scenarios passed in 788 milliseconds:
+
+```text
+bun test v1.4.2 (744846f84)
+
+ph-tests\lune\lune.test.mjs:
+(pass) Scenario 1: Fuzzy conference name resolution accurately maps colloquial aliases to canonical identifiers [4.96ms]
+(pass) Scenario 2: Fuzzy conference resolver detects and flags genuine candidate ambiguity without guessing [0.14ms]
+(pass) Scenario 3: Response projectors strictly strip internal identifiers and operational clutter to conserve agent context [0.24ms]
+(pass) Scenario 4: Quota exhaustion errors enforce all-or-nothing lane isolation and prevent misleading batch advice [0.36ms]
+(pass) Scenario 5: 402 out-of-credits errors provide an inescapable recovery URL even with malformed or missing API payloads [0.12ms]
+(pass) Scenario 6: 403 Forbidden error envelopes unpack FastAPI nested detail arrays without losing required scope claims [0.08ms]
+(pass) Scenario 7: Token extraction and authentication errors prevent credential leakage in error messages [0.10ms]
+(pass) Scenario 8: Prompt generator enforces strict citation discipline and forbids raw paper ID leakage [0.38ms]
+(pass) Scenario 9: Tool input validation schemas reject empty search queries and out-of-bound pagination limits [1.92ms]
+(pass) Scenario 10: Stateless HTTP transport strictly adheres to JSON-RPC request-response framing and declines stateful SSE streams [0.30ms]
+(pass) Scenario 11: Multi-query search merges reciprocal rank fusion candidates while filtering incomplete records [0.23ms]
+(pass) Scenario 12: Rate limit error mapping converts seconds into actionable agent retry guidance [0.09ms]
+
+12 pass, 0 fail. Ran 12 tests across 1 file. [788.00ms]
+```
+
+![Lune Research platform and conference venue index](/images/lune-footer-band.webp)
+
+## Favorite Feature: Calibrated Abstention and Context-Slimmed Projections
+
+My favorite architectural feature in Lune is its two-fold defense against agent hallucination and context window exhaustion: calibrated abstention scoring paired with response context slimming in `src/tools/_slim.ts`.
+
+In standard AI search implementations, search results are returned as raw database objects. They contain internal database keys, ingest timestamps, cluster shard IDs, null delivery preference fields, and uncalibrated distance scores. Furthermore, if a query returns poor or irrelevant matches, the engine still dumps the top 5 or 10 weakly-matched documents into the agent's context. When an LLM is presented with irrelevant text in its prompt, it often feels compelled to synthesize an answer anyway, inventing connections that do not exist.
+
+Lune attacks this on both fronts:
+
+### 1. Calibrated Abstention Thresholding (`LOW_CONFIDENCE_THRESHOLD = 0.4`)
+
+Rather than relying on raw embedding dot products or unnormalized cosine distances, Lune uses Cohere Rerank v3.5 to produce calibrated relevance probabilities between 0 and 1. In `src/tools/_slim.ts`, Lune defines an explicit abstention boundary:
+
+```typescript
+// From Lune _slim.ts
+const LOW_CONFIDENCE_THRESHOLD = 0.4;
+
+function withAbstention<T extends { rerank_score?: number | null | undefined }>(
+  results: T[],
+  hasMore: boolean,
+) {
+  const rerankScores = results.flatMap((hit) => {
+    const score = hit.rerank_score;
+    return isJsonNumber(score) ? [score] : [];
+  });
+
+  const bestScore = rerankScores.length ? Math.max(...rerankScores) : null;
+
+  return {
+    results,
+    has_more: hasMore,
+    best_score: bestScore,
+    low_confidence: bestScore !== null && bestScore < LOW_CONFIDENCE_THRESHOLD,
+  };
+}
+```
+
+The team grounded this threshold through empirical grading on October 1, 2026 across 48 test queries: any hit scoring under 0.4 addressed the research prompt in at most 12 percent of test cases, while fabricated papers scored at 0.34. When `best_score` falls below 0.4, Lune explicitly flags `low_confidence: true`. This informs the calling agent that no authoritative papers were found, allowing the model to abstain gracefully or reformulate its query rather than hallucinating false claims from weakly-related papers.
+
+### 2. Context Window Slimming
+
+Every API response is filtered through dedicated projectors before being serialized to the agent:
+
+- Operational IDs like `id`, `cluster_shard_id`, and `ingestion_job_id` are purged.
+- Uncalibrated embedding scores are dropped.
+- Authors are trimmed to a concise maximum (`CONCISE_AUTHOR_LIMIT = 6`), appending an accurate `et_al_count` so the context budget is not consumed by 100-author consortium papers.
+- Matched text chunks are trimmed to high-density grounding snippets (`SNIPPET_MAX = 280`).
+
+By reducing each paper record from several kilobytes of noisy JSON down to approximately 200 tokens of high-signal academic facts, Lune ensures that multi-turn research conversations can explore dozens of papers without hitting token limits.
+
+## The Tooling and Prompt Architecture
+
+Lune divides its functionality into 12 core tools and 6 reusable prompt templates:
+
+### The Twelve Tools
+
+1. **`search_papers`**: Hybrid semantic and lexical search combining Cohere Embed v4, BM25 keyword matching, and Cohere Rerank v3.5. Phrase queries as natural-language research questions.
+2. **`search_papers_many`**: Runs multiple query formulations simultaneously and merges candidate hits using Reciprocal Rank Fusion (RRF), annotating each paper with `matched_queries` and individual query ranks.
+3. **`search_related_papers`**: Discovers nearest neighbors in embedding and citation space given an existing `paper_id`.
+4. **`list_conferences`**: Discovers indexed top-tier venues (CORE A/A*), supporting category filters.
+5. **`get_conference_papers`**: Browses papers published in a specific conference edition with pagination.
+6. **`get_paper_fulltext`**: Retrieves parsed full-text sections in structured markdown or JSON format.
+7. **`get_paper_citations`**: Traverses the academic citation graph backwards (papers cited by this work) or forwards (papers citing this work).
+8. **`extract_from_papers`**: Pulls structured attributes (methodology, datasets, benchmark results, metric values) across a target set of papers in a single tool call.
+9. **`verify_claims`**: Evaluates individual sentences or draft claims against the indexed literature, returning verbatim supporting or contradicting quotes.
+10. **`gather_evidence`**: Evaluates whether accumulated evidence is sufficient to answer a research hypothesis, identifying specific gaps if more evidence is needed.
+11. **`search_research_guidance`**: Searches Lune's curated repository of research best practices, peer review guidelines, ablation conventions, and experimental standards.
+12. **`get_research_guidance_doc`**: Retrieves the full markdown text of a specific guidance document.
+
+### Researcher Prompts and the `CITE_RULE` Invariant
+
+Lune packages six prompt workflows that surface as slash commands in MCP clients:
+- `/literature_review`: Comprehensive topic survey identifying seminal works, recent trends, and open gaps.
+- `/find_related_work`: Ingests an abstract and identifies prior work to cite and distinguish against.
+- `/compare_papers`: Builds multi-column comparison tables across specified candidate papers.
+- `/verify_draft`: Scans an entire draft manuscript, flagging ungrounded claims and attaching literature quotes.
+- `/trace_citations`: Maps the lineage and impact tree of a pivotal publication.
+- `/research_methodology`: Surfaces grounded advice on experiment baselines, ablations, and evaluation metrics.
+
+In `src/prompts.ts`, every paper-facing workflow enforces an immutable system prompt rule:
+
+```typescript
+const CITE_RULE =
+  "Cite every paper by title, authors, and venue/year (a paper_id is only your " +
+  "fetch handle, never show it to me). Use Lune's tools, not web search, and " +
+  "widen to the web only for what Lune cannot support even after rephrasing.";
+```
+
+This prevents agents from polluting human-facing summaries with internal database handles like `2024.iclr.selfrag.1`, ensuring that outputs read as authentic academic prose.
+
+## What We Would Change: Quota Lane Inelasticity and Input Edge Cases
+
+While Lune is exceptionally well-engineered, our inspection of `src/errors.ts`, `src/tools/_fuzzy.ts`, and `src/tools/papers.schemas.ts` revealed three concrete areas that should be improved:
+
+### 1. Inelastic All-or-Nothing Quota Lane Admission
+
+In `src/errors.ts`, when a fan-out tool like `search_papers_many` or `extract_from_papers` requests a batch of operations, Lune calculates the maximum currently servable units via `maxUnitsNow`:
+
+```typescript
+// From Lune errors.ts
+function maxUnitsNow(body: ApiErrorBody): number | undefined {
+  const reported = asNumber(body.max_units_now);
+  if (reported !== undefined) return reported;
+
+  const remaining = asNumber(body.remaining_today);
+  const credits = asNumber(body.credits_remaining);
+
+  if (remaining === undefined && credits === undefined) return undefined;
+
+  return Math.max(remaining ?? 0, credits ?? 0);
+}
+```
+
+The error commentary explains the rationale: Lune's backend treats billing admission as strictly per-lane and all-or-nothing. A tool call must be funded *entirely* from today's daily allowance, or *entirely* from prepaid credits; it will never draw partially from both.
+
+This leads to confusing user experiences. If a Pro subscriber has 4 remaining requests in their daily allowance and 10 prepaid credits, a batch tool call requiring 12 units is rejected with a 402 error stating that the maximum servable capacity is 10, despite the user having 4 + 10 = 14 total units available on their account. If a user has 3 daily requests and 2 prepaid credits, they cannot execute a batch of 4 at all. 
+
+**Recommendation**: Lune should implement split-lane debiting in its backend billing middleware. When a batch exceeds the remaining daily allowance, the engine should draw the remaining allowance down to zero and fund the remaining delta from the user's prepaid credits balance.
+
+### 2. Fuzzy Conference Resolver Rejection of Unspaced Year Tokens
+
+In `src/tools/_fuzzy.ts`, the conference resolver normalizes punctuation and tokenizes on whitespace:
+
+```typescript
+export function normalize(s: string): string {
+  return s.toLowerCase().replace(PUNCT, " ").replace(WS, " ").trim();
+}
+```
+
+While this handles `"usenix sec"` -> `"USENIX Security"` and `"nips"` -> `"NeurIPS"`, agents frequently pass colloquially concatenated tokens such as `"neurips2026"` or `"iclr2025"`. Because the regular expression does not split on digit-to-letter transitions, `"neurips2026"` becomes a single token that fails prefix matching against `"neurips"` candidates, returning `{ kind: "none" }` and falling through to an unhandled upstream 404 error. Adding a regex boundary split between alphabetic and numeric sequences (`/(?<=[a-z])(?=\d)|(?<=\d)(?=[a-z])/i`) would resolve these queries seamlessly.
+
+### 3. Lack of an Offline Mock Fixture Mode for Local Testing
+
+When evaluating tools in `ph-tests/lune-src`, the local stdio runner requires an active network connection and a valid `LUNE_API_KEY`. If an engineer wants to test an agent harness or run automated CI in an offline sandbox, tool calls fail with network connection errors. Including an opt-in offline test fixture mode (e.g., `LUNE_MOCK_CORPUS=sample.json`) in the MCP server package would significantly ease agent harness integration and automated testing.
+
+## Security and Privacy Audit
+
+Lune exhibits commendable security hygiene across its codebase:
+
+1. **FastAPI Error Detail Unpacking**: In `src/errors.ts`, `flattenDetail` extracts nested HTTPException error structures emitted by FastAPI without dropping scope requirements (`required: ["papers:read"]`).
+2. **Defensive Error Envelopes**: In `mapHttpError`, 401 unauthorized errors direct the operator to re-authenticate or appeal without echoing bearer tokens or secrets into logs. Account suspension errors route directly to `appeal_email` rather than suggesting useless credential rotations.
+3. **Stateless HTTP Boundary**: In `conformance.expected-failures.yaml`, Lune explicitly declines session state (`mcp-session-id`), completions, and binary media streaming over HTTP, enforcing strict JSON-RPC request-response semantics.
+4. **OAuth 2.0 PKCE S256**: For remote Streamable HTTP connectors, Lune enforces RFC 7591 dynamic client registration, RFC 8414 server metadata discovery, and PKCE S256 code challenge verification, eliminating static pre-shared client secrets.
+
+## Alternative Products and Comparison
+
+Researchers evaluating AI-assisted literature retrieval have several alternatives. Here is how Lune compares across key architectural dimensions:
+
+| Tool | Focus & Index | Delivery Model | Citation Quoting | Price |
+|---|---|---|---|---|
+| **Lune Research** | Full-text CORE A/A* conference literature | MCP Server (stdio + Streamable HTTP) | Verbatim sentences with rerank calibration | Free (10/day), Pro $4.99/mo (300/day), Max $9.99/mo (600/day) |
+| **Elicit** | Broad semantic search over 125M+ papers | Standalone web application & screening tables | Abstract summaries & synthesis | Free tier; Plus $12/mo; Team plans available |
+| **Undermind** | Exhaustive deep-sweep search across all of science | Web dashboard running long autonomous searches | Multi-paper synthesized reports | Free trial; $50/mo+ for deep sweeps |
+| **Semantic Scholar** | Open academic graph of 237M+ papers | REST API and web search engine | Graph metadata & abstracts | Free public API (rate-limited); Enterprise tiers |
+| **Consensus** | Claim agreement meter across 200M+ papers | Web search interface & ChatGPT plugin | Consensus percentage & paper snippets | Free basic; Premium $8.99/mo |
+| **NotebookLM** | RAG over user-uploaded documents | Web application (Google) | Grounded citations from uploaded PDFs | Free with Google account |
+| **Exa.ai** | Neural search over the public open web | REST API & MCP server | Web snippets & text spans | Pay-as-you-go API pricing |
+
+### Key Differences
+
+- **Lune vs. Elicit**: Elicit is a self-contained web app specialized in tabular extraction and screening across biomedical and general literature. Lune is an MCP evidence layer that plugs directly into an agent's terminal or editor workflow, focusing specifically on computer science literature.
+- **Lune vs. Semantic Scholar**: Semantic Scholar is the massive public index that powers much of the ecosystem, but its free API primarily exposes paper titles, abstracts, and citation counts. Lune indexes the full parsed text, appendices, and equations of top-tier conference publications.
+- **Lune vs. Exa.ai**: Exa provides neural search across the entire open web. Lune deliberately rejects the open web, restricting search strictly to peer-reviewed conference proceedings to prevent hallucination.
+
+## The Verdict
+
+Lune Research (v3.0.0) is a well-designed, highly practical addition to the AI agent ecosystem. By declining the temptation to index the uncurated open web and focusing exclusively on peer-reviewed computer science literature, Lune delivers factual grounding where LLMs need it most.
+
+Its calibrated abstention thresholding (`LOW_CONFIDENCE_THRESHOLD = 0.4`), strict context slimming in `_slim.ts`, and adherence to MCP standards make it an ideal tool for AI coding agents and technical assistants. While its all-or-nothing quota lane logic and unspaced year token handling could use refinement, the software's architecture is disciplined, secure, and fast.
+
+For any developer, researcher, or team building autonomous coding agents that need to cite verified algorithms, evaluate empirical novelty, or write literature reviews without hallucinating false references, Lune is well worth integrating.
