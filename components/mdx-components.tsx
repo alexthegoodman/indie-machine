@@ -1,5 +1,23 @@
 import type { ComponentProps } from "react";
 import type { MDXComponents } from "mdx/types";
+import { MermaidBlock } from "./MermaidBlock";
+
+function extractText(node: React.ReactNode): string {
+  if (node === null || node === undefined || typeof node === "boolean") {
+    return "";
+  }
+  if (typeof node === "string" || typeof node === "number") {
+    return String(node);
+  }
+  if (Array.isArray(node)) {
+    return node.map(extractText).join("");
+  }
+  if (typeof node === "object" && "props" in node) {
+    const props = (node as { props?: { children?: React.ReactNode } }).props;
+    return extractText(props?.children);
+  }
+  return "";
+}
 
 function H2({ id, children }: ComponentProps<"h2">) {
   return (
@@ -41,6 +59,15 @@ function Blockquote({ children }: ComponentProps<"blockquote">) {
 }
 
 function Pre({ children, ...props }: ComponentProps<"pre">) {
+  const dataLang = (props as Record<string, any>)["data-language"];
+  const className = props.className ?? "";
+  const isMermaid = dataLang === "mermaid" || className.includes("language-mermaid");
+
+  if (isMermaid) {
+    const chart = extractText(children);
+    return <MermaidBlock chart={chart} />;
+  }
+
   return (
     <div className="mt-6 overflow-x-auto border border-line/25">
       <pre {...props} className="p-4 text-[13px] leading-relaxed">
@@ -100,4 +127,5 @@ export const mdxComponents: MDXComponents = {
   th: Th,
   td: Td,
   hr: Hr,
+  Mermaid: MermaidBlock,
 };
