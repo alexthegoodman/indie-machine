@@ -11,7 +11,11 @@ import { TitleBlock } from "@/components/TitleBlock";
 import { SpecSheet } from "@/components/SpecSheet";
 import { ChevronLeft, ChevronRight, GithubIcon } from "@/components/icons";
 import { mdxComponents } from "@/components/mdx-components";
-import { getAllPosts, getPostBySlug } from "@/lib/posts";
+import { ProductPanel } from "@/components/ProductPanel";
+import { ProductCard } from "@/components/ProductCard";
+import { PostRow } from "@/components/PostRow";
+import { averageScore, getAllPosts, getPostBySlug, getSimilarPosts } from "@/lib/posts";
+import { toListing } from "@/lib/listing";
 import { rehypeFixImagePaths } from "@/lib/rehype-fix-image-paths";
 import { resolveRepoLink } from "@/lib/repoLink";
 import { SITE_NAME, absoluteUrl } from "@/lib/site";
@@ -41,7 +45,7 @@ export async function generateMetadata({
       siteName: SITE_NAME,
       type: "article",
       publishedTime: new Date(post.date).toISOString(),
-      tags: post.series ? [post.series] : undefined,
+      tags: post.product ? [post.product.name, ...post.product.tags] : post.series ? [post.series] : undefined,
     },
     twitter: {
       card: "summary_large_image",
@@ -59,8 +63,13 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
 
   if (!post) notFound();
 
-  const prev = index > 0 ? posts[index - 1] : undefined;
-  const next = index < posts.length - 1 ? posts[index + 1] : undefined;
+  // Prev/next stay within the same area (product reviews or dev posts).
+  const sameKind = posts.filter((p) => p.kind === post.kind);
+  const kindIndex = sameKind.indexOf(post);
+  const prev = kindIndex > 0 ? sameKind[kindIndex - 1] : undefined;
+  const next = kindIndex < sameKind.length - 1 ? sameKind[kindIndex + 1] : undefined;
+  const similar = getSimilarPosts(post, 3);
+  const isProduct = post.kind === "product";
   const repo = resolveRepoLink(post.repo_link);
 
   const { content } = await compileMDX({
@@ -98,8 +107,11 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
       <SiteHeader />
 
       <div className="px-6 pt-10 pb-8 md:px-24 md:pt-14">
-        <Link href="/archive" className="inline-flex items-center gap-2 text-xs tracking-[0.1em] text-ink-500 hover:text-accent">
-          <ChevronLeft /> BACK TO ARCHIVE
+        <Link
+          href={isProduct ? "/products" : "/dev"}
+          className="inline-flex items-center gap-2 text-xs tracking-[0.1em] text-ink-500 hover:text-accent"
+        >
+          <ChevronLeft /> {isProduct ? "BACK TO PRODUCTS" : "BACK TO DEV POSTS"}
         </Link>
 
         <div className="mt-6 flex flex-wrap items-center gap-3">
@@ -141,6 +153,21 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
           )}
         </div>
 
+        {post.sponsored && (
+          <div className="mt-6 max-w-4xl border border-accent/60 bg-accent/5 px-4 py-3 text-[13px] leading-relaxed text-ink-300">
+            <span className="mr-2 text-[11px] tracking-[0.12em] text-accent">SPONSORED REVIEW</span>
+            The maker paid for a{" "}
+            <Link href="/promote">priority review</Link>, which buys a faster turnaround, not a
+            better verdict. They had no control over the findings, scores or conclusions.
+          </div>
+        )}
+
+        {post.product && (
+          <div className="mt-6">
+            <ProductPanel product={post.product} scores={post.scores} score={averageScore(post)} />
+          </div>
+        )}
+
         {post.crate_versions && (
           <div className="mt-6 max-w-2xl">
             <SpecSheet data={post.crate_versions} />
@@ -149,6 +176,32 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
       </div>
 
       <article className="mx-auto max-w-4xl px-6 pb-16 md:px-24">{content}</article>
+
+      {similar.length > 0 && (
+        <section className="border-t border-dashed border-line/25 px-6 py-10 md:px-24" aria-labelledby="similar-heading">
+          <div className="flex items-baseline justify-between gap-4">
+            <h2 id="similar-heading" className="text-xs tracking-[0.14em] text-accent">
+              {isProduct ? "SIMILAR PRODUCTS" : `MORE FROM ${(post.series ?? "THE WORKSHOP").toUpperCase()}`}
+            </h2>
+            <Link href={isProduct ? "/products" : "/dev"} className="text-[11px] tracking-[0.1em] text-ink-500 hover:text-accent">
+              {isProduct ? "ALL PRODUCTS →" : "ALL DEV POSTS →"}
+            </Link>
+          </div>
+          {isProduct ? (
+            <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {similar.map((p) => (
+                <ProductCard key={p.slug} item={toListing(p)} />
+              ))}
+            </div>
+          ) : (
+            <div className="mt-2">
+              {similar.map((p, i) => (
+                <PostRow key={p.slug} post={p} figNumber={i + 1} border={i === similar.length - 1 ? "both" : "top"} />
+              ))}
+            </div>
+          )}
+        </section>
+      )}
 
       <div className="flex flex-col gap-4 border-t border-dashed border-line/25 px-6 py-10 sm:flex-row sm:justify-between md:px-24">
         {prev ? (

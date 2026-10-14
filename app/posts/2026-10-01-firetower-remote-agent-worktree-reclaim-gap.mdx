@@ -4,6 +4,14 @@ date: 2026-10-01
 series: Product Hunt
 crate_versions: []
 repo_link: https://github.com/firetower-cloud/firetower
+product:
+  name: "Firetower"
+  url: "https://github.com/firetower-cloud/firetower"
+  tagline: "Control plane that runs coding agents on remote machines in isolated worktrees."
+  category: "coding-agents"
+  tags: [remote-agents, orchestration, worktrees, tmux, ssh, rust, tauri]
+  license: "AGPL-3.0"
+  platforms: [self-hosted, macos, linux]
 ---
 
 Running coding agents like Claude Code, OpenAI Codex, or Kimi Code directly in a local laptop terminal quickly runs into practical walls. A closed laptop lid kills running sessions, heavy multi-agent compilation saturates local CPU cores, and switching branches requires stashing dirty work. [Firetower](https://www.producthunt.com/products/firetower), launched today on Product Hunt by Westlabs, tackles this problem from the opposite direction. Instead of running agents locally and tunneling outward, Firetower acts as a dedicated control plane that orchestrates coding agents on remote servers, bare-metal VMs, or local daemon machines through SSH and WireGuard or Tailscale tunnels.

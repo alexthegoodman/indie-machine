@@ -1,9 +1,9 @@
-import type { Post } from "@/lib/posts";
+import type { PostSummary } from "@/lib/posts";
 
 // Pulls 1-2 crate names out of the post's frontmatter (preferring newly
 // "added" dependencies, since those are usually what the post is about)
 // plus the series name, to use as small tag chips on index rows.
-export function specChips(post: Post): string[] {
+export function specChips(post: PostSummary): string[] {
   const versions = post.crate_versions ?? {};
   const source = (versions.added ?? versions.unchanged) as unknown;
   const crateNames: string[] = [];

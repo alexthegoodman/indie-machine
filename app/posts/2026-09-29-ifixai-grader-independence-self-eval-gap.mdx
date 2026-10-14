@@ -4,6 +4,14 @@ date: 2026-09-29
 series: Product Hunt
 crate_versions: []
 repo_link: https://github.com/ifixai-ai/iFixAi
+product:
+  name: "iFixAi"
+  url: "https://github.com/ifixai-ai/iFixAi"
+  tagline: "Open-source CLI that audits AI agents with a judge model and grades them A to F."
+  category: "security"
+  tags: [ai-audit, evals, llm-judge, safety, python, cli]
+  license: "Apache-2.0"
+  platforms: [cli]
 ---
 
 A model grading its own output is the one bias an AI-audit tool has to name every time it happens, or the grade is worthless. [iFixAi](https://www.producthunt.com/products/ifixai), today's #1 Product Hunt launch (321 upvotes), ships an inspection whose entire job is exactly that: catch a self-graded run and refuse to publish a clean result. I ran the [open-source CLI](https://github.com/ifixai-ai/iFixAi)'s own documented smoke test, verbatim, and that inspection passed at 100% anyway - on a run the tool's own banner labeled self-judged.

@@ -1,5 +1,5 @@
 import Link from "next/link";
-import type { Post } from "@/lib/posts";
+import type { PostSummary } from "@/lib/posts";
 import { iconForSlug } from "./icons";
 import { specChips } from "./specChips";
 
@@ -8,7 +8,7 @@ export function PostRow({
   figNumber,
   border = "top",
 }: {
-  post: Post;
+  post: PostSummary;
   figNumber: number;
   border?: "top" | "both" | "none";
 }) {

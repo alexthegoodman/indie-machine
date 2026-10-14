@@ -48,6 +48,38 @@ crate_versions:           # optional — rendered as a "BUILD SPEC" table.
 `crate_versions` has no fixed schema — `components/SpecSheet.tsx` renders
 whatever keys and values (strings or arrays) you put there.
 
+### Product reviews
+
+Posts are split into two areas: **products** (`/products`) and **dev posts**
+(`/dev`). A post's area comes from `kind: product` or `kind: dev`; without
+it, the `Product Hunt` series (or any post with a `product` block) counts as
+a product and everything else as dev. URLs stay `/posts/<slug>` either way.
+
+Product reviews add a `product` block, which drives the product cards,
+search and filters, the spec panel at the top of the review and "similar
+products":
+
+```yaml
+product:
+  name: "RexaDB"
+  url: "https://www.rexadb.app"
+  tagline: "Desktop studio for 100+ databases with RBAC and agent-safe MCP access."
+  category: "data"              # a key from lib/taxonomy.ts
+  tags: [database, sql, mcp, rust]
+  license: "GPL-3.0"
+  pricing: "free"               # free | freemium | paid
+  platforms: [macos, windows, linux]   # see PLATFORMS in lib/taxonomy.ts
+scores:                         # optional 1-10 scorecard; any keys work
+  usability: 7
+  security: 6
+related: [some-other-slug]      # optional: pin these as similar products
+sponsored: true                 # optional: shows a sponsored disclosure
+```
+
+Similar products rank by shared tags plus a bonus for the same category, so
+reuse existing tags where they fit. To add a category, add it to
+`CATEGORIES` in `lib/taxonomy.ts`.
+
 Below the frontmatter, write normal Markdown/MDX: headings, fenced code
 blocks (syntax-highlighted via `rehype-pretty-code`/Shiki), tables
 (`remark-gfm`), and images.
