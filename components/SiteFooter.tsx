@@ -11,20 +11,26 @@ export function SiteFooter() {
           <span className="text-[11px] text-ink-500">© 2026</span>
         </div>
         <div className="mt-2 text-[11px] tracking-[0.02em] text-ink-500">
-          A RUST BUILD LOG. NO MOCKUPS, NO ASSUMED NUMBERS.
+          TOOLS REVIEWED FROM SOURCE. A RUST BUILD LOG. NO ASSUMED NUMBERS.
         </div>
       </div>
-      <div className="flex gap-6 text-xs tracking-[0.1em] text-ink-500">
-        <a href="/rss.xml">RSS</a>
+      <div className="flex flex-wrap gap-x-6 gap-y-3 text-xs tracking-[0.1em] text-ink-500">
+        <Link href="/products" className="hover:text-ink-100">
+          PRODUCTS
+        </Link>
+        <Link href="/dev" className="hover:text-ink-100">
+          DEV
+        </Link>
         <Link href="/archive" className="hover:text-ink-100">
           ARCHIVE
         </Link>
         <Link href="/series" className="hover:text-ink-100">
           SERIES
         </Link>
-        <Link href="/about" className="hover:text-ink-100">
-          ABOUT
+        <Link href="/promote" className="hover:text-ink-100">
+          PROMOTE
         </Link>
+        <a href="/rss.xml">RSS</a>
       </div>
     </footer>
   );

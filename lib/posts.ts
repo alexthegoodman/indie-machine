@@ -47,6 +47,14 @@ export type Post = PostMeta & {
   excerpt: string;
 };
 
+// What an index row needs - no MDX body, so it's cheap to pass to the client.
+export type PostSummary = Pick<Post, "slug" | "title" | "date" | "series" | "excerpt" | "crate_versions">;
+
+export function toSummary(post: Post): PostSummary {
+  const { slug, title, date, series, excerpt, crate_versions } = post;
+  return { slug, title, date, series, excerpt, ...(crate_versions ? { crate_versions } : {}) };
+}
+
 const EXCERPT_LENGTH = 220;
 
 // Takes the post's first real paragraph, strips inline markdown syntax,
@@ -202,7 +210,7 @@ export function getSimilarPosts(post: Post, limit = 3): Post[] {
       let score = 0;
       if (post.product && p.product) {
         score += p.product.tags.filter((t) => tags.has(t)).length * 2;
-        if (p.product.category === post.product.category) score += 3;
+        if (p.product.category === post.product.category) score += 5;
       } else if (post.series && p.series === post.series) {
         score += 1;
       }
