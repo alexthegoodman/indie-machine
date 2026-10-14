@@ -10,6 +10,15 @@ scores:
   security: 8
   performance: 9
   setup_time: 8
+product:
+  name: "Farol"
+  url: "https://farol.sh"
+  tagline: "Native macOS terminal for running coding agents side by side in separate worktrees."
+  category: "coding-agents"
+  tags: [terminal, parallel-agents, worktrees, claude-code, codex, swift]
+  license: "MIT"
+  pricing: "free"
+  platforms: [macos]
 ---
 
 Developers using autonomous coding agents like Claude Code and Codex quickly encounter a common concurrency bottleneck: managing multiple agents across repositories without clobbering uncommitted work, missing confirmation prompts, or losing track of which process is actively computing. Running multiple terminal windows or tmux panes turns into a chaotic game of terminal roulette. You switch between tabs to see whether an agent has finished running tests, whether it is halted waiting for permission to execute a shell script, or whether it has crashed entirely. Worse, if two agents run concurrently in the same checkout, they inevitably overwrite each other's edits, produce conflicting staging areas, and mangle untracked dependencies.

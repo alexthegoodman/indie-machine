@@ -4,6 +4,15 @@ date: 2026-10-03
 series: Product Hunt
 crate_versions: []
 repo_link: https://github.com/nelsonjohnsolo/scmd
+product:
+  name: "SCMD"
+  url: "https://github.com/nelsonjohnsolo/scmd"
+  tagline: "Local review deck for pruning Claude Code's persistent memories."
+  category: "agent-infrastructure"
+  tags: [agent-memory, claude-code, local-first, node]
+  license: "MIT"
+  pricing: "free"
+  platforms: [cli, web]
 ---
 
 Claude Code writes persistent memories as markdown files under `~/.claude/projects/<project>/memory/` and reads them back at the start of later sessions. They accumulate. Some go stale, and some record things you never meant to keep. [SCMD](https://www.producthunt.com/products/scmd), which ranked 7th on Product Hunt today, is a local review deck for that pile: one card per memory, with keep, delete, skip, undo and edit, and nothing written until you confirm a batch.
