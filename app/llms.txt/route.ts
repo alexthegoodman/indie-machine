@@ -31,7 +31,7 @@ Indie Machine reviews developer tools and keeps an engineering journal. Build po
 - [About](${absoluteUrl("/about")}): Scope, editorial approach, and evidence standards.
 - [Product reviews](${absoluteUrl("/products")}): Searchable index of reviewed developer tools.
 - [Dev posts](${absoluteUrl("/dev")}): Rust and native engineering build log.
-- [Promote](${absoluteUrl("/promote")}): How to submit a product for review.
+- [Get reviewed](${absoluteUrl("/promote")}): How to submit a product for review, including the paid priority review.
 - [Article archive](${absoluteUrl("/archive")}): All articles, newest first.
 - [RSS feed](${absoluteUrl("/rss.xml")}): New articles.
 

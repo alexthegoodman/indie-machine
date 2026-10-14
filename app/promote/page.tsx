@@ -11,7 +11,7 @@ import { toListing } from "@/lib/listing";
 import { CONTACT_EMAIL, SITE_NAME } from "@/lib/site";
 
 const DESCRIPTION =
-  "Submit your developer tool or AI agent for an independent Indie Machine review: source audit, reproducible test harness, and a published scorecard.";
+  "Submit your developer tool or AI agent for an independent Indie Machine review: source audit, reproducible test harness, and a published scorecard. Priority reviews publish within 48 hours.";
 
 export const metadata: Metadata = {
   title: "Get Your Product Reviewed | Indie Machine",
@@ -49,18 +49,59 @@ const INCLUDED = [
 
 const STEPS = [
   { label: "01", title: "Email the details", body: "Use the button below. The template lists what to include." },
-  { label: "02", title: "Fit check", body: "I reply to confirm scope and timing, or to say it isn't a fit." },
-  { label: "03", title: "Testing", body: "The product is built and tested from source. I may send questions." },
+  {
+    label: "02",
+    title: "Fit check",
+    body: "I reply to confirm scope and timing, or to say it isn't a fit. For a priority review, the fee is arranged here.",
+  },
+  {
+    label: "03",
+    title: "Testing",
+    body: "The product is built and tested from source. I may send questions. Priority reviews run within 48 hours.",
+  },
   { label: "04", title: "Publication", body: "The review goes live with its findings, scorecard and test harness." },
 ];
 
 const TERMS = [
   "The verdict is independent. Makers don't see or approve the review before it's published, and findings aren't removed on request.",
   "Factual corrections are welcome after publication and are noted in the post.",
-  "Paid or requested reviews carry a visible sponsored disclosure.",
+  "Priority reviews are labelled sponsored on the post and on its product card. The fee buys speed, not a better verdict: strengths and problems get the same scrutiny as any other review.",
   "Open-source or source-available products are strongly preferred, since the review is built on the code.",
   "I may decline a submission, or stop a review if the product can't be built or run.",
 ];
+
+const PRIORITY_FEE = "$99";
+const PRIORITY_TURNAROUND = "48 hours";
+
+const OPTIONS = [
+  {
+    key: "standard",
+    name: "Standard review",
+    price: "No fee",
+    turnaround: "As the queue allows",
+    points: [
+      "Submissions are picked for fit and reviewed in turn",
+      "No guaranteed date",
+      "Published without a sponsored label",
+    ],
+    cta: "SUBMIT BY EMAIL",
+    subject: "Product review request",
+  },
+  {
+    key: "priority",
+    name: "Priority review",
+    price: PRIORITY_FEE,
+    turnaround: `Published within ${PRIORITY_TURNAROUND}`,
+    points: [
+      "Jumps the queue: tested and published within 48 hours of payment, once I have what's needed to run it",
+      "Same source audit, test harness and scorecard as every review",
+      "Labelled sponsored, and still balanced: the fee doesn't change the findings or score",
+      "Payment is arranged over email after the fit check, so you never pay for a review I can't do",
+    ],
+    cta: "REQUEST PRIORITY REVIEW",
+    subject: "Priority review request",
+  },
+] as const;
 
 const EMAIL_BODY = `Product name:
 Website:
@@ -74,8 +115,8 @@ Anything a reviewer needs to get it running (test accounts, API keys, hardware):
 Timing constraints (e.g. launch date):
 `;
 
-function mailtoHref() {
-  const params = new URLSearchParams({ subject: "Product review request", body: EMAIL_BODY });
+function mailtoHref(subject = "Product review request") {
+  const params = new URLSearchParams({ subject, body: EMAIL_BODY });
   // URLSearchParams encodes spaces as "+", which mail clients show literally.
   return `mailto:${CONTACT_EMAIL}?${params.toString().replace(/\+/g, "%20")}`;
 }
@@ -98,8 +139,8 @@ export default function PromotePage() {
         <p className="mt-6 max-w-2xl font-display text-base leading-relaxed text-ink-300 md:text-lg">
           Indie Machine reviews developer tools and AI agents by building and testing them, not by
           rewriting the launch post. If you&apos;ve built something developers should know about,
-          send it over. You get a careful, public review that readers trust because it isn&apos;t
-          for sale.
+          send it over. You get a careful, public review that readers can trust: you can pay to
+          get it sooner, never to change what it says.
         </p>
         <div className="mt-8 flex flex-wrap items-center gap-4">
           <a
@@ -107,6 +148,12 @@ export default function PromotePage() {
             className="inline-flex items-center gap-2 border border-accent px-5 py-3 text-sm tracking-[0.1em] text-accent hover:bg-accent/10 hover:text-ink-100"
           >
             SUBMIT BY EMAIL <ChevronRight />
+          </a>
+          <a
+            href={mailtoHref("Priority review request")}
+            className="inline-flex items-center gap-2 border border-line/28 px-5 py-3 text-sm tracking-[0.1em] text-ink-300 hover:border-accent/60 hover:text-accent"
+          >
+            PRIORITY REVIEW · {PRIORITY_FEE}
           </a>
           <span className="text-xs text-ink-500">
             or write to <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>
@@ -117,10 +164,63 @@ export default function PromotePage() {
             cells={[
               { label: "INTAKE", value: "EMAIL" },
               { label: "FORMAT", value: "SOURCE + TESTS" },
+              { label: "PRIORITY", value: `${PRIORITY_FEE} / 48H` },
               { label: "VERDICT", value: "INDEPENDENT", accent: true },
             ]}
           />
         </div>
+      </div>
+
+      <SectionDivider label="REVIEW OPTIONS" />
+
+      <div className="px-6 md:px-24">
+        <div className="grid gap-4 lg:grid-cols-2">
+          {OPTIONS.map((option) => {
+            const priority = option.key === "priority";
+            return (
+              <div
+                key={option.key}
+                className={`relative flex flex-col border p-6 md:p-8 ${priority ? "border-accent/70 bg-accent/[0.04]" : "border-line/28"}`}
+              >
+                {priority && (
+                  <span className="absolute -top-3 left-6 bg-ink px-2 text-[10px] tracking-[0.14em] text-accent">
+                    FAST TRACK
+                  </span>
+                )}
+                <div className="flex flex-wrap items-baseline justify-between gap-3">
+                  <div className="font-display text-2xl font-bold text-ink-100">{option.name}</div>
+                  <div className={`font-display text-3xl font-bold ${priority ? "text-accent" : "text-ink-300"}`}>
+                    {option.price}
+                  </div>
+                </div>
+                <div className="mt-1 text-[11px] tracking-[0.12em] text-ink-500">{option.turnaround.toUpperCase()}</div>
+                <ul className="mt-5 space-y-2.5">
+                  {option.points.map((point) => (
+                    <li key={point} className="flex gap-3 font-display text-[15px] leading-relaxed text-ink-300">
+                      <span className={`mt-[0.55em] h-1.5 w-1.5 shrink-0 ${priority ? "bg-accent" : "bg-ink-500"}`} />
+                      {point}
+                    </li>
+                  ))}
+                </ul>
+                <div className="min-h-6 flex-1" />
+                <a
+                  href={mailtoHref(option.subject)}
+                  className={`inline-flex items-center gap-2 self-start border px-5 py-3 text-sm tracking-[0.1em] ${
+                    priority
+                      ? "border-accent text-accent hover:bg-accent/10 hover:text-ink-100"
+                      : "border-line/28 text-ink-300 hover:border-accent/60 hover:text-accent"
+                  }`}
+                >
+                  {option.cta} <ChevronRight />
+                </a>
+              </div>
+            );
+          })}
+        </div>
+        <p className="mt-4 text-xs leading-relaxed text-ink-500">
+          Both start with the same email. Payment for priority reviews is handled over email for now; there is
+          no checkout on this site.
+        </p>
       </div>
 
       <SectionDivider label="WHAT A REVIEW INCLUDES" />
@@ -195,7 +295,12 @@ export default function PromotePage() {
           href={mailtoHref()}
           className="group flex flex-col gap-4 border border-accent/50 p-6 md:flex-row md:items-center md:justify-between md:p-10"
         >
-          <div className="font-display text-2xl font-bold text-ink-100 md:text-3xl">Ready to send it over?</div>
+          <div>
+            <div className="font-display text-2xl font-bold text-ink-100 md:text-3xl">Ready to send it over?</div>
+            <p className="mt-2 font-display text-[15px] text-ink-300">
+              Need it live fast? Ask for a priority review: {PRIORITY_FEE}, published within {PRIORITY_TURNAROUND}.
+            </p>
+          </div>
           <span className="flex items-center gap-2 text-sm tracking-wide text-accent group-hover:text-ink-100">
             SUBMIT BY EMAIL <ChevronRight />
           </span>

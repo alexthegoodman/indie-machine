@@ -156,9 +156,9 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
         {post.sponsored && (
           <div className="mt-6 max-w-4xl border border-accent/60 bg-accent/5 px-4 py-3 text-[13px] leading-relaxed text-ink-300">
             <span className="mr-2 text-[11px] tracking-[0.12em] text-accent">SPONSORED REVIEW</span>
-            The maker requested and paid for this review through{" "}
-            <Link href="/promote">Indie Machine promotions</Link>. They had no control over the
-            findings, scores or verdict.
+            The maker paid for a{" "}
+            <Link href="/promote">priority review</Link>, which buys a faster turnaround, not a
+            better verdict. They had no control over the findings, scores or conclusions.
           </div>
         )}
 

@@ -28,7 +28,7 @@ export function SiteFooter() {
           SERIES
         </Link>
         <Link href="/promote" className="hover:text-ink-100">
-          PROMOTE
+          GET REVIEWED
         </Link>
         <a href="/rss.xml">RSS</a>
       </div>

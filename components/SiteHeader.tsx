@@ -4,7 +4,7 @@ import { CrosshairIcon } from "./icons";
 const NAV = [
   { href: "/products", label: "Products", key: "products" },
   { href: "/dev", label: "Dev", key: "dev" },
-  { href: "/promote", label: "Promote", key: "promote" },
+  { href: "/promote", label: "Get Reviewed", key: "promote" },
   { href: "/about", label: "About", key: "about" },
 ] as const;
 
