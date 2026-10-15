@@ -32,6 +32,13 @@ export function PostRow({
         <Icon className="w-10 shrink-0 text-line/70" />
       </div>
 
+      {post.image && (
+        <div className="aspect-[16/9] w-full shrink-0 overflow-hidden border border-line/22 bg-panel/40 sm:w-44">
+          {/* eslint-disable-next-line @next/next/no-img-element */}
+          <img src={post.image} alt="" loading="lazy" className="h-full w-full object-cover object-top" />
+        </div>
+      )}
+
       <div className="min-w-0 flex-1">
         <div className="font-display text-xl font-semibold text-ink-100 group-hover:text-accent">
           {post.title}

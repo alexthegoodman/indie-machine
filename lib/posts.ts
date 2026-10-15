@@ -40,6 +40,8 @@ export type PostMeta = {
   related?: string[];
   // Set when the review was paid for or requested through /promote.
   sponsored?: boolean;
+  // Cover image for cards: frontmatter `image`, else the first image in the body.
+  image?: string;
 };
 
 export type Post = PostMeta & {
@@ -48,11 +50,22 @@ export type Post = PostMeta & {
 };
 
 // What an index row needs - no MDX body, so it's cheap to pass to the client.
-export type PostSummary = Pick<Post, "slug" | "title" | "date" | "series" | "excerpt" | "crate_versions">;
+export type PostSummary = Pick<
+  Post,
+  "slug" | "title" | "date" | "series" | "excerpt" | "crate_versions" | "image"
+>;
 
 export function toSummary(post: Post): PostSummary {
-  const { slug, title, date, series, excerpt, crate_versions } = post;
-  return { slug, title, date, series, excerpt, ...(crate_versions ? { crate_versions } : {}) };
+  const { slug, title, date, series, excerpt, crate_versions, image } = post;
+  return {
+    slug,
+    title,
+    date,
+    series,
+    excerpt,
+    ...(crate_versions ? { crate_versions } : {}),
+    ...(image ? { image } : {}),
+  };
 }
 
 const EXCERPT_LENGTH = 220;
@@ -79,6 +92,12 @@ function deriveExcerpt(content: string): string {
   if (plain.length <= EXCERPT_LENGTH) return plain;
   const truncated = plain.slice(0, EXCERPT_LENGTH);
   return truncated.slice(0, truncated.lastIndexOf(" ")) + "…";
+}
+
+function deriveImage(data: Record<string, unknown>, content: string): string | undefined {
+  if (typeof data.image === "string" && data.image) return data.image;
+  const match = /!\[[^\]]*\]\(\s*(\/[^\s)]+|https?:\/\/[^\s)]+)/.exec(content);
+  return match?.[1];
 }
 
 function filenameToSlug(filename: string): string {
@@ -141,6 +160,7 @@ function readPost(filename: string): Post {
     sponsored: data.sponsored === true,
     content,
     excerpt: deriveExcerpt(content),
+    image: deriveImage(data, content),
   };
 }
 

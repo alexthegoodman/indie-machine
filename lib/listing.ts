@@ -12,6 +12,7 @@ export type Listing = {
   scores?: Record<string, number>;
   score?: number;
   sponsored?: boolean;
+  image?: string;
 };
 
 export function toListing(post: Post): Listing {
@@ -25,5 +26,6 @@ export function toListing(post: Post): Listing {
     scores: post.scores,
     score: averageScore(post),
     sponsored: post.sponsored || undefined,
+    image: post.image,
   };
 }
