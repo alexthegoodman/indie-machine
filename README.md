@@ -131,3 +131,38 @@ npm run build    # production build (also type-checks and statically
                   # generates every post/series page)
 npm run start    # serve the production build
 ```
+
+## Allegiance API
+
+`/api/allegiance/*` is the server for Allegiance, the MMO at
+allegiance.indie-machine.com: anonymous sessions and accounts, nations and their
+saves, the territory map between players, world news, and signed tickets for
+the realtime server (allegiance-realtime, Cloudflare Durable Objects). Code in
+`app/api/allegiance/` and `lib/allegiance/`; schema in `prisma/schema.prisma`
+(Prisma 7.10.0, PostgreSQL through `@prisma/adapter-pg`).
+
+| Route | Does |
+| --- | --- |
+| `POST session` | New anonymous player, or resume with `Authorization: Bearer` |
+| `POST account` / `POST login` | Claim an email + password / sign in on a device |
+| `GET` / `POST nation` | Your nation and save / found a new one (dissolves the old) |
+| `PUT save` | Store the campaign JSON |
+| `GET territories?since=` | Territory rows changed since a time |
+| `POST territories/claim` / `release` / `report` | Take (contests other nations), lose to a regime, daily troop report |
+| `GET events?after=` | World news |
+| `POST ticket` | Signed realtime join ticket |
+
+Local development:
+
+```bash
+npm run db:dev             # local Prisma Postgres (prints its postgres:// URL)
+npx prisma migrate deploy  # with DATABASE_URL in .env
+npm run dev
+```
+
+Environment (`.env` locally, Vercel project settings in production):
+`DATABASE_URL` (a pooled URL on Vercel), `ALLEGIANCE_REALTIME_SECRET` (shared
+with allegiance-realtime), `ALLEGIANCE_REALTIME_URL` (its `wss://` URL),
+`ALLEGIANCE_ORIGINS` (comma-separated game origins; defaults to
+`https://allegiance.indie-machine.com`). Run `npm run db:migrate` against
+production after schema changes.

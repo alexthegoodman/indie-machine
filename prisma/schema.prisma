@@ -1,0 +1,112 @@
+// Allegiance (the MMO hosted at allegiance.indie-machine.com) keeps its durable world here:
+// players and their sessions, nations (a player's party, with its save), the territory map
+// between players, and world news. Live play (positions, street fights) runs on
+// allegiance-realtime (Cloudflare Durable Objects), which reports outcomes back through the API.
+
+generator client {
+  provider = "prisma-client"
+  output   = "../generated/prisma"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+/// Someone playing Allegiance. Anonymous until they claim an email and password.
+model AllegiancePlayer {
+  id           String    @id @default(cuid())
+  email        String?   @unique
+  passwordHash String?
+  createdAt    DateTime  @default(now())
+  lastSeenAt   DateTime  @default(now())
+  /// Failed sign-ins in a row, and the time sign-in reopens after too many.
+  failedLogins Int       @default(0)
+  lockedUntil  DateTime?
+
+  sessions AllegianceSession[]
+  nations  AllegianceNation[]
+
+  @@map("allegiance_players")
+}
+
+/// One signed-in device. The bearer token itself is never stored, only its SHA-256.
+model AllegianceSession {
+  id         String           @id @default(cuid())
+  tokenHash  String           @unique
+  playerId   String
+  player     AllegiancePlayer @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  createdAt  DateTime         @default(now())
+  lastUsedAt DateTime         @default(now())
+
+  @@index([playerId])
+  @@map("allegiance_sessions")
+}
+
+/// A party founded by a player ("New Nation / New Party"). A player has at most one active nation;
+/// founding a new one ends the old, and its territory returns to the regimes.
+model AllegianceNation {
+  id        String           @id @default(cuid())
+  playerId  String
+  player    AllegiancePlayer @relation(fields: [playerId], references: [id], onDelete: Cascade)
+  active    Boolean          @default(true)
+  name      String
+  leader    String
+  ideology  String
+  /// "#rrggbb"
+  color     String
+  homeName  String
+  homeLat   Float
+  homeLon   Float
+  foundedAt DateTime         @default(now())
+  endedAt   DateTime?
+  /// The game's campaign JSON (members, money, skills, the strategic sim against the regimes).
+  save      Json?
+  saveVersion Int?
+  savedAt   DateTime?
+
+  territories AllegianceTerritory[]
+
+  @@index([playerId, active])
+  @@map("allegiance_nations")
+}
+
+/// A region or settlement that a nation holds, or once held. Region ids are the game's own:
+/// the 113 world regions ("london") and settlements discovered from OpenStreetMap
+/// ("place-<hash of name and coordinates>"), the same on every client.
+model AllegianceTerritory {
+  regionId   String            @id
+  name       String
+  kind       String
+  lat        Float
+  lon        Float
+  /// Millions of people.
+  pop        Float
+  nationId   String?
+  nation     AllegianceNation? @relation(fields: [nationId], references: [id], onDelete: SetNull)
+  /// The regime faction that rules it when no nation does (and gets it back on release).
+  aiGovernor String
+  /// democracy | technocracy | junta | oligarchy
+  gov        String
+  /// The holder's troops stationed there, and its share of support (0..1), as last reported.
+  army       Int               @default(0)
+  support    Float             @default(0)
+  takenAt    DateTime?
+  updatedAt  DateTime          @updatedAt
+
+  @@index([updatedAt])
+  @@index([nationId])
+  @@map("allegiance_territories")
+}
+
+/// World news: territory changing hands between nations, nations founded and fallen.
+model AllegianceEvent {
+  id       Int      @id @default(autoincrement())
+  at       DateTime @default(now())
+  kind     String
+  text     String
+  regionId String?
+  nationId String?
+
+  @@index([at])
+  @@map("allegiance_events")
+}
