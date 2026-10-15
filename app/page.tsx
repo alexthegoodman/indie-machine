@@ -177,6 +177,29 @@ export default function Home() {
         </div>
       </div>
 
+      <SectionDivider label="PLAY" />
+
+      <div className="px-6 md:px-24">
+        <Link
+          href="/games"
+          className="group flex flex-col gap-6 border border-line/32 p-6 hover:border-accent/50 md:flex-row md:items-center md:justify-between md:p-10"
+        >
+          <div>
+            <div className="text-[11px] tracking-[0.14em] text-accent">// NOW LIVE</div>
+            <div className="mt-2 font-display text-2xl font-bold text-ink-100 md:text-3xl">
+              Allegiance, our online conquest MMO
+            </div>
+            <p className="mt-2 max-w-2xl font-display text-[15px] leading-relaxed text-ink-300">
+              Found a nation and contest territory in a shared world, right in the browser. Built
+              with Babylon.js and Cloudflare Durable Objects.
+            </p>
+          </div>
+          <span className="flex shrink-0 items-center gap-2 text-sm tracking-wide text-accent group-hover:text-ink-100">
+            PLAY GAMES <ChevronRight />
+          </span>
+        </Link>
+      </div>
+
       <SectionDivider label="SUBMISSIONS OPEN" />
 
       <div className="px-6 pb-16 md:px-24">

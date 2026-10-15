@@ -2,8 +2,9 @@ import Link from "next/link";
 import { CrosshairIcon } from "./icons";
 
 const NAV = [
-  { href: "/products", label: "Products", key: "products" },
-  { href: "/dev", label: "Dev", key: "dev" },
+  { href: "/products", label: "Product Reviews", key: "products" },
+  { href: "/dev", label: "Dev Log", key: "dev" },
+  { href: "/games", label: "Play Games", key: "games" },
   { href: "/promote", label: "Get Reviewed", key: "promote" },
   { href: "/about", label: "About", key: "about" },
 ] as const;
