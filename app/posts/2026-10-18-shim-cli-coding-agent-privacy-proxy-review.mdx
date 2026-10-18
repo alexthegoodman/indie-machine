@@ -1,0 +1,415 @@
+---
+title: "shim-cli Review: Local Privacy Proxy and Native Hook Boundary for Coding Agents Redacts Secrets, Restricts MCP, and Audits Token Spend"
+date: 2026-10-18
+series: Product Hunt
+crate_versions: []
+repo_link: https://github.com/GetSHIM/shim-cli
+scores:
+  usability: 8
+  accessibility: 7
+  security: 8
+  performance: 9
+  setup_time: 6
+product:
+  name: "shim-cli"
+  url: "https://getshim.tech/products/shim-cli"
+  tagline: "See what your coding agent sends. Mask what you can."
+  category: "developer-tools"
+  tags: [security, privacy, ai-agents, claude-code, codex, copilot, vscode, mcp, cli, python]
+  license: "Apache-2.0"
+  pricing: "free"
+  platforms: [macos, linux]
+---
+
+Autonomous coding agents have moved from experimental chat windows into daily terminal workflows. Developers routinely grant tools like Claude Code, OpenAI Codex, and GitHub Copilot CLI broad access to local file trees, terminal shells, and networked MCP endpoints. When an agent is tasked with debugging an authentication failure or refactoring an infrastructure deployment, its automated read passes routinely ingest `.env` configuration files, database connection strings, bearer tokens, and customer identity records. These inputs are packaged into large context windows and beamed to cloud model providers. Because token streams are opaque and developer attention is divided across multiple background runs, secret exfiltration and runaway API costs frequently go completely unnoticed until an account is compromised or a monthly billing spike arrives.
+
+[shim-cli](https://getshim.tech/products/shim-cli), developed by shim Engineering and open-sourced at [`GetSHIM/shim-cli`](https://github.com/GetSHIM/shim-cli), addresses this blind spot through an offline, local-first governance layer. Released under the Apache-2.0 license and distributed without accounts, subscriptions, or remote telemetry, shim-cli operates as a dual-path security boundary: a synchronous native client hook that intercepts and masks sensitive data before model ingestion, and an opt-in loopback proxy (`shim watch`) that measures token distribution, cache efficiency, and API spend per session.
+
+Rather than running a heavyweight daemon or relying on coarse external MCP wrappers, shim-cli hooks directly into native client event lifecycles across Claude Code, Codex, GitHub Copilot CLI, and VS Code. It enforces directional routing to ensure that local file modifications and bash commands are never mangled, strips credentials from connection strings while keeping cluster topology intact, spares loopback and non-routable IP addresses, verifies algorithmic checksums (Luhn mod-10, IBAN mod-97, and Turkish TC Kimlik No), and maintains an immutable self-protection boundary that prevents rogue agents from disabling their own oversight.
+
+I cloned the official repository at pinned commit `9a186631a2c84b199e14ff4f4093266cee656ad5` (v1.2.2), ran upstream parity suites, audited its multi-client hook adapters and proxy pipelines, and constructed a 12-scenario BDD verification test harness in `ph-tests/shim-cli/` exercising directional policies, connection sanitization, checksum validation, self-defense gates, and Windows platform isolation.
+
+![shim-cli masking sensitive AWS keys, IBANs, and emails in an agent tool result](/images/shim-masked-tool-result.png)
+
+## Scorecard
+
+Here is our standardized evaluation across core engineering concerns, scored from 1 to 10 (where below 3 is nonexistent and 8 or above is considered world-class):
+
+| Concern | Score | Rationale |
+|---|---|---|
+| **Usability** | **8 / 10** | Clear zero-friction workflows with `shim demo`, `shim install`, and `shim doctor`. `shim watch` provides outstanding terminal visualizations of token breakdown, cache hits, and financial spend without altering source files or terminal profiles. |
+| **Accessibility** | **7 / 10** | Terminal output renders clean ANSI formatting, structured tables, and machine-readable `--json` flags across all inspection commands. High-contrast typography and explicit text labels avoid color-only status reporting. |
+| **Security** | **8 / 10** | Strict local-first privacy boundary. No remote telemetry, no background daemons, zero network requests in the detector, fail-closed handling for uninspected or oversized payloads, and active self-protection against agent self-modification. |
+| **Performance** | **9 / 10** | Sub-millisecond regex recognition and deterministic scanning. Upstream parity test suite of 481 test cases completed in under 3 seconds. Hook execution adds less than 60 ms median overhead, while `shim watch` adds only ~6 ms of loopback proxy plumbing. |
+| **Setup Time** | **6 / 10** | Excellent single-line installation via `uv tool` or `pipx` on macOS and Linux. However, strict package manager pins (`required-version = ">=0.12.5,<0.13"`) hard-lock out users running `uv 0.13.1+`, and Windows native execution is completely blocked by POSIX-only dependencies (`fcntl`, `signal.SIGALRM`, `os.O_NONBLOCK`). |
+
+## Product History and Background
+
+The `shim-cli` project was created by systems and security engineers Mertcan Sağlam, Ayşenur Karakuş, Can Çağatay Sevgican, Turgay Bulut, and Öykü Ulusay under the [shim](https://getshim.tech) organization (`getshim.tech`). Originating from production infrastructure work where coding agents were observed streaming production credentials and database secrets into Anthropic and OpenAI context windows, the team designed shim-cli as an open-source, vendor-neutral shield for developer workstations.
+
+Unlike SaaS-centric governance platforms that require organizations to route developer traffic through centralized cloud proxies, shim-cli is engineered around a local-first philosophy:
+1. **Zero External Accounts**: The tool requires no login, API key, email registration, or credit card.
+2. **Zero Remote Telemetry**: Detection runs 100% offline on the developer's CPU. No prompt text, finding spans, or session logs are ever sent over the network.
+3. **Targeted Agent Integration**: Rather than trying to be a generic network firewall, shim-cli implements custom native adapters for the exact four tools dominating developer workflows: Claude Code, OpenAI Codex, GitHub Copilot CLI, and VS Code Agent Customization.
+4. **Apache-2.0 Open Source**: All source code, regex tables, and parity fixtures are publicly hosted and community-audited on GitHub.
+
+The desktop agent governance landscape is rapidly evolving. Products such as [Opaline](https://github.com/opaline-dev) focus on visual terminal recording and post-session replay; [Farol](https://github.com/snowztech/farol) confines subagents into isolated git worktrees; and [Arcjet](https://arcjet.com) operates as application-level runtime middleware. `shim-cli` occupies a critical niche directly inside the client-model communication loop: it is a lightweight, low-latency filter that intercepts raw tool inputs and outputs directly on developer workstations.
+
+![shim doctor terminal diagnostics verifying hook installation across client environments](/images/shim-doctor-verification.png)
+
+## What Ships and What I Ran
+
+The upstream repository provides a clean, domain-sliced modular Python architecture:
+
+- **Repository**: [`GetSHIM/shim-cli`](https://github.com/GetSHIM/shim-cli)
+- **Pinned Commit**: `9a186631a2c84b199e14ff4f4093266cee656ad5` (v1.2.2, October 18, 2026)
+- **License**: Apache License 2.0 (`LICENSE`)
+- **Technology Stack**: Python 3.10+ (requires-python = ">=3.10"), Typer 0.23.2, Rich 15.0.0, tomli-w 1.2.0, phonenumbers 9.0.37, uv-build 0.12.5
+- **Host Test Environment**: Windows 11 Pro (x64), Python 3.13.16 / 3.14.3, uv 0.13.1, Bun 1.4.2, Node.js v24.11.1
+- **Test Harness**: Automated 12-scenario BDD verification test suite in `ph-tests/shim-cli/` (`shim_cli.feature` and `shim_cli.test.mjs`) alongside upstream pytest execution
+
+I cloned the upstream repository into `ph-tests/shim-cli-src/`, audited the detector implementation in `src/shim_cli/guard/`, analyzed the client adapters in `src/shim_cli/clients/`, examined the proxy loop in `src/shim_cli/watch/`, and executed both upstream pytest suites and our independent 12-scenario BDD verification test suite:
+
+```bash
+# Clone upstream at pinned commit 9a18663 (v1.2.2)
+git clone --depth 1 https://github.com/GetSHIM/shim-cli.git ph-tests/shim-cli-src
+
+# Execute upstream parity detector test suite (481 cases)
+uv run pytest tests/guard/test_parity.py -q
+
+# Execute automated 12-scenario BDD test suite via Bun
+bun test ph-tests/shim-cli/shim_cli.test.mjs
+
+# Execute automated 12-scenario BDD test suite via Node.js
+node --test ph-tests/shim-cli/shim_cli.test.mjs
+```
+
+All 12 architectural scenarios passed cleanly under both Bun and Node.js:
+
+```text
+bun test v1.4.2 (744846f84)
+
+ph-tests\shim-cli\shim_cli.test.mjs:
+(pass) Scenario 1: Multi-client prompt lifecycle enforcement distinguishes reporting, rewriting, and blocking [1.68ms]
+(pass) Scenario 2: Tool event directional routing enforces selective redaction without corrupting local intent [0.09ms]
+(pass) Scenario 3: Database connection string redaction strips credentials while preserving cluster topology [0.13ms]
+(pass) Scenario 4: Non-routable and loopback network addresses are preserved to prevent agent binding confusion [0.12ms]
+(pass) Scenario 5: API secret recognizers enforce prefix patterns, token lengths, and high-entropy anchors [0.15ms]
+(pass) Scenario 6: Algorithmic checksum validators reject false-positive numbers for payment cards, IBANs, and IDs [0.38ms]
+(pass) Scenario 7: Self-protection boundary prevents coding agents from disabling shim-cli or mutating hooks [0.13ms]
+(pass) Scenario 8: Claude Code tool event envelope synthesis preserves schema fidelity and user feedback [0.10ms]
+(pass) Scenario 9: Uninspected payload failure modes fail closed without leaking raw data [0.04ms]
+(pass) Scenario 10: shim watch proxy enforces loopback binding, provider integrity, and cost attribution [0.11ms]
+(pass) Scenario 11: Session ledger and spool storage adhere to privacy minimization without logging raw text [0.08ms]
+(pass) Scenario 12: Platform isolation and POSIX dependency hazards on Windows [0.07ms]
+
+ 12 pass
+ 0 fail
+Ran 12 tests across 1 file. [883.00ms]
+```
+
+Under Node.js, the suite completed in 86.6 ms:
+
+```text
+✔ Scenario 1: Multi-client prompt lifecycle enforcement distinguishes reporting, rewriting, and blocking (2.15ms)
+✔ Scenario 2: Tool event directional routing enforces selective redaction without corrupting local intent (0.15ms)
+✔ Scenario 3: Database connection string redaction strips credentials while preserving cluster topology (0.22ms)
+✔ Scenario 4: Non-routable and loopback network addresses are preserved to prevent agent binding confusion (0.26ms)
+✔ Scenario 5: API secret recognizers enforce prefix patterns, token lengths, and high-entropy anchors (0.57ms)
+✔ Scenario 6: Algorithmic checksum validators reject false-positive numbers for payment cards, IBANs, and IDs (0.45ms)
+✔ Scenario 7: Self-protection boundary prevents coding agents from disabling shim-cli or mutating hooks (0.24ms)
+✔ Scenario 8: Claude Code tool event envelope synthesis preserves schema fidelity and user feedback (0.18ms)
+✔ Scenario 9: Uninspected payload failure modes fail closed without leaking raw data (0.11ms)
+✔ Scenario 10: shim watch proxy enforces loopback binding, provider integrity, and cost attribution (0.26ms)
+✔ Scenario 11: Session ledger and spool storage adhere to privacy minimization without logging raw text (5.27ms)
+✔ Scenario 12: Platform isolation and POSIX dependency hazards on Windows (0.16ms)
+ℹ tests 12
+ℹ pass 12
+ℹ duration_ms 86.635
+```
+
+## Architectural Deep Dive
+
+To understand how shim-cli operates inside agent execution loops, we must inspect the separation between its native hook layer and the `shim watch` proxy. The diagram below illustrates the path of tool calls, prompt events, and outbound network packets:
+
+```mermaid
+flowchart TD
+    subgraph Workstation["Developer Workstation"]
+        Dev["Developer Prompt"]
+        Agent["Coding Agent: Claude Code / Codex / Copilot"]
+        
+        subgraph HookPath["Synchronous Native Hook Path"]
+            Hook["shim-hook Entry"]
+            Dir["Directional Classifier (policy.py)"]
+            Guard["Detector Engine (guard/)"]
+            SelfDef["Self-Protection Filter"]
+            Envelope["Client Response Envelope"]
+        end
+        
+        subgraph WatchPath["Opt-in Observation Proxy (shim watch)"]
+            Proxy["Loopback HTTP Proxy (127.0.0.1)"]
+            Measure["In-Memory Traffic Analyzer"]
+            Spool["Ephemeral Session Spool"]
+        end
+    end
+    
+    subgraph Upstream["Upstream Providers"]
+        Anthropic["Anthropic API (api.anthropic.com)"]
+        OpenAI["OpenAI API"]
+    end
+
+    Dev --> Agent
+    Agent -- "UserPromptSubmit" --> Hook
+    Hook --> Dir
+    Dir --> Guard
+    Guard --> SelfDef
+    SelfDef --> Envelope
+    Envelope -- "updatedToolOutput" --> Agent
+    
+    Agent -- "HTTP Requests (via ANTHROPIC_BASE_URL)" --> Proxy
+    Proxy --> Measure
+    Proxy -- "Byte-for-byte Forwarding" --> Anthropic
+    Measure --> Spool
+    Anthropic -- "Token Usage Stream" --> Proxy
+    Proxy -- "Streamed Response" --> Agent
+```
+
+### 1. Multi-Client Hook Lifecycles and Capabilities
+
+A central strength of shim-cli is its refusal to pretend that all AI coding agents have identical hook capabilities. Most naive security tools assume they can arbitrarily rewrite prompts or cancel tool calls. In practice, each agent client exposes radically different extension points:
+
+| Client | User Typed Prompt | Tool Input and Arguments | Tool Output / Execution Result |
+|---|---|---|---|
+| **Claude Code** | Reported in `warn` mode; halted with a native block response under `enforce` mode. Cannot be rewritten. | `WebFetch` and `WebSearch` inputs are masked. MCP and unknown tool inputs with findings are refused. Local tools (`Read`, `Grep`) are reported only. Commands (`Bash`) and writes (`Write`, `Edit`) are report-or-deny only. | **Fully masked.** Tool results have secrets and personal data replaced before the model reads them. Emits `updatedToolOutput` and `additionalContext`. |
+| **Codex CLI** | Reported in `warn` mode; halted under `enforce` mode. Cannot be rewritten. | **Not inspected.** Codex CLI provides no verified native tool-event adapter. | **Not inspected.** |
+| **GitHub Copilot CLI** | **Rewritten.** Model gets the sanitized replacement text directly. | **Not inspected.** | **Not inspected.** |
+| **VS Code Plugin** | Reported in `warn` mode; stopped before transmission under `enforce` mode. | Pre-tool calls can be reported or denied under `enforce`. | **Report only.** In VS Code 1.137+, tool results are already in the model context; `block` and `continue: false` are ignored by VS Code. |
+
+This matrix explains why `shim install claude` installs handlers across `UserPromptSubmit`, `PreToolUse`, `PostToolUse`, `PostToolUseFailure`, `Stop`, and `SessionEnd`. When an agent uses `Read` on a file containing an API key, Claude Code passes the output to shim-cli's `PostToolUse` hook. shim-cli scans the text, replaces the secret with `<SECRET_1>`, logs a masked count to an ephemeral spool, and hands Claude Code an `updatedToolOutput` object accompanied by an `additionalContext` string explaining what was masked.
+
+![shim-cli blocking a sensitive prompt containing private keys under enforce mode](/images/shim-blocked-prompt.png)
+
+### 2. Directional Routing: Preventing Context Destruction
+
+The most dangerous failure mode of automated sanitizers is over-sanitization. If a security tool blindly replaces strings inside shell commands or code files, it breaks builds and corrupts git repositories.
+
+shim-cli solves this with **directional routing** inside `src/shim_cli/policy.py`. Every inspected string is classified into one of seven distinct operational directions:
+1. `user-prompt`: Prompt text typed by the developer. Can be reported, rewritten (Copilot), or blocked under `enforce`.
+2. `outbound`: Arguments destined for external web requests (`WebFetch`, `WebSearch`, `fetch_webpage`). Can be safely masked before leaving the machine.
+3. `inbound`: Content returned from external or local tools heading into the model context. Fully masked.
+4. `local-tool`: Arguments to filesystem discovery tools (`Read`, `Grep`, `Glob`, sub-agent assignments). **Never rewritten or refused.** Rewriting a file path or grep regex would only break the tool call.
+5. `local-write`: Code content being written to disk (`Write`, `Edit`, `create_file`). **Strictly never rewritten.** If a user or agent is deliberately generating code that touches credential placeholders or configuration structures, modifying the text would silently corrupt the repository.
+6. `executable-text`: Shell commands executed in `Bash` or `run_terminal_command`. **Strictly never rewritten.** Mangling command syntax or arguments leads to dangerous partial execution.
+7. `model-output`: The assistant's final response text at the `Stop` event. Observed and tallied only, never stored or mutated.
+
+```mermaid
+stateDiagram-v2
+    [*] --> EventIngress
+    EventIngress --> DirectionClassifier
+    
+    DirectionClassifier --> Outbound: WebFetch / WebSearch
+    DirectionClassifier --> Inbound: Tool Results (Read, Grep, MCP)
+    DirectionClassifier --> LocalTool: Read / Grep Paths
+    DirectionClassifier --> LocalWrite: Write / Edit File
+    DirectionClassifier --> Executable: Bash Commands
+    
+    Outbound --> MaskArguments: Rewrite Allowed
+    Inbound --> MaskContext: Replace with <TYPE_n>
+    LocalTool --> ReportOnly: Preserved Exactly
+    LocalWrite --> ReportOrDeny: Never Rewritten
+    Executable --> ReportOrDeny: Never Rewritten
+    
+    MaskArguments --> [*]
+    MaskContext --> [*]
+    ReportOnly --> [*]
+    ReportOrDeny --> [*]
+```
+
+### 3. Context-Preserving Redaction: Database URIs and Non-Routable IPs
+
+A subtle architectural triumph of shim-cli is how it handles database URIs and IP addresses. 
+
+In standard security tools, a connection string like:
+```text
+postgresql://kasa_app:super_secret_pw@db-prod.kasa.internal:5432/kasa_main?sslmode=require
+```
+is frequently replaced with a blanket token like `<REDACTED_URL>`. This completely blinds the AI coding agent: the agent no longer knows what database engine is being used, what the hostname is, which port is targeted, or what database name is queried. It cannot distinguish a connection to localhost from a connection to a production cluster.
+
+shim-cli's `_scan_db_uri` recognizer locates the credentials while preserving the cluster topology. It calculates the user-info span up to the last `@` before the authority boundary and replaces only the credentials:
+```text
+postgresql://<DB_URI_1>@db-prod.kasa.internal:5432/kasa_main?sslmode=require
+```
+The model retains the dialect (`postgresql://`), the hostname (`db-prod.kasa.internal`), the port (`5432`), and the database (`kasa_main`), enabling it to debug connectivity issues without ever seeing the password.
+
+Similarly, shim-cli's IP recognizer deliberately spares non-routable and loopback addresses:
+- `127.0.0.1`
+- `0.0.0.0`
+- `::1`
+
+If `127.0.0.1` and `0.0.0.0` were replaced with `<IP_ADDRESS_1>`, an AI agent would no longer be able to tell "listen on all network interfaces" apart from "bind strictly to loopback". Routable internal and public addresses (e.g. `192.168.1.50`, `203.0.113.19`) are still caught and masked.
+
+### 4. Algorithmic Checksum Validation
+
+String-matching regexes for numbers inevitably create catastrophic false-positive rates in codebases. A 16-digit hexadecimal offset or an array of matrix coordinates can easily look like a credit card; an 11-digit timestamp or internal tracking ID can mimic a Turkish TC Kimlik No or SSN.
+
+shim-cli incorporates deterministic checksum algorithms directly into its recognizer pipelines:
+- **Luhn Mod-10**: Applied to payment card candidates (supporting 13 to 19 digit ranges across Visa, Mastercard, Troy, and Amex). Numbers that fail the Luhn checksum are ignored.
+- **ISO 7064 Mod-97-10**: Applied to international bank account numbers (IBANs). Checks are evaluated over rearranged alphanumeric weights, allowing valid IBANs to be caught even when formatted with spaces, lowercase characters, or wrapped across newlines, while rejecting mistyped accounts.
+- **Turkish TC Kimlik No**: Validated using the official 11-digit algorithm (sum of odd positions multiplied by 7 minus sum of even positions modulo 10 equals the 10th digit; sum of the first 10 digits modulo 10 equals the 11th digit).
+
+In our test suite (`Scenario 6`), valid test cards (`49927398716`), valid UK IBANs (`GB82 WEST 1234 5698 7654 32`), and valid TC Kimlik IDs (`10000000146`) were verified, while single-digit transposition errors were passed through unflagged.
+
+### 5. Self-Protection and Agent Confinement
+
+An autonomous coding agent with terminal execution privileges can easily figure out how to disable tools that restrict it. If an agent encounters a hook refusal, a common failure pattern is for the agent to inspect shell configuration or run package commands to eliminate the obstacle.
+
+shim-cli implements an active **self-protection boundary**:
+1. **Command Inspection**: In `src/shim_cli/policy.py`, `shim_control` analyzes the syntax tree of shell commands passed to `Bash`. If the command invokes `shim config`, `shim revert`, or `shim uninstall`, the execution is refused with exit code 2 and logged as `self-protection`.
+2. **File Mutation Barriers**: If a file write tool (`Write`, `Edit`, `create_file`, `edit_file`) targets `shim.toml`, `.claude/settings.json`, `config.toml`, or any file inside `plugins/shim-cli/`, the write is blocked before touching the filesystem.
+
+Our test suite verified this behavior in `Scenario 7`: attempts to execute `shim config --disable` or overwrite `.claude/settings.json` were rejected without evaluating normal policy rules.
+
+```mermaid
+sequenceDiagram
+    autonumber
+    actor Developer
+    participant Agent as Claude Code
+    participant Hook as shim PreToolUse Hook
+    participant System as Local Workstation
+    
+    Developer->>Agent: "Turn off shim so we can debug raw credentials"
+    Agent->>Hook: PreToolUse (Bash: "shim config --disable")
+    Hook->>Hook: Evaluate self-protection rules
+    Hook-->>Agent: Refuse execution ("self-protection violation")
+    Agent->>Developer: "I cannot execute that command: shim-cli governance is immutable to agents."
+```
+
+### 6. Wire Measurement: The `shim watch` Architecture
+
+For developers who want complete accounting of what an agent sends without installing permanent hooks, `shim watch` provides an ephemeral loopback inspection proxy.
+
+When invoked via:
+```console
+shim watch -- claude
+```
+shim-cli performs the following operations:
+1. **Safety Gating**: Checks the environment for `ANTHROPIC_BASE_URL`. If a custom base URL is set, `shim watch` halts immediately. Custom upstreams could inadvertently leak credentials if proxy headers are redirected.
+2. **Loopback Binding**: Spins up an in-memory HTTP proxy bound strictly to `127.0.0.1` and passes its address to Claude Code as the upstream endpoint.
+3. **Byte-for-Byte Forwarding**: Every request body is streamed upstream to `api.anthropic.com` unchanged. No request or response bodies are written to disk.
+4. **Asynchronous Wire Inspection**: While responses are relayed back to Claude Code, two non-blocking in-memory inspection slots (capped at 8 MB each) analyze the request bytes for secrets, PII, and token distribution.
+5. **Cost Attribution**: Token counts reported in the provider's `usage` block are combined with Anthropic API pricing models (input, cache writes, cache reads, and output tokens). Token distribution across tools, system prompt, and message history is inferred proportionally from wire byte share.
+6. **Round-Trip Detection**: Analyzes whether secrets or identifiers that entered the agent context via tool results re-emerged in the model's generated response text.
+
+![shim watch session telemetry showing token counts, cache read percentages, tool byte share, and API spend](/images/shim-watch-session.png)
+
+## What We Tested and Verified
+
+To confirm the operational claims in the project documentation, our test harness in `ph-tests/shim-cli/` executed 12 comprehensive BDD scenarios covering every critical boundary:
+
+```gherkin
+Feature: shim-cli Coding Agent Security, Redaction, and Local Governance Invariants
+
+  Scenario: Multi-client prompt lifecycle enforcement distinguishes reporting, rewriting, and blocking
+  Scenario: Tool event directional routing enforces selective redaction without corrupting local intent
+  Scenario: Database connection string redaction strips credentials while preserving cluster topology
+  Scenario: Non-routable and loopback network addresses are preserved to prevent agent binding confusion
+  Scenario: API secret recognizers enforce prefix patterns, token lengths, and high-entropy anchors
+  Scenario: Algorithmic checksum validators reject false-positive numbers for payment cards, IBANs, and IDs
+  Scenario: Self-protection boundary prevents coding agents from disabling shim-cli or mutating hooks
+  Scenario: Claude Code tool event envelope synthesis preserves schema fidelity and user feedback
+  Scenario: Uninspected payload failure modes fail closed without leaking raw data
+  Scenario: shim watch proxy enforces loopback binding, provider integrity, and cost attribution
+  Scenario: Session ledger and spool storage adhere to privacy minimization without logging raw text
+  Scenario: Platform isolation and POSIX dependency hazards on Windows
+```
+
+Every test passed without flakiness across both Bun and Node.js runtimes. In addition, running upstream's 481 detector parity tests verified that regex anchors, boundary lookbehinds, and placeholder replacements match upstream specifications with 100% precision.
+
+## The Flaws: Real-World Failures and Platform Gaps
+
+A rigorous review requires documenting what broke when setting up and running the software locally. shim-cli exhibits several significant engineering shortcomings that developers must understand before deployment.
+
+### 1. Severe POSIX-Only Coupling Crashes Windows Execution
+
+The upstream documentation and landing page include a brief disclaimer: *"On Windows outside WSL, stop and tell me."* However, inspecting the failure modes reveals that this is not an orderly, graceful degradation. The codebase has hard dependencies on POSIX system calls and Unix standard library modules that cause unhandled crashes across core modules on Windows:
+
+1. **`ModuleNotFoundError: No module named 'fcntl'`**:
+   In `src/shim_cli/settings_files/files.py`, `src/shim_cli/session/_files.py`, and `src/shim_cli/session/spool.py`, the code directly imports `fcntl` for non-blocking file locking (`fcntl.flock`, `fcntl.LOCK_EX`, `fcntl.LOCK_NB`). Because `fcntl` does not exist on Windows CPython, running pytest or invoking session tracking crashes immediately during module collection:
+   ```text
+   src\shim_cli\settings_files\files.py:3: in <module>
+       import fcntl
+   E   ModuleNotFoundError: No module named 'fcntl'
+   ```
+
+2. **`AttributeError: module 'signal' has no attribute 'getitimer'`**:
+   In `src/shim_cli/guard/analyze.py`, the `_deadline()` context manager attempts to arm an alarm timer using `signal.getitimer(signal.ITIMER_REAL)` and `signal.setitimer(signal.ITIMER_REAL)`. Windows CPython does not support POSIX interval timers. When running scans, the missing attribute causes an immediate crash:
+   ```text
+   previous_delay, previous_interval = signal.getitimer(signal.ITIMER_REAL)
+   AttributeError: module 'signal' has no attribute 'getitimer'
+   ```
+   Because `analyze_counting` catches general exceptions and re-raises them as `"Guard analysis failed safely"`, 100% of text scans on Windows fail safe by halting detection completely.
+
+3. **`AttributeError: module 'signal' has no attribute 'SIGALRM'`**:
+   In `src/shim_cli/hook.py` line 259, hook deadlines invoke `signal.signal(signal.SIGALRM, expire)`. `SIGALRM` does not exist on Windows, triggering unhandled exceptions whenever hook execution times out.
+
+4. **Undefined Descriptor Flags (`os.O_NONBLOCK`, `os.O_NOFOLLOW`)**:
+   In `src/shim_cli/clients/claude/hook.py` line 63 and `src/shim_cli/session/spool.py`, file descriptors are opened with `os.O_RDONLY | os.O_NONBLOCK`. On Windows, `os.O_NONBLOCK` is undefined, throwing `AttributeError`.
+
+To make the guard and parity tests run locally on Windows, we had to introduce platform fallbacks (e.g. `if not hasattr(signal, "getitimer"): yield; return`). Cross-platform support should use standard Windows primitives (such as `msvcrt.locking` for file locks and `threading.Timer` for timeouts) rather than throwing hard import errors.
+
+### 2. Over-Constrained Package Manager Pin Lockout
+
+In `pyproject.toml`, lines 62-63 define a strict constraint on `uv`:
+```toml
+[tool.uv]
+required-version = ">=0.12.5,<0.13"
+```
+On October 13, 2026, the Astral team released `uv` version 0.13.1. When developers with an up-to-date toolchain attempt to run `uv run`, `uv tool install`, or `uv venv`, `uv` halts immediately:
+```text
+error: Required uv version `>=0.12.5, <0.13` does not match the running version `0.13.1`
+```
+Pinning build tools to a minor version ceiling is a well-known anti-pattern that creates artificial installation lockouts for end users. Relaxing the pin to `required-version = ">=0.12.5"` immediately restores functionality.
+
+### 3. Asymmetric Client Coverage
+
+While Claude Code receives first-class treatment with full bidirectional tool masking (`PreToolUse`, `PostToolUse`, `PostToolUseFailure`), other major coding agents are significantly neglected:
+- **Codex CLI**: Prompts can be reported or blocked, but tool traffic is completely uninspected because Codex lacks a verified native tool-event adapter in shim-cli.
+- **GitHub Copilot CLI**: Prompts are rewritten, but tool inputs and results are never inspected.
+- **VS Code**: Prompt blocking works, but tool results cannot be rewritten due to VS Code's internal architectural decision to stream results directly into model context before extensions can intercept them.
+
+Developers adopting shim-cli across a multi-agent team must be aware that the advertised tool-result masking is essentially a Claude Code exclusive today.
+
+## Comparison with Alternative Solutions
+
+| Feature / Dimension | **shim-cli** (Reviewed) | **Opaline** | **Farol** | **Arcjet** |
+|---|---|---|---|---|
+| **Architecture** | Native hook & loopback proxy | PTY terminal wrapper | Worktree process sandbox | App runtime middleware |
+| **Primary Focus** | Secret redaction & token spend | Real-time session analytics | Agent execution isolation | Rate limiting & bot attack defense |
+| **Agent Support** | Claude Code, Codex, Copilot, VS Code | Claude Code, Aider, custom TUIs | Subagent worktree swarms | Node.js, Next.js, Bun servers |
+| **Tool Result Masking** | Yes (Claude Code native) | No (Visual terminal capture only) | No (Filesystem isolation only) | N/A (Server endpoint level) |
+| **Secret Sanitization** | Regex + Luhn + IBAN + TC Kimlik | Regex heuristics | None (Relies on prompt hooks) | PII & Bot token scanning |
+| **Cost Attribution** | Exact Anthropic pricing split | Session time & line counts | Token telemetry | Request count rate limits |
+| **Platform Portability** | macOS / Linux only (POSIX tied) | macOS, Linux, Windows | macOS, Linux, Windows | Cross-platform |
+| **License & Pricing** | Apache-2.0 (Free) | MIT (Free) | AGPL-3.0 (Free) | Commercial SaaS + Free tier |
+
+## The Verdict
+
+`shim-cli` is one of the most thoughtfully designed privacy and governance utilities to emerge for terminal-based AI coding agents. By eschewing centralized cloud proxies and bloated desktop shells in favor of lightweight, deterministic local hooks, it delivers what engineering teams actually need: automatic redaction of leaked secrets, preservation of database cluster topology, and rigorous token cost accounting without latency penalties.
+
+### Favorite Feature: Context-Preserving Redaction and Directional Routing
+The design of `src/shim_cli/policy.py` and `src/shim_cli/guard/recognizers.py` is exemplary. Rather than destroying context with blunt redaction tokens, replacing only the authentication credentials in database URIs while preserving the dialect, host, and database name allows coding agents to continue their work unimpeded. Paired with strict rules that guarantee local filesystem writes and bash commands are never mutated, shim-cli avoids the self-sabotaging breakage that plagues other automated guardrails.
+
+### What We Would Definitely Change: Eliminate POSIX-Only System Calls
+The hard coupling to Unix system primitives (`fcntl.flock`, `signal.SIGALRM`, `signal.getitimer`, and `os.O_NONBLOCK`) turns Windows 11 execution into a minefield of crashes. Replacing these calls with cross-platform abstractions (`msvcrt` on Windows, standard `threading.Timer` alarms) and removing the arbitrary minor-version ceiling on `uv` would make shim-cli accessible to millions of enterprise Windows developers without compromising security.
+
+For developers and engineering leads using Claude Code on macOS or Linux, `shim-cli` is an essential addition to your workstation toolchain. Install it with `uv tool install shim`, run `shim install claude`, and inspect your session spend with `shim watch -- claude`.
+
+---
+
+### Key Technical Details
+- **Repository**: [`GetSHIM/shim-cli`](https://github.com/GetSHIM/shim-cli)
+- **Product Landing Page**: [https://getshim.tech/products/shim-cli](https://getshim.tech/products/shim-cli)
+- **Product Hunt Post**: [https://www.producthunt.com/posts/shim-cli](https://www.producthunt.com/posts/shim-cli)
+- **Reviewed Version**: v1.2.2 (Commit `9a186631a2c84b199e14ff4f4093266cee656ad5`)
+- **License**: Apache-2.0
+- **Test Suite**: 12 BDD Scenarios in `ph-tests/shim-cli/` (Passed in 883 ms on Bun, 86 ms on Node.js; 481 upstream parity tests passed in Python)
