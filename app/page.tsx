@@ -49,6 +49,18 @@ export default function Home() {
               them is the build log for Entropy, a native engine written in Rust.
             </p>
 
+            <div className="mt-6 flex flex-wrap items-center gap-3 text-xs">
+              <span className="border border-accent/40 bg-accent/10 px-2.5 py-1 text-[11px] font-semibold tracking-wider text-accent">
+                NEW
+              </span>
+              <span className="text-ink-300">
+                Yumon Pet v0.1.0: Free, private AI that runs on iGPU with an aquarium simulation.
+              </span>
+              <Link href="/free-ai" className="font-semibold text-accent hover:underline">
+                Get Free AI -&gt;
+              </Link>
+            </div>
+
             <form action="/products" className="mt-8 flex max-w-xl border border-line/28 focus-within:border-accent/70">
               <label htmlFor="home-search" className="sr-only">
                 Search products
@@ -57,7 +69,7 @@ export default function Home() {
                 id="home-search"
                 type="search"
                 name="q"
-                placeholder="Search tools: mcp, worktrees, rust…"
+                placeholder="Search tools: mcp, worktrees, rust..."
                 className="min-w-0 flex-1 bg-transparent px-4 py-3 font-display text-base text-ink-100 placeholder:text-ink-500 focus:outline-none"
               />
               <button
@@ -74,7 +86,7 @@ export default function Home() {
               <div className="flex items-center justify-between border-b border-line/28 px-5 py-3 text-[11px] tracking-[0.14em]">
                 <span className="text-accent">TOP SCORED</span>
                 <Link href="/products?sort=score" className="text-ink-500 hover:text-accent">
-                  ALL →
+                  ALL -&gt;
                 </Link>
               </div>
               <ol>
@@ -151,6 +163,79 @@ export default function Home() {
           <Link href="/products" className="flex items-center gap-2 text-sm tracking-wide text-accent">
             ALL {products.length} PRODUCTS <ChevronRight />
           </Link>
+        </div>
+      </div>
+
+      <SectionDivider label="FREE AI COMPANION" />
+
+      <div className="px-6 md:px-24">
+        <div className="relative overflow-hidden border border-accent/40 bg-panel/20 p-6 md:p-10">
+          <div className="grid gap-8 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,0.9fr)] lg:items-center lg:gap-12">
+            <div>
+              <div className="flex items-center gap-2.5 text-[11px] tracking-[0.14em] text-accent">
+                <span className="inline-block h-2 w-2 rounded-full bg-accent" />
+                // FREE PRODUCT RELEASE - V0.1.0
+              </div>
+              <h2 className="mt-3 font-display text-2xl font-bold text-ink-100 sm:text-3xl md:text-4xl">
+                Free, near instant, private AI that runs on iGPU
+              </h2>
+              <p className="mt-4 font-display text-[15px] leading-relaxed text-ink-300 md:text-base">
+                Designed to be an AI pet that keeps you company when you are at your desk. Powered by our
+                Kilo Talk architecture, Yumon runs 100% locally on your machine with zero cloud costs and
+                includes an aquarium simulation with living fish and ambient tank animation.
+              </p>
+              <div className="mt-6 flex flex-wrap items-center gap-4 text-xs tracking-wider">
+                <Link
+                  href="/free-ai"
+                  className="inline-flex items-center gap-2 bg-accent px-5 py-2.5 font-display font-semibold !text-ink transition hover:bg-ink-100"
+                >
+                  GET FREE AI <ChevronRight />
+                </Link>
+                <a
+                  href="https://github.com/alexthegoodman/yumon-pet/releases/tag/v0.1.0"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="inline-flex items-center gap-2 border border-line/32 px-4 py-2.5 text-ink-100 transition hover:border-accent hover:text-accent"
+                >
+                  GITHUB RELEASE V0.1.0
+                </a>
+                <a
+                  href="https://github.com/alexthegoodman/yumon-pet"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-ink-500 hover:text-ink-300"
+                >
+                  SOURCE CODE
+                </a>
+              </div>
+            </div>
+
+            <div className="border border-line/24 bg-ink/80 p-5 font-mono text-xs">
+              <div className="text-[10px] tracking-[0.14em] text-accent">// COMPANION SPECS</div>
+              <div className="mt-3 divide-y divide-line/12 text-ink-300">
+                <div className="flex justify-between py-2">
+                  <span className="text-ink-500">INFERENCE</span>
+                  <span className="text-ink-100 font-medium">Local iGPU (WGPU)</span>
+                </div>
+                <div className="flex justify-between py-2">
+                  <span className="text-ink-500">SPEED</span>
+                  <span className="text-ink-100 font-medium">Near instant (microsecond N-gram)</span>
+                </div>
+                <div className="flex justify-between py-2">
+                  <span className="text-ink-500">HABITAT</span>
+                  <span className="text-ink-100 font-medium">3D Aquarium Simulation</span>
+                </div>
+                <div className="flex justify-between py-2">
+                  <span className="text-ink-500">PRIVACY</span>
+                  <span className="text-ink-100 font-medium">100% Offline / Zero Telemetry</span>
+                </div>
+                <div className="flex justify-between py-2">
+                  <span className="text-ink-500">LICENSE &amp; COST</span>
+                  <span className="text-accent font-medium">Free &amp; Open Source (MIT)</span>
+                </div>
+              </div>
+            </div>
+          </div>
         </div>
       </div>
 

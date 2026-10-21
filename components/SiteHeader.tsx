@@ -3,6 +3,7 @@ import { CrosshairIcon } from "./icons";
 
 const NAV = [
   { href: "/products", label: "Product Reviews", key: "products" },
+  { href: "/free-ai", label: "Free AI", key: "free-ai" },
   { href: "/dev", label: "Dev Log", key: "dev" },
   { href: "/games", label: "Play Games", key: "games" },
   { href: "/promote", label: "Get Reviewed", key: "promote" },

@@ -18,8 +18,14 @@ export function SiteFooter() {
         <Link href="/products" className="hover:text-ink-100">
           PRODUCTS
         </Link>
+        <Link href="/free-ai" className="hover:text-ink-100">
+          FREE AI
+        </Link>
         <Link href="/dev" className="hover:text-ink-100">
           DEV
+        </Link>
+        <Link href="/games" className="hover:text-ink-100">
+          GAMES
         </Link>
         <Link href="/archive" className="hover:text-ink-100">
           ARCHIVE
