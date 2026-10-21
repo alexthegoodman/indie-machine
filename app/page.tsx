@@ -170,7 +170,7 @@ export default function Home() {
 
       <div className="px-6 md:px-24">
         <div className="relative overflow-hidden border border-accent/40 bg-panel/20 p-6 md:p-10">
-          <div className="grid gap-8 lg:grid-cols-[minmax(0,1.4fr)_minmax(0,0.9fr)] lg:items-center lg:gap-12">
+          <div className="grid gap-8 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] lg:items-center lg:gap-12">
             <div>
               <div className="flex items-center gap-2.5 text-[11px] tracking-[0.14em] text-accent">
                 <span className="inline-block h-2 w-2 rounded-full bg-accent" />
@@ -208,32 +208,32 @@ export default function Home() {
                   SOURCE CODE
                 </a>
               </div>
-            </div>
 
-            <div className="border border-line/24 bg-ink/80 p-5 font-mono text-xs">
-              <div className="text-[10px] tracking-[0.14em] text-accent">// COMPANION SPECS</div>
-              <div className="mt-3 divide-y divide-line/12 text-ink-300">
-                <div className="flex justify-between py-2">
-                  <span className="text-ink-500">INFERENCE</span>
-                  <span className="text-ink-100 font-medium">Local iGPU (WGPU)</span>
-                </div>
-                <div className="flex justify-between py-2">
-                  <span className="text-ink-500">SPEED</span>
-                  <span className="text-ink-100 font-medium">Near instant (microsecond N-gram)</span>
-                </div>
-                <div className="flex justify-between py-2">
-                  <span className="text-ink-500">HABITAT</span>
-                  <span className="text-ink-100 font-medium">3D Aquarium Simulation</span>
-                </div>
-                <div className="flex justify-between py-2">
-                  <span className="text-ink-500">PRIVACY</span>
-                  <span className="text-ink-100 font-medium">100% Offline / Zero Telemetry</span>
-                </div>
-                <div className="flex justify-between py-2">
-                  <span className="text-ink-500">LICENSE &amp; COST</span>
-                  <span className="text-accent font-medium">Free &amp; Open Source (MIT)</span>
+              <div className="mt-6 border border-line/24 bg-ink/80 p-4 font-mono text-xs">
+                <div className="text-[10px] tracking-[0.14em] text-accent">// COMPANION SPECS</div>
+                <div className="mt-2 grid grid-cols-1 gap-2 text-ink-300 sm:grid-cols-2">
+                  <div><span className="text-ink-500">ENGINE:</span> Local iGPU (WGPU)</div>
+                  <div><span className="text-ink-500">SPEED:</span> Instant N-Gram Decompression</div>
+                  <div><span className="text-ink-500">HABITAT:</span> 3D Aquarium (Fish &amp; Plants)</div>
+                  <div><span className="text-ink-500">PRIVACY:</span> 100% Offline / Zero Telemetry</div>
                 </div>
               </div>
+            </div>
+
+            <div className="relative">
+              <Link href="/free-ai" className="group block overflow-hidden border border-line/28 bg-ink">
+                <img
+                  src="/images/yumon-pet-1.png"
+                  alt="Yumon Pet desktop companion showing 3D aquarium on the left and AI chat on the right"
+                  width={867}
+                  height={509}
+                  className="w-full object-cover transition duration-300 group-hover:scale-[1.02]"
+                />
+                <div className="flex items-center justify-between border-t border-line/20 px-4 py-2.5 text-[11px] text-ink-400">
+                  <span>Yumon Portal v0.1.0 Desktop Shell</span>
+                  <span className="text-accent group-hover:underline">EXPLORE COMPANION -&gt;</span>
+                </div>
+              </Link>
             </div>
           </div>
         </div>

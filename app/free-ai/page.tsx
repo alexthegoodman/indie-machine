@@ -21,13 +21,13 @@ export const metadata: Metadata = {
     url: "/free-ai",
     siteName: SITE_NAME,
     type: "website",
-    images: ["/opengraph-image"],
+    images: ["/images/yumon-pet-1.png"],
   },
   twitter: {
     card: "summary_large_image",
     title: `Free AI Desktop Pet | Yumon Pet v0.1.0 | ${SITE_NAME}`,
     description: "Free, near instant, private AI that runs on iGPU. An AI companion with an aquarium simulation.",
-    images: ["/opengraph-image"],
+    images: ["/images/yumon-pet-1.png"],
   },
 };
 
@@ -38,60 +38,77 @@ export default function FreeAiPage() {
 
       {/* Hero Section */}
       <div className="px-6 pt-16 pb-10 md:px-24 md:pt-20">
-        <div className="flex items-center gap-2.5 text-[13px] tracking-[0.14em] text-accent">
-          <span className="inline-block h-2 w-2 rounded-full bg-accent" />
-          // DESKTOP COMPANION RELEASE
-        </div>
-        <h1 className="mt-3 font-display text-4xl font-bold tracking-tight text-ink-100 sm:text-5xl md:text-6xl">
-          Free AI That Runs On Your iGPU
-        </h1>
-        <p className="mt-4 font-display text-xl text-accent font-semibold md:text-2xl">
-          Yumon Pet v0.1.0 - Near instant, 100% private desktop AI companion with an aquarium simulation
-        </p>
-        <p className="mt-6 max-w-3xl font-display text-base leading-relaxed text-ink-300 md:text-lg">
-          Designed to be an AI pet that keeps you company when you are at your desk. Yumon runs completely
-          offline on your local integrated graphics (iGPU) using WGPU, meaning zero monthly fees, zero latency,
-          and zero telemetry. Watch fish drift across a living 3D aquarium while Yumon explores daily tech launches
-          and chats with you locally.
-        </p>
+        <section className="flex flex-col md:flex-row">
+          <div className="pr-8">
+            <div className="flex items-center gap-2.5 text-[13px] tracking-[0.14em] text-accent">
+              <span className="inline-block h-2 w-2 rounded-full bg-accent" />
+              // DESKTOP COMPANION RELEASE
+            </div>
+            <h1 className="mt-3 font-display text-4xl font-bold tracking-tight text-ink-100 sm:text-5xl md:text-6xl">
+              Free AI That Runs On Your iGPU
+            </h1>
+            <p className="mt-4 font-display text-xl text-accent font-semibold md:text-2xl">
+              Yumon Pet v0.1.0 - Near instant, 100% private desktop AI companion with an aquarium simulation
+            </p>
+            <p className="mt-6 max-w-3xl font-display text-base leading-relaxed text-ink-300 md:text-lg">
+              Designed to be an AI pet that keeps you company when you are at your desk. Yumon runs completely
+              offline on your local integrated graphics (iGPU) using WGPU, meaning zero monthly fees, zero latency,
+              and zero telemetry. Watch living Yumon swim across a living 3D aquarium while Yumon explores daily tech launches
+              and chats with you locally.
+            </p>
 
-        {/* Primary Download & Action Bar */}
-        <div className="mt-8 flex flex-wrap items-center gap-4 text-xs tracking-wider">
-          <a
-            href={DOWNLOAD_ZIP_URL}
-            className="inline-flex items-center gap-2.5 bg-accent px-6 py-3 font-display font-semibold !text-ink transition hover:bg-ink-100"
-          >
-            DOWNLOAD FOR WINDOWS (.ZIP) <ChevronRight className="h-4 w-4" />
-          </a>
-          <a
-            href={RELEASE_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 border border-line/35 px-5 py-3 text-ink-100 transition hover:border-accent hover:text-accent"
-          >
-            VIEW GITHUB RELEASE (V0.1.0)
-          </a>
-          <a
-            href={SOURCE_REPO_URL}
-            target="_blank"
-            rel="noopener noreferrer"
-            className="inline-flex items-center gap-2 border border-line/25 px-5 py-3 text-ink-300 transition hover:border-line/60 hover:text-ink-100"
-          >
-            INSPECT SOURCE CODE
-          </a>
-        </div>
+            {/* Primary Download & Action Bar */}
+            <div className="mt-8 flex flex-wrap items-center gap-4 text-xs tracking-wider">
+              <a
+                href={DOWNLOAD_ZIP_URL}
+                className="inline-flex items-center gap-2.5 bg-accent px-6 py-3 font-display font-semibold !text-ink transition hover:bg-ink-100"
+              >
+                DOWNLOAD FOR WINDOWS (.ZIP) <ChevronRight className="h-4 w-4" />
+              </a>
+              <a
+                href={RELEASE_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 border border-line/35 px-5 py-3 text-ink-100 transition hover:border-accent hover:text-accent"
+              >
+                VIEW GITHUB RELEASE (V0.1.0)
+              </a>
+              <a
+                href={SOURCE_REPO_URL}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-2 border border-line/25 px-5 py-3 text-ink-300 transition hover:border-line/60 hover:text-ink-100"
+              >
+                INSPECT SOURCE CODE
+              </a>
+            </div>
 
-        <div className="mt-10">
-          <TitleBlock
-            cells={[
-              { label: "VERSION", value: "v0.1.0" },
-              { label: "TARGET", value: "WINDOWS 10 / 11" },
-              { label: "ENGINE", value: "LOCAL iGPU (WGPU)" },
-              { label: "PRIVACY", value: "100% OFFLINE" },
-              { label: "LICENSE", value: "OPEN SOURCE (MIT)", accent: true },
-            ]}
-          />
-        </div>
+            <div className="mt-10">
+              <TitleBlock
+                cells={[
+                  { label: "VERSION", value: "v0.1.0" },
+                  { label: "TARGET", value: "WINDOWS 10 / 11" },
+                  { label: "ENGINE", value: "LOCAL iGPU (WGPU)" },
+                  { label: "PRIVACY", value: "100% OFFLINE" },
+                  { label: "LICENSE", value: "OPEN SOURCE (MIT)", accent: true },
+                ]}
+              />
+            </div>
+          </div>
+          <figure className="border border-line/28 bg-panel/20 p-3 md:p-6">
+            <img
+              src="/images/yumon-pet-1.png"
+              alt="Yumon Pet running on desktop with a 3D tropical aquarium simulation on the left and local AI chat on the right"
+              width={867}
+              height={509}
+              className="mx-auto max-w-full border border-line/25 shadow-2xl"
+            />
+            <figcaption className="mt-4 text-center text-xs text-ink-400">
+              Yumon Portal v0.1.0 running on desktop: interactive 3D aquarium simulation with living fish and ambient plants on the left, and local offline AI chat and Product Hunt radar on the right.
+            </figcaption>
+          </figure>
+        </section>
+        
       </div>
 
       {/* Windows SmartScreen Notice */}
@@ -165,7 +182,7 @@ export default function FreeAiPage() {
             <div className="text-[11px] tracking-[0.14em] text-accent">// LIVING DESKTOP HABITAT</div>
             <h3 className="mt-2 font-display text-xl font-bold text-ink-100">3D Aquarium Simulation</h3>
             <p className="mt-3 text-xs leading-relaxed text-ink-400">
-              Yumon is not just another boring chat window. The desktop companion includes a living 3D aquarium
+              Yumon is not just another boring chat window. As shown in the preview screenshot above, the desktop companion includes a living 3D aquarium
               simulation built right beside your daily workspace. Watch tropical species - including Neon Tetras, Flame Gobies,
               Golden Guppies, and Emerald Cories - swim around natural slate rock caves, air stone bubblers, and swaying anubias plants.
             </p>
