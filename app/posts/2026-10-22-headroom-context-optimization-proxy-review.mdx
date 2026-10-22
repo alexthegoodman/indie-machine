@@ -325,24 +325,48 @@ The dual-architecture transition (Phase H of their realignment) is currently in 
 
 Headroom should complete Phase H swiftly, retire the Python proxy server entirely, and distribute Headroom as a single, static standalone Rust binary for Linux, macOS, and Windows. Developers should not need Python 3.13 or `uv` to run a high-performance network proxy.
 
-## Competitor Comparison
+## Headroom vs TOON (Token-Oriented Object Notation)
 
-Here is how Headroom stacks up against alternative developer tools in the AI agent governance and optimization landscape:
+While traditional LLM utilities focus on general networking or security redaction, [TOON (Token-Oriented Object Notation)](https://toonformat.dev) attacks the exact same core inefficiency as Headroom: the massive token bloat of passing structured data to LLMs. Comparing Headroom directly with TOON highlights two distinct but complementary approaches to token optimization:
 
-| Feature / Metric | Headroom (v0.41.0) | shim-cli (v1.2.2) | LiteLLM Proxy | Promptfoo |
-|---|---|---|---|---|
-| **Primary Focus** | Context compression, token cost reduction, KV-cache stabilization | Secret/PII redaction, MCP governance, cost auditing | Multi-provider load balancing and routing | Automated LLM evaluation and red-teaming |
-| **Engine Language** | Rust (Axum 0.8 / Tokio) + Python CLI | Python (Typer, Rich) | Python (FastAPI) | TypeScript / Node.js |
-| **Compression Approach** | AST CodeCompressor, SmartCrusher (JSON), LogCompressor | None (focuses on secret redaction) | None | None |
-| **Reversibility** | Yes (CCR with hash-indexed local cache) | No (one-way redaction placeholders) | N/A | N/A |
-| **KV-Cache Defense** | Yes (live-zone isolation, deterministic tool/schema sort) | No (preserves tokens, but no sorting) | Basic caching | N/A |
-| **Subscription Safety** | Yes (auth-mode classification, zero-fingerprint mode) | Yes (selective client adapters) | No | N/A |
-| **Platform Support** | Linux, macOS, Windows | Linux, macOS (POSIX-coupled) | Linux, macOS, Windows | Linux, macOS, Windows |
-| **License** | Apache-2.0 | Apache-2.0 | MIT | MIT |
+| Dimension | Headroom (v0.41.0) | TOON (Token-Oriented Object Notation) |
+|---|---|---|
+| **Primary Domain** | Transparent context optimization proxy and agent gateway | Specialized token-efficient data serialization format |
+| **Operating Layer** | Network wire proxy (`:8787`) and client hook boundary | Application serialization codec / library layer |
+| **Integration Friction** | Zero code changes (routes existing agents via `ANTHROPIC_BASE_URL` or `headroom wrap`) | Requires code changes (encode payloads via `@toon-format/toon` in prompt templates) |
+| **Supported Content Types** | JSON (SmartCrusher), Source Code ASTs, Git Diffs, Server Logs, Prose | Structured JSON data and tabular arrays only |
+| **Token Reduction Strategy** | Type-aware live-zone pruning, AST compression, burst deduplication, schema projection | Schema-once tabular headers, quote stripping, YAML-like indentation |
+| **Reported Token Savings** | 20% to 80%+ across multi-modal agent coding sessions | 30% to 60% on uniform structured datasets |
+| **Tool Calling & Agent Compatibility** | Works transparently with off-the-shelf agents (Claude Code, Cursor, Codex, OpenHands) | Requires host agent to support TOON; cannot replace strict JSON tool-calling specs |
+| **Reversibility** | Yes: Content-Centric Retrieval (CCR) with hash-indexed local cache and retrieval tools | No: One-way prompt encoding (application must manage raw source cache) |
+| **KV-Cache Defense** | Yes: Hot-zone isolation, deterministic tool sorting, recursive schema normalization | N/A (operates on individual prompt payloads, agnostic to provider KV caches) |
+| **Subscription Safety** | Yes: Auth-mode classifier protects Claude Pro and Copilot subscription CLIs | N/A (library-level string formatting) |
+| **Ecosystem & Tooling** | Rust proxy binary, CLI daemon, Python/TypeScript SDK, Web Dashboard | TypeScript SDK (`@toon-format/toon`), CLI converter, Python/Rust/Go community ports |
+| **License** | Apache-2.0 | MIT / Open Source |
 
-- **Headroom vs [shim-cli](https://getshim.tech)**: While both operate as local workstations proxies for AI agents, they serve complementary purposes. `shim-cli` is a defensive privacy proxy that strips AWS keys, connection strings, and IBANs. `Headroom` is a structural context compressor that reduces raw token volume through AST pruning and JSON schema factoring.
-- **Headroom vs [LiteLLM](https://litellm.ai)**: LiteLLM is designed for routing across dozens of LLM APIs in production backend clusters. It does not perform AST code compression, log deduplication, or Anthropic prompt cache stabilization.
-- **Headroom vs [Promptfoo](https://promptfoo.dev)**: Promptfoo is a pre-production testing and benchmarking harness, whereas Headroom is a real-time runtime proxy operating on active agent sessions.
+### Architectural Divergence: Wire Proxy vs Data Format
+
+The fundamental difference between Headroom and TOON lies in where they intervene in the LLM pipeline:
+
+1. **TOON is an application-level serialization format**: Hosted at [toonformat.dev](https://toonformat.dev), TOON reimagines JSON specifically for language model tokenizers. Instead of repeating keys across every object in a list, TOON declares the fields once in a bracketed header (`items[3]{id,name,status}:`) and emits raw values separated by commas, shedding quotes, braces, and repetitive keys. However, TOON requires developers to modify their backend code: you must actively import the TOON SDK, transform your JSON data into TOON strings, and instruct the model how to interpret the syntax.
+2. **Headroom is a wire-level transparent proxy**: Headroom operates beneath the application. Developers using autonomous coding agents like Claude Code, Cursor, or Codex cannot easily modify the internal prompt construction code of those closed or pre-packaged tools. Headroom solves this by sitting on `localhost:8787`. When Claude Code executes `git diff` or reads a 5,000-line server log or queries a REST endpoint, Headroom intercepts the raw JSON or text on the wire, analyzes its structure in Rust, and applies the optimal compression transform on the fly without requiring any prompt engineering or code rewrites.
+
+### Format Specialization vs Multi-Modal Agent Workflows
+
+TOON excels at structured data: database queries, analytics records, and RAG chunk injection. But autonomous coding agents do not spend most of their context windows on clean JSON tables. Agents spend their tokens on:
+- **Programming Language Source Code**: Headroom's `CodeCompressor` leverages tree-sitter grammars to parse Rust, TypeScript, Python, and Go into ASTs, preserving exported types and function signatures while stripping private implementation details. TOON has no concept of code ASTs.
+- **Terminal and Server Logs**: Headroom's `LogCompressor` detects high-frequency polling bursts and folds them into repetition summaries while guaranteeing that `FATAL`, `PANIC`, and stack trace frames survive byte-for-byte.
+- **Git Diffs**: Headroom's `DiffCompressor` preserves hunk headers and modifications while collapsing distant unchanged context lines.
+
+### Lossless Insurance: TOON vs CCR
+
+A common challenge with aggressive token reduction is retrieval fidelity. If an LLM needs the exact original formatting or a stripped piece of information to perform a refactor, TOON offers no built-in fallback: the prompt contains only the compressed TOON text. 
+
+Headroom pairs its compression engines with Content-Centric Retrieval (CCR). Every compressed block is stored in a local, hash-keyed vault, and an explicit `headroom_retrieve` tool is permanently registered with the model. If the agent needs the exact uncompressed source file or original JSON payload, it issues a standard tool call and retrieves the original byte-for-byte.
+
+### The Ideal Synthesis
+
+Headroom and TOON are not mutually exclusive; they are natural partners. Headroom's JSON compression arm (`SmartCrusher`) currently projects uniform arrays into compact tabular matrices. Adopting TOON's standardized syntax (`table[N]{col1,col2}:`) as an emission target inside Headroom's Rust engine would yield even higher token compression ratios while maintaining TOON's clean readability for LLMs.
 
 ## The Verdict
 
