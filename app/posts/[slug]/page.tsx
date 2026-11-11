@@ -14,6 +14,7 @@ import { mdxComponents } from "@/components/mdx-components";
 import { ProductPanel } from "@/components/ProductPanel";
 import { ProductCard } from "@/components/ProductCard";
 import { PostRow } from "@/components/PostRow";
+import { AdSlot } from "@/components/AdSlot";
 import { averageScore, getAllPosts, getPostBySlug, getSimilarPosts } from "@/lib/posts";
 import { toListing } from "@/lib/listing";
 import { rehypeFixImagePaths } from "@/lib/rehype-fix-image-paths";
@@ -157,8 +158,8 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
           <div className="mt-6 max-w-4xl border border-accent/60 bg-accent/5 px-4 py-3 text-[13px] leading-relaxed text-ink-300">
             <span className="mr-2 text-[11px] tracking-[0.12em] text-accent">SPONSORED REVIEW</span>
             The maker paid for a{" "}
-            <Link href="/promote">priority review</Link>, which buys a faster turnaround, not a
-            better verdict. They had no control over the findings, scores or conclusions.
+            <Link href="/promote">review</Link>, which buys a guaranteed slot and a faster turnaround,
+            not a better verdict. They had no control over the findings, scores or conclusions.
           </div>
         )}
 
@@ -175,7 +176,12 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
         )}
       </div>
 
-      <article className="mx-auto max-w-4xl px-6 pb-16 md:px-24">{content}</article>
+      <div className="xl:flex xl:items-start xl:justify-center">
+        <article className="mx-auto w-full max-w-4xl min-w-0 px-6 pb-16 md:px-24 xl:mx-0">{content}</article>
+        <div className="mx-auto max-w-4xl px-6 pb-12 md:px-24 xl:sticky xl:top-8 xl:mx-0 xl:w-[260px] xl:shrink-0 xl:px-0">
+          <AdSlot placement="sidebar" seed={post.slug} layout="rail" />
+        </div>
+      </div>
 
       {similar.length > 0 && (
         <section className="border-t border-dashed border-line/25 px-6 py-10 md:px-24" aria-labelledby="similar-heading">

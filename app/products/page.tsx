@@ -52,7 +52,7 @@ export default function ProductsPage() {
             ]}
           />
           <Link href="/promote" className="text-xs tracking-[0.1em] text-ink-500 hover:text-accent">
-            SUBMIT A PRODUCT →
+            ADVERTISE →
           </Link>
         </div>
       </div>

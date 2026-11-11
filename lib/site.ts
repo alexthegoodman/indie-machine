@@ -10,7 +10,7 @@ export const SITE_DESCRIPTION =
 
 export const SITE_TITLE = "Indie Machine | Developer Tool Reviews and Rust Engineering";
 
-// Where /promote's review and priority-review mailtos go.
+// Where /promote's ad-slot and paid-review mailtos go.
 export const CONTACT_EMAIL = process.env.NEXT_PUBLIC_CONTACT_EMAIL || "alexthegoodman@gmail.com";
 
 export function absoluteUrl(path: string): string {

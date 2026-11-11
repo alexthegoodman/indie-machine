@@ -7,6 +7,7 @@ import { PostRow } from "@/components/PostRow";
 import { ProductCard } from "@/components/ProductCard";
 import { ScoreMeter } from "@/components/ScoreMeter";
 import { ChevronRight } from "@/components/icons";
+import { AdSlot } from "@/components/AdSlot";
 import { getDevPosts, getProductPosts } from "@/lib/posts";
 import { toListing } from "@/lib/listing";
 import { CATEGORIES, categoryLabel } from "@/lib/taxonomy";
@@ -127,6 +128,7 @@ export default function Home() {
             ]}
           />
         </div>
+        <AdSlot placement="home" className="mt-10" />
       </div>
 
       <SectionDivider label="BROWSE BY CATEGORY" />
@@ -285,7 +287,7 @@ export default function Home() {
         </Link>
       </div>
 
-      <SectionDivider label="SUBMISSIONS OPEN" />
+      <SectionDivider label="ADVERTISE" />
 
       <div className="px-6 pb-16 md:px-24">
         <Link
@@ -295,15 +297,15 @@ export default function Home() {
           <div>
             <div className="text-[11px] tracking-[0.14em] text-accent">// FOR MAKERS</div>
             <div className="mt-2 font-display text-2xl font-bold text-ink-100 md:text-3xl">
-              Built a developer tool? Get it reviewed.
+              Put your product in front of builders.
             </div>
             <p className="mt-2 max-w-2xl font-display text-[15px] leading-relaxed text-ink-300">
-              Source-level review, a reproducible test harness and a scorecard, with the verdict left
-              independent.
+              Monthly ad slots on the home page and beside every article, or a paid review tested
+              from source with the verdict left independent.
             </p>
           </div>
           <span className="flex shrink-0 items-center gap-2 text-sm tracking-wide text-accent group-hover:text-ink-100">
-            SUBMIT A PRODUCT <ChevronRight />
+            SEE OPTIONS <ChevronRight />
           </span>
         </Link>
       </div>
