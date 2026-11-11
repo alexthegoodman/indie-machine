@@ -161,7 +161,7 @@ export default function PromotePage() {
             PAID REVIEW · {AD_PRICES.review}
           </a>
           <span className="text-xs text-ink-500">
-            or write to <a href={`mailto:${CONTACT_EMAIL}`} className="text-purple-400!">{CONTACT_EMAIL}</a>
+            or write to <a href={`mailto:${CONTACT_EMAIL}`} className="text-yellow-400!">{CONTACT_EMAIL}</a>
           </span>
         </div>
         <div className="mt-10">
