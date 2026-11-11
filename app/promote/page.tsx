@@ -31,6 +31,8 @@ export const metadata: Metadata = {
 
 // Filled in by hand from the site's analytics. Shown as-is.
 const AUDIENCE = {
+  yearlyVisitors: 10_000,
+  monthlyGrowth: 200,
   monthlyVisitors: 0,
   monthlyPageViews: 0,
   period: "last 30 days",
@@ -53,11 +55,12 @@ const OPTIONS = [
     key: "ads",
     name: "Monthly ad slot",
     price: `from ${AD_PRICES.sidebar}`,
-    unit: "per month",
+    unit: "per month / front-and-center",
     points: [
       `${AD_PLACEMENTS.home.name}, ${AD_PRICES.home} / month: ${AD_PLACEMENTS.home.where}`,
       `${AD_PLACEMENTS.sidebar.name}, ${AD_PRICES.sidebar} / month: ${AD_PLACEMENTS.sidebar.where}`,
       "Your product name, a one-line pitch and a link, in the site's own style",
+      "Image or visual is optional, can be custom-fit",
       "One advertiser per slot per month, labelled sponsor",
     ],
     cta: "BOOK AN AD SLOT",
@@ -66,12 +69,13 @@ const OPTIONS = [
     key: "review",
     name: "Paid review",
     price: AD_PRICES.review,
-    unit: "one time",
+    unit: "one time / everlasting",
     points: [
       `Tested and published within ${REVIEW_TURNAROUND}, once I have what's needed to run it`,
+      "Comes with a genuine backlink everytime",
       "Source audit at a pinned commit, a reproducible test harness and the standard scorecard",
       "Listed in the product index and shown under similar products on related reviews",
-      "Labelled sponsored, and still balanced: the fee doesn't change the findings or score",
+      "Labelled sponsored, but serves as a long-term lead generator for your business",
     ],
     cta: "REQUEST A REVIEW",
   },
@@ -157,7 +161,7 @@ export default function PromotePage() {
             PAID REVIEW · {AD_PRICES.review}
           </a>
           <span className="text-xs text-ink-500">
-            or write to <a href={`mailto:${CONTACT_EMAIL}`}>{CONTACT_EMAIL}</a>
+            or write to <a href={`mailto:${CONTACT_EMAIL}`} className="text-purple-400!">{CONTACT_EMAIL}</a>
           </span>
         </div>
         <div className="mt-10">
@@ -177,8 +181,8 @@ export default function PromotePage() {
       <div className="px-6 md:px-24">
         <TitleBlock
           cells={[
-            // { label: `VISITORS, ${AUDIENCE.period.toUpperCase()}`, value: fmt(AUDIENCE.monthlyVisitors) },
-            // { label: `PAGE VIEWS, ${AUDIENCE.period.toUpperCase()}`, value: fmt(AUDIENCE.monthlyPageViews) },
+            { label: `ANNUAL VISITORS`, value: fmt(AUDIENCE.yearlyVisitors) + "+" },
+            { label: `MONTHLY GROWTH RATE`, value: fmt(AUDIENCE.monthlyGrowth) + "%+" },
             { label: "REVIEWS PUBLISHED", value: fmt(products.length) },
             { label: "REVIEWS, LAST 30 DAYS", value: fmt(reviewsLastMonth) },
             { label: "ARTICLES", value: fmt(articles), accent: true },
