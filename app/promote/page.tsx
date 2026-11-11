@@ -183,7 +183,7 @@ export default function PromotePage() {
           cells={[
             { label: `ANNUAL VISITORS`, value: fmt(AUDIENCE.yearlyVisitors) + "+" },
             { label: `MONTHLY GROWTH RATE`, value: fmt(AUDIENCE.monthlyGrowth) + "%+" },
-            { label: "REVIEWS PUBLISHED", value: fmt(products.length) },
+            // { label: "REVIEWS PUBLISHED", value: fmt(products.length) },
             { label: "REVIEWS, LAST 30 DAYS", value: fmt(reviewsLastMonth) },
             { label: "ARTICLES", value: fmt(articles), accent: true },
           ]}
