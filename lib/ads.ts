@@ -53,6 +53,12 @@ export const HOUSE_ADS: AdCreative[] = [
     href: "/games",
     cta: "PLAY NOW",
   },
+  {
+    name: "Nebula Kingdom",
+    tagline: "You start as a moon-sized wisp, eat planets, slay cosmic beings, and grow larger than any star.",
+    href: "/games",
+    cta: "PLAY NOW",
+  },
 ];
 
 export function activeAd(placement: AdPlacement, now = new Date()): AdBooking | undefined {
