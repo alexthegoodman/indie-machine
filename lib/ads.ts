@@ -47,12 +47,12 @@ export const HOUSE_ADS: AdCreative[] = [
     href: "/free-ai",
     cta: "GET FREE AI",
   },
-  {
-    name: "Allegiance",
-    tagline: "Found a nation and contest territory in a shared world, right in the browser.",
-    href: "/games",
-    cta: "PLAY NOW",
-  },
+  // {
+  //   name: "Allegiance",
+  //   tagline: "Found a nation and contest territory in a shared world, right in the browser.",
+  //   href: "/games",
+  //   cta: "PLAY NOW",
+  // },
   {
     name: "Nebula Kingdom",
     tagline: "You start as a moon-sized wisp, eat planets, slay cosmic beings, and grow larger than any star.",
