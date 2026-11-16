@@ -1,0 +1,54 @@
+{
+    "todo": [
+        {
+            "name": "Disc Treks",
+            "developer": "Bigtree Disc Golf"
+        },
+        {
+            "name": "Banner Age",
+            "developer": "Gustsoft"
+        },
+        {
+            "name": "Dotarix",
+            "developer": "Gracjan Niebieszczański"
+        },
+        {
+            "name": "Legacy of Legend",
+            "developer": "nedaum"
+        },
+        {
+            "name": "Celestial Decks",
+            "developer": "Celestial TCG Inc."
+        },
+        {
+            "name": "Sploink",
+            "developer": "Paths Systems"
+        },
+        {
+            "name": "Mini Legends Idle",
+            "developer": "Reysher Games"
+        }
+    ],
+    "finished": [
+        {
+            "name": "Rec Room: A New Semester",
+            "developer": "Thunderstorm Games"
+        },
+        {
+            "name": "Terminus: Day Zero",
+            "developer": "Longplay Studios"
+        },
+        {
+            "name": "Task Bar Quest",
+            "developer": "Berleus Studio"
+        },
+        {
+            "name": "Breakfast Shop Legend",
+            "developer": "kklaugh"
+        },
+        {
+            "name": "Gramps & Whiskers",
+            "developer": "Alexframe"
+        }
+    ]
+}

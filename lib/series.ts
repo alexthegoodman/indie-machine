@@ -6,6 +6,8 @@ export function seriesDescription(name: string): string {
       return "Experiments in local models and interactive worlds for Yumon Pet, with training results and implementation notes.";
     case "Product Hunt":
       return "Technical reviews of new developer tools, grounded in source code, documentation, and hands-on tests where available.";
+    case "Game Announcements":
+      return "Curated announcements, mechanics breakdowns, and impression badges for new and upcoming indie games.";
     default:
       return `Engineering posts in the ${name} series on Indie Machine.`;
   }
