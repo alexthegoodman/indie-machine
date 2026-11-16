@@ -91,20 +91,29 @@ blocks (syntax-highlighted via `rehype-pretty-code`/Shiki), tables
 `public/images/my-screenshot.png`. Always write real alt text — it's
 rendered as the visible caption under the image.
 
-The homepage's "full index" and the archive/series pages all pull their dek
-text automatically from each post's first paragraph — there's no separate
-excerpt field to keep in sync.
+Card blurbs come from the product `tagline`, else the post's first
+paragraph, and read times are computed from the body - there's no separate
+excerpt or duration field to keep in sync. The cover image (frontmatter
+`image`, else the first image in the body) is the card thumbnail and the
+reader's stage; the reader drops that same image from the opening paragraphs
+so it doesn't show twice.
 
 ## Site structure
 
+The site is an app shell (`components/shell/`): a sticky top bar with a
+search palette (Ctrl+K or `/`), a sidebar (collapsible on desktop, a drawer
+on phones), a toast and a "continue reading" dock. Saved posts, history and
+reading progress live in the browser's localStorage only (`lib/library.ts`).
+
 | Route | What it is |
 |---|---|
-| `/` | Homepage — masthead, featured post, series diagram, full index |
-| `/posts/[slug]` | A single post |
-| `/archive` | Every post, oldest to newest |
-| `/series` | List of series |
-| `/series/[series]` | Posts in one series |
-| `/about` | What this blog is |
+| `/` | Home - featured carousel, continue reading, filterable feed, leaderboard, game shelf |
+| `/posts/[slug]` | Reader - cover stage, actions, scorecard, chapters from the h2s, up-next queue with auto-advance |
+| `/products`, `/dev`, `/announcements` | Channel pages with search and filters |
+| `/series`, `/series/[series]` | Series list and one series |
+| `/archive` | Every post, newest first |
+| `/library` | Saved posts and reading history (this browser, not indexed) |
+| `/games`, `/free-ai`, `/promote`, `/about` | Landing pages |
 | `/rss.xml` | RSS feed, generated from the same post data |
 | `/llms.txt` | Plain-text guide to the site, series, and articles for AI readers |
 
@@ -118,12 +127,23 @@ new routes should pull from there rather than reading `app/posts/` directly.
 
 ## Design system
 
-The site's look (deep-navy "blueprint" sheet, grid background, corner
-registration marks, dimension-line dividers, title-block metadata tables) is
-implemented directly in `app/globals.css` and the shared components under
-`components/`. There's also a Claude Design canvas exploring this direction
-in `design/Main.dc.html` if you want to prototype visual changes before
-touching the real components.
+Dark "blueprint" look: near-black ground, grid background, cyan accent, amber
+for game badges, Space Grotesk over IBM Plex Mono, square corners and dashed
+rules. Tokens are in `app/globals.css`; the media components (cards, shelves,
+channel headers, carousel) are in `components/media/` and the reader pieces
+in `components/reader/`.
+
+## Tests
+
+`tests/media-center.feature` describes the app shell's behaviour, and
+`tests/media-center.test.mjs` runs it against a production build in the
+installed Chrome through `playwright-core`, which isn't a dependency here -
+point `PLAYWRIGHT_CORE` at any install:
+
+```bash
+npx next build && npx next start -p 3123
+BASE_URL=http://localhost:3123 PLAYWRIGHT_CORE=/path/to/node_modules/playwright-core   SCREENSHOT_DIR=/tmp/im-shots node tests/media-center.test.mjs
+```
 
 ## Scripts
 

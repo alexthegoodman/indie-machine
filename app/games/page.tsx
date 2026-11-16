@@ -1,7 +1,5 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { SiteHeader } from "@/components/SiteHeader";
-import { SiteFooter } from "@/components/SiteFooter";
 import { SectionDivider } from "@/components/SectionDivider";
 import { TitleBlock } from "@/components/TitleBlock";
 import { ChevronRight } from "@/components/icons";
@@ -56,9 +54,8 @@ const SHOTS = [
 export default function GamesPage() {
   return (
     <div className="relative z-10">
-      <SiteHeader active="games" />
 
-      <div className="px-6 pt-16 pb-8 md:px-24 md:pt-20">
+      <div className="px-6 pt-10 pb-8 lg:px-8 md:pt-12">
         <div className="text-[13px] tracking-[0.14em] text-accent">// HOMEGROWN GAMES</div>
         <h1 className="mt-3 font-display text-5xl font-bold text-ink-100 md:text-6xl">Play Games</h1>
         <p className="mt-6 max-w-2xl font-display text-base leading-relaxed text-ink-300 md:text-lg">
@@ -78,7 +75,7 @@ export default function GamesPage() {
 
       <SectionDivider label="SCREENSHOTS" />
 
-      <div className="px-6 pb-16 md:px-24">
+      <div className="px-6 pb-16 lg:px-8">
         <div className="grid gap-6 sm:grid-cols-2 lg:grid-cols-4">
           {SHOTS.map((shot) => (
             <figure key={shot.src}>
@@ -91,7 +88,7 @@ export default function GamesPage() {
 
       <SectionDivider label="NOW PLAYING" />
 
-      <div className="px-6 pb-16 md:px-24 space-y-8">
+      <div className="px-6 pb-16 lg:px-8 space-y-8">
         <div className="border border-accent/50 p-6 md:p-10">
           <div className="text-[11px] tracking-[0.14em] text-accent">// COSMIC GROWTH SIMULATOR</div>
           <h2 className="mt-2 font-display text-3xl font-bold text-ink-100 md:text-4xl">Nebula Kingdom</h2>
@@ -150,7 +147,6 @@ export default function GamesPage() {
 
       
 
-      <SiteFooter />
     </div>
   );
 }

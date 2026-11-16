@@ -218,13 +218,7 @@ export function getGamePosts(): Post[] {
   return getAllPosts().filter((p) => p.kind === "game");
 }
 
-// Mean of a post's scorecard, rounded to one decimal, or undefined if it
-// has none.
-export function averageScore(post: PostMeta): number | undefined {
-  const values = Object.values(post.scores ?? {});
-  if (!values.length) return undefined;
-  return Math.round((values.reduce((a, b) => a + b, 0) / values.length) * 10) / 10;
-}
+export { averageScore } from "./score";
 
 // Ranks other posts of the same kind by overlap with this one. Products
 // match on shared tags (plus a bump for the same category); dev posts

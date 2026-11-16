@@ -2,7 +2,7 @@ import { ChevronLeft, ChevronRight } from "./icons";
 
 export function SectionDivider({ label }: { label: string }) {
   return (
-    <div className="flex items-center gap-3 px-6 py-6 md:gap-4 md:px-24 md:py-8">
+    <div className="flex items-center gap-3 px-6 py-6 md:gap-4 lg:px-8 md:py-8">
       <ChevronLeft className="shrink-0 text-accent" />
       <div
         className="h-px flex-1 opacity-60"

@@ -37,10 +37,10 @@ export function Chip({
       type="button"
       onClick={onClick}
       aria-pressed={active}
-      className={`cursor-pointer border px-2.5 py-1.5 text-[11px] tracking-[0.08em] transition-colors ${
+      className={`h-9 shrink-0 cursor-pointer border px-3 text-[11px] tracking-[0.06em] whitespace-nowrap transition-colors ${
         active
-          ? "border-accent bg-accent/10 text-accent"
-          : "border-line/25 text-ink-400 hover:border-accent/60 hover:text-ink-100"
+          ? "border-ink-100 bg-ink-100 text-ink [&_span]:text-ink/60"
+          : "border-line/28 text-ink-300 hover:border-accent/60 hover:text-ink-100"
       }`}
     >
       {children}

@@ -1,4 +1,4 @@
-import type { ComponentProps } from "react";
+import { Children, isValidElement, type ComponentProps } from "react";
 import type { MDXComponents } from "mdx/types";
 import { MermaidBlock } from "./MermaidBlock";
 
@@ -38,8 +38,13 @@ function H3({ id, children }: ComponentProps<"h3">) {
   );
 }
 
+// Markdown wraps a lone image in a paragraph, but Img renders a <figure>,
+// which can't live inside <p> - the browser re-nests it and React reports a
+// hydration mismatch. Paragraphs holding an image render as a div instead.
 function P({ children }: ComponentProps<"p">) {
-  return <p className="mt-5 leading-relaxed text-ink-300">{children}</p>;
+  const hasImage = Children.toArray(children).some((c) => isValidElement(c) && c.type === Img);
+  const Tag = hasImage ? "div" : "p";
+  return <Tag className="mt-5 leading-relaxed text-ink-300">{children}</Tag>;
 }
 
 function Ul({ children }: ComponentProps<"ul">) {

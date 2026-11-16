@@ -1,9 +1,8 @@
 import type { Metadata } from "next";
 import { notFound } from "next/navigation";
-import { SiteHeader } from "@/components/SiteHeader";
-import { SiteFooter } from "@/components/SiteFooter";
-import { SectionDivider } from "@/components/SectionDivider";
-import { PostRow } from "@/components/PostRow";
+import { ChannelHeader, PageBody } from "@/components/media/ChannelHeader";
+import { MediaGrid } from "@/components/media/MediaCard";
+import { toMediaItem } from "@/lib/media";
 import { getAllSeries, getSeriesByName } from "@/lib/posts";
 import { SITE_NAME } from "@/lib/site";
 import { seriesDescription } from "@/lib/series";
@@ -47,32 +46,20 @@ export default async function SeriesPage({ params }: { params: Promise<{ series:
 
   if (posts.length === 0) notFound();
 
+  const items = posts.map(toMediaItem);
+  const minutes = items.reduce((sum, i) => sum + i.minutes, 0);
+
   return (
-    <div className="relative z-10">
-      <SiteHeader active="series" />
-
-      <div className="px-6 pt-16 pb-8 md:px-24 md:pt-20">
-        <div className="text-[13px] tracking-[0.14em] text-accent">// SERIES</div>
-        <h1 className="mt-3 font-display text-5xl font-bold text-ink-100 md:text-6xl">{name}</h1>
-        <p className="mt-4 max-w-xl font-display text-base text-ink-300">
-          {seriesDescription(name)} {posts.length} {posts.length === 1 ? "post" : "posts"}.
-        </p>
-      </div>
-
-      <SectionDivider label={name.toUpperCase()} />
-
-      <div className="px-6 pb-6 md:px-24">
-        {posts.map((post, i) => (
-          <PostRow
-            key={post.slug}
-            post={post}
-            figNumber={i + 1}
-            border={i === posts.length - 1 ? "both" : "top"}
-          />
-        ))}
-      </div>
-
-      <SiteFooter />
-    </div>
+    <PageBody>
+      <ChannelHeader
+        kicker={`// SERIES /series/${name}`}
+        title={name}
+        blurb={seriesDescription(name)}
+        image={posts.find((p) => p.image)?.image}
+        stats={[`${posts.length} ${posts.length === 1 ? "POST" : "POSTS"}`, `${minutes} MIN TOTAL`]}
+        accent={posts[0].kind === "game" ? "badge" : "accent"}
+      />
+      <MediaGrid items={items} className="mt-8" />
+    </PageBody>
   );
 }

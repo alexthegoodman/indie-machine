@@ -1,7 +1,5 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { SiteHeader } from "@/components/SiteHeader";
-import { SiteFooter } from "@/components/SiteFooter";
 import { SectionDivider } from "@/components/SectionDivider";
 import { TitleBlock } from "@/components/TitleBlock";
 import { ProductCard } from "@/components/ProductCard";
@@ -135,9 +133,8 @@ export default function PromotePage() {
 
   return (
     <div className="relative z-10">
-      <SiteHeader active="promote" />
 
-      <div className="px-6 pt-16 pb-10 md:px-24 md:pt-20">
+      <div className="px-6 pt-10 pb-10 lg:px-8 md:pt-12">
         <div className="text-[13px] tracking-[0.14em] text-accent">// FOR MAKERS</div>
         <h1 className="mt-3 max-w-4xl font-display text-5xl font-bold text-ink-100 md:text-6xl">
           Advertise on Indie Machine
@@ -178,7 +175,7 @@ export default function PromotePage() {
 
       <SectionDivider label="AUDIENCE" />
 
-      <div className="px-6 md:px-24">
+      <div className="px-6 lg:px-8">
         <TitleBlock
           cells={[
             { label: `ANNUAL VISITORS`, value: fmt(AUDIENCE.yearlyVisitors) + "+" },
@@ -204,7 +201,7 @@ export default function PromotePage() {
 
       <SectionDivider label="OPTIONS" />
 
-      <div id="advertise" className="scroll-mt-8 px-6 md:px-24">
+      <div id="advertise" className="scroll-mt-8 px-6 lg:px-8">
         <div className="grid gap-4 lg:grid-cols-2">
           {OPTIONS.map((option) => {
             const ads = option.key === "ads";
@@ -247,7 +244,7 @@ export default function PromotePage() {
 
       <SectionDivider label="WHY EMAIL" />
 
-      <div className="px-6 md:px-24">
+      <div className="px-6 lg:px-8">
         <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.4fr)] lg:gap-12">
           <p className="font-display text-[15px] leading-relaxed text-ink-300">
             There&apos;s no checkout here on purpose. Every ad and review is arranged by email, so I can
@@ -273,7 +270,7 @@ export default function PromotePage() {
 
       <SectionDivider label="GROUND RULES" />
 
-      <div className="px-6 md:px-24">
+      <div className="px-6 lg:px-8">
         <div className="grid gap-8 lg:grid-cols-2 lg:gap-12">
           <div>
             <div className="text-[11px] tracking-[0.14em] text-accent">HOW UNSPONSORED REVIEWS ARE PICKED</div>
@@ -303,7 +300,7 @@ export default function PromotePage() {
       {examples.length > 0 && (
         <>
           <SectionDivider label="RECENT REVIEWS" />
-          <div className="px-6 md:px-24">
+          <div className="px-6 lg:px-8">
             <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
               {examples.map((item) => (
                 <ProductCard key={item.slug} item={item} />
@@ -318,7 +315,7 @@ export default function PromotePage() {
         </>
       )}
 
-      <div className="px-6 py-16 md:px-24">
+      <div className="px-6 py-16 lg:px-8">
         <a
           href={AD_HREF}
           className="group flex flex-col gap-4 border border-accent/50 p-6 md:flex-row md:items-center md:justify-between md:p-10"
@@ -336,7 +333,6 @@ export default function PromotePage() {
         </a>
       </div>
 
-      <SiteFooter />
     </div>
   );
 }

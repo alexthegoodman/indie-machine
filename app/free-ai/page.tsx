@@ -1,7 +1,5 @@
 import type { Metadata } from "next";
 import Link from "next/link";
-import { SiteHeader } from "@/components/SiteHeader";
-import { SiteFooter } from "@/components/SiteFooter";
 import { SectionDivider } from "@/components/SectionDivider";
 import { TitleBlock } from "@/components/TitleBlock";
 import { ChevronRight } from "@/components/icons";
@@ -34,10 +32,9 @@ export const metadata: Metadata = {
 export default function FreeAiPage() {
   return (
     <div className="relative z-10">
-      <SiteHeader active="free-ai" />
 
       {/* Hero Section */}
-      <div className="px-6 pt-16 pb-10 md:px-24 md:pt-20">
+      <div className="px-6 pt-10 pb-10 lg:px-8 md:pt-12">
         <section className="flex flex-col md:flex-row">
           <div className="pr-8">
             <div className="flex items-center gap-2.5 text-[13px] tracking-[0.14em] text-accent">
@@ -114,7 +111,7 @@ export default function FreeAiPage() {
       {/* Windows SmartScreen Notice */}
       <SectionDivider label="INSTALLATION &amp; WINDOWS SMARTSCREEN" />
 
-      <div className="px-6 pb-12 md:px-24">
+      <div className="px-6 pb-12 lg:px-8">
         <div className="border border-accent/40 bg-panel/30 p-6 md:p-8">
           <div className="flex items-start gap-4">
             <div className="flex h-8 w-8 shrink-0 items-center justify-center border border-accent/60 bg-accent/10 font-bold text-accent">
@@ -159,7 +156,7 @@ export default function FreeAiPage() {
       {/* Feature Deep Dive */}
       <SectionDivider label="WHAT IS YUMON PET?" />
 
-      <div className="px-6 pb-12 md:px-24">
+      <div className="px-6 pb-12 lg:px-8">
         <div className="grid gap-6 md:grid-cols-2 lg:grid-cols-3">
           {/* Card 1 */}
           <div className="border border-line/25 bg-panel/15 p-6">
@@ -250,7 +247,7 @@ export default function FreeAiPage() {
       {/* Package Contents & Technical Specifications */}
       <SectionDivider label="RELEASE SPECIFICATIONS" />
 
-      <div className="px-6 pb-12 md:px-24">
+      <div className="px-6 pb-12 lg:px-8">
         <div className="border border-line/30 p-6 md:p-8">
           <div className="grid gap-8 lg:grid-cols-2">
             <div>
@@ -329,7 +326,7 @@ export default function FreeAiPage() {
       {/* Trust & Source Verification */}
       <SectionDivider label="VERIFY AND BUILD FROM SOURCE" />
 
-      <div className="px-6 pb-16 md:px-24">
+      <div className="px-6 pb-16 lg:px-8">
         <div className="border border-line/25 bg-panel/10 p-6 md:p-8">
           <div className="text-[11px] tracking-[0.14em] text-accent">// OPEN AUDIT &amp; SOURCE REPRODUCIBILITY</div>
           <h3 className="mt-2 font-display text-2xl font-bold text-ink-100">
@@ -366,7 +363,6 @@ export default function FreeAiPage() {
         </div>
       </div>
 
-      <SiteFooter />
     </div>
   );
 }

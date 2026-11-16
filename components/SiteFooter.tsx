@@ -3,7 +3,7 @@ import { CrosshairIcon } from "./icons";
 
 export function SiteFooter() {
   return (
-    <footer className="flex flex-col gap-6 border-t border-line/25 px-6 py-10 md:flex-row md:items-center md:justify-between md:px-24 md:py-14">
+    <footer className="flex flex-col gap-6 border-t border-line/25 mt-16 px-4 py-10 sm:px-6 md:flex-row md:items-center md:justify-between lg:px-8">
       <div>
         <div className="flex items-center gap-2.5 text-ink-100">
           <CrosshairIcon className="text-accent" />

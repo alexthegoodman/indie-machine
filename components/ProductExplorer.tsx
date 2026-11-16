@@ -4,7 +4,8 @@ import { useEffect, useMemo, useState } from "react";
 import type { Listing } from "@/lib/listing";
 import { matchesQuery, readParams, writeParams } from "@/lib/search";
 import { CATEGORIES, categoryLabel, platformLabel, PRICING } from "@/lib/taxonomy";
-import { ProductCard } from "./ProductCard";
+import type { MediaItem } from "@/lib/media";
+import { MediaGrid } from "./media/MediaCard";
 import { Chip, SearchField, SelectField } from "./FilterControls";
 
 type Sort = "newest" | "score" | "name";
@@ -21,7 +22,8 @@ function countBy(values: string[]): [string, number][] {
   return Array.from(counts.entries()).sort((a, b) => b[1] - a[1] || a[0].localeCompare(b[0]));
 }
 
-export function ProductExplorer({ items }: { items: Listing[] }) {
+export function ProductExplorer({ items, media }: { items: Listing[]; media: MediaItem[] }) {
+  const mediaBySlug = useMemo(() => new Map(media.map((m) => [m.slug, m])), [media]);
   const [query, setQuery] = useState("");
   const [category, setCategory] = useState("");
   const [tag, setTag] = useState("");
@@ -149,11 +151,10 @@ export function ProductExplorer({ items }: { items: Listing[] }) {
       </div>
 
       {results.length > 0 ? (
-        <div className="mt-5 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {results.map((item) => (
-            <ProductCard key={item.slug} item={item} />
-          ))}
-        </div>
+        <MediaGrid
+          className="mt-5"
+          items={results.map((r) => mediaBySlug.get(r.slug)).filter((m): m is MediaItem => !!m)}
+        />
       ) : (
         <div className="mt-5 border border-dashed border-line/28 p-10 text-center">
           <div className="text-[11px] tracking-[0.14em] text-ink-500">NO MATCHING PRODUCTS</div>

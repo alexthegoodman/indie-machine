@@ -1,363 +1,151 @@
 import Link from "next/link";
-import { SiteHeader } from "@/components/SiteHeader";
-import { SiteFooter } from "@/components/SiteFooter";
-import { SectionDivider } from "@/components/SectionDivider";
-import { TitleBlock } from "@/components/TitleBlock";
-import { PostRow } from "@/components/PostRow";
-import { ProductCard } from "@/components/ProductCard";
-import { ScoreMeter } from "@/components/ScoreMeter";
-import { ChevronRight } from "@/components/icons";
 import { AdSlot } from "@/components/AdSlot";
-import { BadgeList } from "@/components/GameBadge";
-import { getDevPosts, getGamePosts, getProductPosts } from "@/lib/posts";
-import { toListing } from "@/lib/listing";
-import { CATEGORIES, categoryLabel } from "@/lib/taxonomy";
+import { Billboard } from "@/components/media/Billboard";
+import { ContinueShelf, HomeFeed } from "@/components/media/HomeFeed";
+import { PageBody, ShelfHeader } from "@/components/media/ChannelHeader";
+import { Thumb } from "@/components/media/Thumb";
+import { ScoreMeter } from "@/components/ScoreMeter";
+import { getAllPosts } from "@/lib/posts";
+import { toMediaItem, type MediaItem } from "@/lib/media";
 
-const LATEST_COUNT = 6;
+const TOP_COUNT = 5;
+
+function firstWithImage(items: MediaItem[], kind: MediaItem["kind"]) {
+  return items.find((i) => i.kind === kind && i.image);
+}
 
 export default function Home() {
-  const products = getProductPosts().map(toListing);
-  const devPosts = getDevPosts();
-  const gamePosts = getGamePosts();
-  const topScored = products
-    .filter((p) => p.score !== undefined)
+  const items = getAllPosts().map(toMediaItem);
+  const featured = [
+    firstWithImage(items, "product"),
+    firstWithImage(items, "dev"),
+    firstWithImage(items, "game"),
+  ].filter((i): i is MediaItem => !!i);
+  const topScored = items
+    .filter((i) => i.kind === "product" && i.score !== undefined)
     .sort((a, b) => b.score! - a.score!)
-    .slice(0, 5);
-
-  const categoryCounts = new Map<string, number>();
-  for (const p of products) {
-    const key = p.product?.category ?? "other";
-    categoryCounts.set(key, (categoryCounts.get(key) ?? 0) + 1);
-  }
-  const categories = Object.keys(CATEGORIES).filter((k) => categoryCounts.has(k));
+    .slice(0, TOP_COUNT);
+  const games = items.filter((i) => i.kind === "game").slice(0, 10);
 
   return (
-    <div className="relative z-10">
-      <SiteHeader active="home" />
+    <PageBody className="pb-4">
+      <h1 className="sr-only">Indie Machine - developer tools tested from source, and a Rust build log</h1>
 
-      {/* masthead */}
-      <div className="px-6 pt-16 pb-10 md:px-24 md:pt-24 md:pb-14">
-        <div className="grid items-start gap-10 lg:grid-cols-[minmax(0,1.25fr)_minmax(0,1fr)] lg:gap-14">
-          <div className="min-w-0">
-            <div className="text-[13px] tracking-[0.14em] text-accent">// INDEPENDENT SOFTWARE REVIEWS</div>
-            <h1 className="mt-3 font-display text-[15vw] leading-[0.96] font-bold tracking-tight text-ink-100 sm:text-7xl md:text-8xl lg:text-[clamp(3.5rem,5vw,6.25rem)]">
-              Indie Machine
-            </h1>
-            <div className="mt-4 text-[13px] tracking-[0.2em] text-accent uppercase md:text-[15px]">
-              Developer Tools - Tested From Source
-            </div>
-            <p className="mt-6 max-w-2xl font-display text-base leading-relaxed text-ink-300 md:text-lg">
-              Hands-on reviews of new developer tools and AI agents. Each one is cloned, built and
-              tested, and the review separates what was run from what the product claims. Alongside
-              them is the build log for Entropy, a native engine written in Rust.
-            </p>
+      <Billboard items={featured} />
+      <ContinueShelf />
 
-            <div className="mt-6 flex flex-wrap items-center gap-3 text-xs">
-              <span className="border border-accent/40 bg-accent/10 px-2.5 py-1 text-[11px] font-semibold tracking-wider text-accent">
-                NEW
-              </span>
-              <span className="text-ink-300">
-                Yumon Pet v0.1.0: Free, private AI that runs on iGPU with an aquarium simulation.
-              </span>
-              <Link href="/free-ai" className="font-semibold text-accent hover:underline">
-                Get Free AI -&gt;
-              </Link>
-            </div>
-
-            <form action="/products" className="mt-8 flex max-w-xl border border-line/28 focus-within:border-accent/70">
-              <label htmlFor="home-search" className="sr-only">
-                Search products
-              </label>
-              <input
-                id="home-search"
-                type="search"
-                name="q"
-                placeholder="Search tools: mcp, worktrees, rust..."
-                className="min-w-0 flex-1 bg-transparent px-4 py-3 font-display text-base text-ink-100 placeholder:text-ink-500 focus:outline-none"
-              />
-              <button
-                type="submit"
-                className="cursor-pointer border-l border-line/28 px-4 text-[11px] tracking-[0.14em] text-accent hover:bg-accent/10"
-              >
-                SEARCH
-              </button>
-            </form>
-          </div>
-
-          {topScored.length > 0 && (
-            <div className="min-w-0 border border-line/32">
-              <div className="flex items-center justify-between border-b border-line/28 px-5 py-3 text-[11px] tracking-[0.14em]">
-                <span className="text-accent">TOP SCORED</span>
-                <Link href="/products?sort=score" className="text-ink-500 hover:text-accent">
-                  ALL -&gt;
-                </Link>
-              </div>
-              <ol>
-                {topScored.map((item, i) => (
-                  <li key={item.slug} className={i ? "border-t border-dashed border-line/22" : ""}>
-                    <Link href={`/posts/${item.slug}`} className="group flex items-center gap-4 px-5 py-4">
-                      <span className="w-6 shrink-0 font-display text-lg font-semibold text-accent">
-                        {String(i + 1).padStart(2, "0")}
-                      </span>
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-baseline justify-between gap-3">
-                          <span className="truncate font-display font-semibold text-ink-100 group-hover:text-accent">
-                            {item.product?.name ?? item.title}
-                          </span>
-                          <span className="shrink-0 text-sm text-ink-100">{item.score!.toFixed(1)}</span>
-                        </div>
-                        <div className="mt-0.5 text-[10px] tracking-[0.1em] text-ink-500">
-                          {item.product ? categoryLabel(item.product.category).toUpperCase() : ""}
-                        </div>
-                        <ScoreMeter value={item.score!} className="mt-2" />
-                      </div>
-                    </Link>
-                  </li>
-                ))}
-              </ol>
-            </div>
-          )}
-        </div>
-
-        <div className="mt-10">
-          <TitleBlock
-            cells={[
-              { label: "PRODUCTS", value: String(products.length).padStart(3, "0") },
-              { label: "CATEGORIES", value: String(categories.length).padStart(2, "0") },
-              { label: "DEV POSTS", value: String(devPosts.length).padStart(3, "0") },
-              { label: "UPDATED", value: products[0]?.date ?? "" },
-              { label: "METHOD", value: "BUILT + TESTED", accent: true },
-            ]}
-          />
-        </div>
-        <AdSlot placement="home" className="mt-10" />
+      <div className="mt-8">
+        <HomeFeed items={items} />
       </div>
 
-      <SectionDivider label="BROWSE BY CATEGORY" />
-
-      <div className="px-6 md:px-24">
-        <div className="grid gap-px border border-line/28 bg-line/28 sm:grid-cols-2 lg:grid-cols-3">
-          {categories.map((key) => (
-            <Link
-              key={key}
-              href={`/products?category=${key}`}
-              className="group flex flex-col bg-ink p-5 hover:bg-panel/40"
-            >
-              <div className="flex items-baseline justify-between gap-3">
-                <span className="font-display text-[17px] font-semibold text-ink-100 group-hover:text-accent">
-                  {CATEGORIES[key].label}
-                </span>
-                <span className="text-xs text-accent">{String(categoryCounts.get(key)).padStart(2, "0")}</span>
-              </div>
-              <p className="mt-1.5 text-xs leading-relaxed text-ink-500">{CATEGORIES[key].blurb}</p>
-            </Link>
-          ))}
-        </div>
-      </div>
-
-      <SectionDivider label="LATEST REVIEWS" />
-
-      <div className="px-6 md:px-24">
-        <div className="grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-          {products.slice(0, LATEST_COUNT).map((item, i) => (
-            <ProductCard key={item.slug} item={item} figNumber={i + 1} />
-          ))}
-        </div>
-        <div className="mt-6 flex justify-end">
-          <Link href="/products" className="flex items-center gap-2 text-sm tracking-wide text-accent">
-            ALL {products.length} PRODUCTS <ChevronRight />
-          </Link>
-        </div>
-      </div>
-
-      <SectionDivider label="FREE AI COMPANION" />
-
-      <div className="px-6 md:px-24">
-        <div className="relative overflow-hidden border border-accent/40 bg-panel/20 p-6 md:p-10">
-          <div className="grid gap-8 lg:grid-cols-[minmax(0,1.2fr)_minmax(0,1fr)] lg:items-center lg:gap-12">
-            <div>
-              <div className="flex items-center gap-2.5 text-[11px] tracking-[0.14em] text-accent">
-                <span className="inline-block h-2 w-2 rounded-full bg-accent" />
-                // FREE PRODUCT RELEASE - V0.1.0
-              </div>
-              <h2 className="mt-3 font-display text-2xl font-bold text-ink-100 sm:text-3xl md:text-4xl">
-                Free, near instant, private AI that runs on iGPU
-              </h2>
-              <p className="mt-4 font-display text-[15px] leading-relaxed text-ink-300 md:text-base">
-                Designed to be an AI pet that keeps you company when you are at your desk. Powered by our
-                Kilo Talk architecture, Yumon runs 100% locally on your machine with zero cloud costs and
-                includes an aquarium simulation with living fish and ambient tank animation.
-              </p>
-              <div className="mt-6 flex flex-wrap items-center gap-4 text-xs tracking-wider">
+      {topScored.length > 0 && (
+        <section aria-label="Top scored" className="mt-14">
+          <ShelfHeader kicker="// LEADERBOARD" title="Top scored reviews" href="/products?sort=score" linkLabel="FULL LEADERBOARD" />
+          <ol className="grid grid-cols-[repeat(auto-fill,minmax(210px,1fr))] gap-px border border-line/22 bg-line/22">
+            {topScored.map((item, i) => (
+              <li key={item.slug} className="group relative flex flex-col gap-2 bg-ink p-4 hover:bg-panel/55">
+                <div className="flex items-baseline justify-between gap-2">
+                  <span className="font-display text-[26px] font-bold text-accent">{String(i + 1).padStart(2, "0")}</span>
+                  <span className="text-[15px] text-ink-100">{item.score!.toFixed(1)}</span>
+                </div>
                 <Link
-                  href="/free-ai"
-                  className="inline-flex items-center gap-2 bg-accent px-5 py-2.5 font-display font-semibold !text-ink transition hover:bg-ink-100"
+                  href={`/posts/${item.slug}`}
+                  className="line-clamp-2 font-display text-[15px] leading-snug font-semibold text-ink-100! after:absolute after:inset-0 after:content-[''] group-hover:text-accent!"
                 >
-                  GET FREE AI <ChevronRight />
+                  {item.title.split(" Review")[0]}
                 </Link>
-                <a
-                  href="https://github.com/alexthegoodman/yumon-pet/releases/tag/v0.1.0"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="inline-flex items-center gap-2 border border-line/32 px-4 py-2.5 text-ink-100 transition hover:border-accent hover:text-accent"
-                >
-                  GITHUB RELEASE V0.1.0
-                </a>
-                <a
-                  href="https://github.com/alexthegoodman/yumon-pet"
-                  target="_blank"
-                  rel="noopener noreferrer"
-                  className="text-ink-500 hover:text-ink-300"
-                >
-                  SOURCE CODE
-                </a>
-              </div>
-
-              <div className="mt-6 border border-line/24 bg-ink/80 p-4 font-mono text-xs">
-                <div className="text-[10px] tracking-[0.14em] text-accent">// COMPANION SPECS</div>
-                <div className="mt-2 grid grid-cols-1 gap-2 text-ink-300 sm:grid-cols-2">
-                  <div><span className="text-ink-500">ENGINE:</span> Local iGPU (WGPU)</div>
-                  <div><span className="text-ink-500">SPEED:</span> Instant N-Gram Decompression</div>
-                  <div><span className="text-ink-500">HABITAT:</span> 3D Aquarium (Fish &amp; Plants)</div>
-                  <div><span className="text-ink-500">PRIVACY:</span> 100% Offline / Zero Telemetry</div>
-                </div>
-              </div>
-            </div>
-
-            <div className="relative">
-              <Link href="/free-ai" className="group block overflow-hidden border border-line/28 bg-ink">
-                <img
-                  src="/images/yumon-pet-1.png"
-                  alt="Yumon Pet desktop companion showing 3D aquarium on the left and AI chat on the right"
-                  width={867}
-                  height={509}
-                  className="w-full object-cover transition duration-300 group-hover:scale-[1.02]"
-                />
-                <div className="flex items-center justify-between border-t border-line/20 px-4 py-2.5 text-[11px] text-ink-400">
-                  <span>Yumon Portal v0.1.0 Desktop Shell</span>
-                  <span className="text-accent group-hover:underline">EXPLORE COMPANION -&gt;</span>
-                </div>
-              </Link>
-            </div>
-          </div>
-        </div>
-      </div>
-
-      <SectionDivider label="FROM THE WORKSHOP" />
-
-      <div className="px-6 md:px-24">
-        <div className="grid gap-8 lg:grid-cols-[280px_minmax(0,1fr)] lg:gap-12">
-          <div>
-            <div className="text-xs tracking-[0.14em] text-ink-500">DEV POSTS</div>
-            <h2 className="mt-2 font-display text-2xl font-bold text-ink-100">The Rust build log</h2>
-            <p className="mt-3 font-display text-[15px] leading-relaxed text-ink-300">
-              Entropy&apos;s engine, GUI, DAW and creative tools, plus Yumon Pet&apos;s model work, with
-              the commits and measurements behind each result.
-            </p>
-            <Link href="/dev" className="mt-5 inline-flex items-center gap-2 text-sm tracking-wide text-accent">
-              ALL {devPosts.length} DEV POSTS <ChevronRight />
-            </Link>
-          </div>
-          <div>
-            {devPosts.slice(0, 3).map((post, i) => (
-              <PostRow key={post.slug} post={post} figNumber={i + 1} border={i === 2 ? "both" : "top"} />
+                <ScoreMeter value={item.score!} />
+                <p className="line-clamp-2 text-[11px] leading-relaxed text-ink-400">{item.blurb}</p>
+              </li>
             ))}
-          </div>
-        </div>
-      </div>
-
-      {gamePosts.length > 0 && (
-        <>
-          <SectionDivider label="GAME ANNOUNCEMENTS" />
-
-          <div className="px-6 md:px-24">
-            <div className="flex flex-wrap items-end justify-between gap-4">
-              <div>
-                <div className="text-[11px] tracking-[0.14em] text-badge">// CURATED INDIE GAMES</div>
-                <h2 className="mt-2 font-display text-2xl font-bold text-ink-100">New games worth a look</h2>
-              </div>
-              <Link href="/announcements" className="flex items-center gap-2 text-sm tracking-wide text-accent">
-                ALL {gamePosts.length} ANNOUNCEMENTS <ChevronRight />
-              </Link>
-            </div>
-            <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
-              {gamePosts.slice(0, 3).map((post) => (
-                <Link
-                  key={post.slug}
-                  href={`/posts/${post.slug}`}
-                  className="group flex flex-col border border-line/28 hover:border-badge/60"
-                >
-                  {post.image && (
-                    <div className="aspect-[16/9] overflow-hidden border-b border-line/22 bg-panel/40">
-                      {/* eslint-disable-next-line @next/next/no-img-element */}
-                      <img src={post.image} alt="" loading="lazy" className="h-full w-full object-cover" />
-                    </div>
-                  )}
-                  <div className="flex flex-1 flex-col p-5">
-                    <div className="font-display text-lg leading-snug font-semibold text-ink-100 group-hover:text-badge">
-                      {post.title}
-                    </div>
-                    {post.badges && post.badges.length > 0 && (
-                      <BadgeList badges={post.badges} max={3} className="mt-4" />
-                    )}
-                    <time dateTime={post.date} className="mt-auto pt-4 text-[11px] text-ink-500">
-                      {post.date}
-                    </time>
-                  </div>
-                </Link>
-              ))}
-            </div>
-          </div>
-        </>
+          </ol>
+        </section>
       )}
 
-      <SectionDivider label="PLAY" />
+      {games.length > 0 && (
+        <section aria-label="Game announcements" className="mt-14">
+          <ShelfHeader
+            kicker="// CURATED INDIE GAMES"
+            title="New games worth a look"
+            href="/announcements"
+            linkLabel="ALL ANNOUNCEMENTS"
+            accent="badge"
+          />
+          <div className="shelf flex gap-4 overflow-x-auto pb-3">
+            {games.map((item) => (
+              <article key={item.slug} className="group relative flex w-[280px] shrink-0 flex-col gap-2.5">
+                <Thumb item={item} className="group-hover:border-badge/60" />
+                <Link
+                  href={`/posts/${item.slug}`}
+                  className="line-clamp-2 font-display text-[15px] leading-snug font-semibold text-ink-100! after:absolute after:inset-0 after:content-[''] group-hover:text-badge!"
+                >
+                  {item.title.split(" Announcement")[0]}
+                </Link>
+                <ul className="flex flex-wrap gap-1.5" aria-label="Impression badges">
+                  {item.badges?.slice(0, 2).map((b) => (
+                    <li
+                      key={b}
+                      className="border border-badge/60 bg-badge/10 px-1.5 py-0.5 text-[10px] font-semibold tracking-[0.06em] text-badge uppercase"
+                    >
+                      ◆ {b}
+                    </li>
+                  ))}
+                </ul>
+              </article>
+            ))}
+          </div>
+        </section>
+      )}
 
-      <div className="px-6 md:px-24">
-        <Link
-          href="/games"
-          className="group flex flex-col gap-6 border border-line/32 p-6 hover:border-accent/50 md:flex-row md:items-center md:justify-between md:p-10"
-        >
-          <div>
+      <div className="mt-14 grid gap-5 xl:grid-cols-2">
+        <section aria-label="Free AI" className="flex flex-wrap border border-accent/40 bg-panel/20">
+          <div className="flex min-w-0 flex-[999_1_300px] flex-col gap-3 p-6">
+            <div className="text-[11px] tracking-[0.14em] text-accent">// FREE PRODUCT RELEASE - V0.1.0</div>
+            <h2 className="font-display text-2xl font-bold text-ink-100">Free, near instant, private AI that runs on iGPU</h2>
+            <p className="font-display text-[15px] leading-relaxed text-ink-300">
+              Yumon Pet runs 100% locally with zero cloud costs, and includes an aquarium simulation with living
+              fish and ambient tank animation.
+            </p>
+            <div>
+              <Link
+                href="/free-ai"
+                className="inline-flex h-11 items-center bg-accent px-5 font-display text-[13px] font-semibold tracking-[0.08em] text-ink! hover:bg-ink-100"
+              >
+                GET FREE AI
+              </Link>
+            </div>
+          </div>
+          <Link href="/free-ai" tabIndex={-1} aria-hidden="true" className="block max-h-64 min-w-0 flex-[1_1_240px] overflow-hidden">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/images/yumon-pet-1.png" alt="" className="h-full w-full object-cover" />
+          </Link>
+        </section>
+
+        <section aria-label="Play games" className="flex flex-wrap border border-line/32">
+          <div className="flex min-w-0 flex-[999_1_300px] flex-col gap-3 p-6">
             <div className="text-[11px] tracking-[0.14em] text-accent">// NOW LIVE</div>
-            <div className="mt-2 font-display text-2xl font-bold text-ink-100 md:text-3xl">
-              Allegiance, our online conquest MMO
-            </div>
-            <p className="mt-2 max-w-2xl font-display text-[15px] leading-relaxed text-ink-300">
-              Found a nation and contest territory in a shared world, right in the browser. Built
-              with Babylon.js and Cloudflare Durable Objects.
+            <h2 className="font-display text-2xl font-bold text-ink-100">Allegiance, our online conquest MMO</h2>
+            <p className="font-display text-[15px] leading-relaxed text-ink-300">
+              Found a nation and contest territory in a shared world, right in the browser. Built with Babylon.js
+              and Cloudflare Durable Objects.
             </p>
+            <div>
+              <Link
+                href="/games"
+                className="inline-flex h-11 items-center border border-accent/60 px-5 text-xs tracking-[0.12em] hover:bg-accent/10"
+              >
+                PLAY GAMES
+              </Link>
+            </div>
           </div>
-          <span className="flex shrink-0 items-center gap-2 text-sm tracking-wide text-accent group-hover:text-ink-100">
-            PLAY GAMES <ChevronRight />
-          </span>
-        </Link>
+          <Link href="/games" tabIndex={-1} aria-hidden="true" className="block max-h-64 min-w-0 flex-[1_1_240px] overflow-hidden">
+            {/* eslint-disable-next-line @next/next/no-img-element */}
+            <img src="/images/allegiance-babylon-street.png" alt="" className="h-full w-full object-cover" />
+          </Link>
+        </section>
       </div>
 
-      <SectionDivider label="ADVERTISE" />
-
-      <div className="px-6 pb-16 md:px-24">
-        <Link
-          href="/promote"
-          className="group flex flex-col gap-6 border border-accent/50 p-6 md:flex-row md:items-center md:justify-between md:p-10"
-        >
-          <div>
-            <div className="text-[11px] tracking-[0.14em] text-accent">// FOR MAKERS</div>
-            <div className="mt-2 font-display text-2xl font-bold text-ink-100 md:text-3xl">
-              Put your product in front of builders.
-            </div>
-            <p className="mt-2 max-w-2xl font-display text-[15px] leading-relaxed text-ink-300">
-              Monthly ad slots on the home page and beside every article, or a paid review tested
-              from source with the verdict left independent.
-            </p>
-          </div>
-          <span className="flex shrink-0 items-center gap-2 text-sm tracking-wide text-accent group-hover:text-ink-100">
-            SEE OPTIONS <ChevronRight />
-          </span>
-        </Link>
-      </div>
-
-      <SiteFooter />
-    </div>
+      <AdSlot placement="home" className="mt-14" />
+    </PageBody>
   );
 }

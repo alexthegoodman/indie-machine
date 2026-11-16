@@ -1,6 +1,4 @@
 import type { Metadata } from "next";
-import { SiteHeader } from "@/components/SiteHeader";
-import { SiteFooter } from "@/components/SiteFooter";
 import { SectionDivider } from "@/components/SectionDivider";
 import { TitleBlock } from "@/components/TitleBlock";
 import { SITE_NAME } from "@/lib/site";
@@ -28,9 +26,8 @@ export const metadata: Metadata = {
 export default function AboutPage() {
   return (
     <div className="relative z-10">
-      <SiteHeader active="about" />
 
-      <div className="px-6 pt-16 pb-8 md:px-24 md:pt-20">
+      <div className="px-6 pt-10 pb-8 lg:px-8 md:pt-12">
         <div className="text-[13px] tracking-[0.14em] text-accent">// ABOUT THIS LOG</div>
         <h1 className="mt-3 font-display text-5xl font-bold text-ink-100 md:text-6xl">
           Rust. Native. Complex.
@@ -68,7 +65,6 @@ export default function AboutPage() {
 
       <SectionDivider label="END OF SHEET" />
 
-      <SiteFooter />
     </div>
   );
 }

@@ -1,6 +1,10 @@
 import type { Metadata } from "next";
 import { Space_Grotesk, IBM_Plex_Mono } from "next/font/google";
 import { SheetChrome } from "@/components/SheetChrome";
+import { AppShell } from "@/components/shell/AppShell";
+import { SiteFooter } from "@/components/SiteFooter";
+import { getAllPosts } from "@/lib/posts";
+import { toMediaItem } from "@/lib/media";
 import { SITE_NAME, SITE_DESCRIPTION, SITE_TITLE, SITE_URL, absoluteUrl } from "@/lib/site";
 import "./globals.css";
 
@@ -41,12 +45,16 @@ export const metadata: Metadata = {
 };
 
 export default function RootLayout({ children }: LayoutProps<"/">) {
+  // One slim record per post feeds the shell's search palette, library and
+  // continue-reading dock without a client-side fetch.
+  const items = getAllPosts().map(toMediaItem);
+
   return (
     <html
       lang="en"
       className={`${spaceGrotesk.variable} ${plexMono.variable} h-full antialiased`}
     >
-      <body className="relative min-h-full flex flex-col bg-ink font-mono text-ink-300">
+      <body className="relative min-h-full bg-ink font-mono text-ink-300">
         <script
           type="application/ld+json"
           dangerouslySetInnerHTML={{
@@ -67,7 +75,9 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
           }}
         />
         <SheetChrome />
-        {children}
+        <AppShell items={items} footer={<SiteFooter />}>
+          {children}
+        </AppShell>
         <Analytics />
       </body>
     </html>
