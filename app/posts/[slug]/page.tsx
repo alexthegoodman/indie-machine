@@ -14,6 +14,7 @@ import { mdxComponents } from "@/components/mdx-components";
 import { ProductPanel } from "@/components/ProductPanel";
 import { ProductCard } from "@/components/ProductCard";
 import { PostRow } from "@/components/PostRow";
+import { BadgeList } from "@/components/GameBadge";
 import { AdSlot } from "@/components/AdSlot";
 import { averageScore, getAllPosts, getPostBySlug, getSimilarPosts } from "@/lib/posts";
 import { toListing } from "@/lib/listing";
@@ -71,6 +72,8 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
   const next = kindIndex < sameKind.length - 1 ? sameKind[kindIndex + 1] : undefined;
   const similar = getSimilarPosts(post, 3);
   const isProduct = post.kind === "product";
+  const isGame = post.kind === "game";
+  const backHref = isProduct ? "/products" : isGame ? "/announcements" : "/dev";
   const repo = resolveRepoLink(post.repo_link);
 
   const { content } = await compileMDX({
@@ -109,10 +112,10 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
 
       <div className="px-6 pt-10 pb-8 md:px-24 md:pt-14">
         <Link
-          href={isProduct ? "/products" : "/dev"}
+          href={backHref}
           className="inline-flex items-center gap-2 text-xs tracking-[0.1em] text-ink-500 hover:text-accent"
         >
-          <ChevronLeft /> {isProduct ? "BACK TO PRODUCTS" : "BACK TO DEV POSTS"}
+          <ChevronLeft /> {isProduct ? "BACK TO PRODUCTS" : isGame ? "BACK TO ANNOUNCEMENTS" : "BACK TO DEV POSTS"}
         </Link>
 
         <div className="mt-6 flex flex-wrap items-center gap-3">
@@ -133,6 +136,13 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
         <h1 className="mt-5 max-w-3xl font-display text-3xl font-bold text-ink-100 md:text-5xl">
           {post.title}
         </h1>
+
+        {isGame && post.badges && post.badges.length > 0 && (
+          <div className="mt-6">
+            <div className="mb-2 text-[11px] tracking-[0.14em] text-badge">// OUR IMPRESSION</div>
+            <BadgeList badges={post.badges} size="lg" />
+          </div>
+        )}
 
         <div className="mt-8 flex flex-wrap items-center gap-3">
           <TitleBlock
@@ -187,10 +197,10 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
         <section className="border-t border-dashed border-line/25 px-6 py-10 md:px-24" aria-labelledby="similar-heading">
           <div className="flex items-baseline justify-between gap-4">
             <h2 id="similar-heading" className="text-xs tracking-[0.14em] text-accent">
-              {isProduct ? "SIMILAR PRODUCTS" : `MORE FROM ${(post.series ?? "THE WORKSHOP").toUpperCase()}`}
+              {isProduct ? "SIMILAR PRODUCTS" : isGame ? "MORE ANNOUNCEMENTS" : `MORE FROM ${(post.series ?? "THE WORKSHOP").toUpperCase()}`}
             </h2>
-            <Link href={isProduct ? "/products" : "/dev"} className="text-[11px] tracking-[0.1em] text-ink-500 hover:text-accent">
-              {isProduct ? "ALL PRODUCTS →" : "ALL DEV POSTS →"}
+            <Link href={backHref} className="text-[11px] tracking-[0.1em] text-ink-500 hover:text-accent">
+              {isProduct ? "ALL PRODUCTS →" : isGame ? "ALL ANNOUNCEMENTS →" : "ALL DEV POSTS →"}
             </Link>
           </div>
           {isProduct ? (

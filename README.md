@@ -50,10 +50,12 @@ whatever keys and values (strings or arrays) you put there.
 
 ### Product reviews
 
-Posts are split into two areas: **products** (`/products`) and **dev posts**
-(`/dev`). A post's area comes from `kind: product` or `kind: dev`; without
-it, the `Product Hunt` series (or any post with a `product` block) counts as
-a product and everything else as dev. URLs stay `/posts/<slug>` either way.
+Posts are split into three areas: **products** (`/products`), **game
+announcements** (`/announcements`) and **dev posts** (`/dev`). A post's area
+comes from `kind: product`, `kind: game` or `kind: dev`; without it, the
+`Product Hunt` series (or any post with a `product` block) counts as a
+product, the `Game Announcements` series as a game, and everything else as
+dev. Game announcements list their impression badges in a `badges:` array. URLs stay `/posts/<slug>` either way.
 
 Product reviews add a `product` block, which drives the product cards,
 search and filters, the spec panel at the top of the review and "similar

@@ -8,7 +8,8 @@ import { ProductCard } from "@/components/ProductCard";
 import { ScoreMeter } from "@/components/ScoreMeter";
 import { ChevronRight } from "@/components/icons";
 import { AdSlot } from "@/components/AdSlot";
-import { getDevPosts, getProductPosts } from "@/lib/posts";
+import { BadgeList } from "@/components/GameBadge";
+import { getDevPosts, getGamePosts, getProductPosts } from "@/lib/posts";
 import { toListing } from "@/lib/listing";
 import { CATEGORIES, categoryLabel } from "@/lib/taxonomy";
 
@@ -17,6 +18,7 @@ const LATEST_COUNT = 6;
 export default function Home() {
   const products = getProductPosts().map(toListing);
   const devPosts = getDevPosts();
+  const gamePosts = getGamePosts();
   const topScored = products
     .filter((p) => p.score !== undefined)
     .sort((a, b) => b.score! - a.score!)
@@ -263,6 +265,51 @@ export default function Home() {
           </div>
         </div>
       </div>
+
+      {gamePosts.length > 0 && (
+        <>
+          <SectionDivider label="GAME ANNOUNCEMENTS" />
+
+          <div className="px-6 md:px-24">
+            <div className="flex flex-wrap items-end justify-between gap-4">
+              <div>
+                <div className="text-[11px] tracking-[0.14em] text-badge">// CURATED INDIE GAMES</div>
+                <h2 className="mt-2 font-display text-2xl font-bold text-ink-100">New games worth a look</h2>
+              </div>
+              <Link href="/announcements" className="flex items-center gap-2 text-sm tracking-wide text-accent">
+                ALL {gamePosts.length} ANNOUNCEMENTS <ChevronRight />
+              </Link>
+            </div>
+            <div className="mt-6 grid gap-4 md:grid-cols-2 xl:grid-cols-3">
+              {gamePosts.slice(0, 3).map((post) => (
+                <Link
+                  key={post.slug}
+                  href={`/posts/${post.slug}`}
+                  className="group flex flex-col border border-line/28 hover:border-badge/60"
+                >
+                  {post.image && (
+                    <div className="aspect-[16/9] overflow-hidden border-b border-line/22 bg-panel/40">
+                      {/* eslint-disable-next-line @next/next/no-img-element */}
+                      <img src={post.image} alt="" loading="lazy" className="h-full w-full object-cover" />
+                    </div>
+                  )}
+                  <div className="flex flex-1 flex-col p-5">
+                    <div className="font-display text-lg leading-snug font-semibold text-ink-100 group-hover:text-badge">
+                      {post.title}
+                    </div>
+                    {post.badges && post.badges.length > 0 && (
+                      <BadgeList badges={post.badges} max={3} className="mt-4" />
+                    )}
+                    <time dateTime={post.date} className="mt-auto pt-4 text-[11px] text-ink-500">
+                      {post.date}
+                    </time>
+                  </div>
+                </Link>
+              ))}
+            </div>
+          </div>
+        </>
+      )}
 
       <SectionDivider label="PLAY" />
 

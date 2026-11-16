@@ -1,6 +1,7 @@
 import Link from "next/link";
 import type { PostSummary } from "@/lib/posts";
 import { iconForSlug } from "./icons";
+import { BadgeList } from "./GameBadge";
 import { specChips } from "./specChips";
 
 export function PostRow({
@@ -46,6 +47,7 @@ export function PostRow({
         {post.excerpt && (
           <p className="mt-2 max-w-xl text-sm leading-relaxed text-ink-400">{post.excerpt}</p>
         )}
+        {post.badges && post.badges.length > 0 && <BadgeList badges={post.badges} max={4} className="mt-3" />}
         <div className="mt-3 flex flex-wrap gap-2">
           {specChips(post).map((chip) => (
             <span

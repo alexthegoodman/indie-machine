@@ -9,8 +9,8 @@ const POSTS_DIR = path.join(process.cwd(), "app/posts");
 const FILENAME_RE = /^\d{4}-\d{2}-\d{2}-(.+)\.mdx$/;
 
 // "product" posts are reviews of other people's tools; "dev" posts are the
-// engineering log. Posts that don't set `kind` get it from their series.
-export type PostKind = "product" | "dev";
+// engineering log; "game" posts are indie game announcements. Posts that don't set `kind` get it from their series.
+export type PostKind = "product" | "dev" | "game";
 
 export type Pricing = "free" | "freemium" | "paid";
 
@@ -40,6 +40,8 @@ export type PostMeta = {
   related?: string[];
   // Set when the review was paid for or requested through /promote.
   sponsored?: boolean;
+  // Impression badges on game announcements.
+  badges?: string[];
   // Cover image for cards: frontmatter `image`, else the first image in the body.
   image?: string;
 };
@@ -52,11 +54,11 @@ export type Post = PostMeta & {
 // What an index row needs - no MDX body, so it's cheap to pass to the client.
 export type PostSummary = Pick<
   Post,
-  "slug" | "title" | "date" | "series" | "excerpt" | "crate_versions" | "image"
+  "slug" | "title" | "date" | "series" | "excerpt" | "crate_versions" | "image" | "badges"
 >;
 
 export function toSummary(post: Post): PostSummary {
-  const { slug, title, date, series, excerpt, crate_versions, image } = post;
+  const { slug, title, date, series, excerpt, crate_versions, image, badges } = post;
   return {
     slug,
     title,
@@ -65,6 +67,7 @@ export function toSummary(post: Post): PostSummary {
     excerpt,
     ...(crate_versions ? { crate_versions } : {}),
     ...(image ? { image } : {}),
+    ...(badges?.length ? { badges } : {}),
   };
 }
 
@@ -106,6 +109,7 @@ function filenameToSlug(filename: string): string {
 }
 
 const PRODUCT_SERIES = new Set(["Product Hunt"]);
+const GAME_SERIES = new Set(["Game Announcements"]);
 
 function stringList(value: unknown): string[] {
   return Array.isArray(value) ? value.map((v) => String(v).trim()).filter(Boolean) : [];
@@ -146,17 +150,20 @@ function readPost(filename: string): Post {
     title: data.title,
     date: data.date instanceof Date ? data.date.toISOString().slice(0, 10) : String(data.date),
     kind:
-      data.kind === "product" || data.kind === "dev"
+      data.kind === "product" || data.kind === "dev" || data.kind === "game"
         ? data.kind
         : PRODUCT_SERIES.has(data.series) || data.product
           ? "product"
-          : "dev",
+          : GAME_SERIES.has(data.series)
+            ? "game"
+            : "dev",
     series: data.series,
     repo_link: data.repo_link,
     crate_versions: data.crate_versions,
     product: parseProduct(data.product),
     scores: parseScores(data.scores),
     related: stringList(data.related),
+    badges: stringList(data.badges),
     sponsored: data.sponsored === true,
     content,
     excerpt: deriveExcerpt(content),
@@ -205,6 +212,10 @@ export function getProductPosts(): Post[] {
 
 export function getDevPosts(): Post[] {
   return getAllPosts().filter((p) => p.kind === "dev");
+}
+
+export function getGamePosts(): Post[] {
+  return getAllPosts().filter((p) => p.kind === "game");
 }
 
 // Mean of a post's scorecard, rounded to one decimal, or undefined if it
