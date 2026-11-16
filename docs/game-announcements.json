@@ -1,5 +1,6 @@
 {
-    "todo": [
+    "todo": [],
+    "finished": [
         {
             "name": "Disc Treks",
             "developer": "Bigtree Disc Golf"
@@ -27,9 +28,7 @@
         {
             "name": "Mini Legends Idle",
             "developer": "Reysher Games"
-        }
-    ],
-    "finished": [
+        },
         {
             "name": "Rec Room: A New Semester",
             "developer": "Thunderstorm Games"
