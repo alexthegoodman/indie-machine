@@ -15,6 +15,8 @@ export type LibraryState = {
   // Slug whose "continue reading" dock the reader closed.
   dismissed?: string;
   railCompact?: boolean;
+  // Visitor Launches bar folded down to its one-line header.
+  launchesHidden?: boolean;
   autoAdvance?: boolean;
 };
 
@@ -109,7 +111,7 @@ export function clearHistory() {
   commit({ ...state, history: [], progress: {} });
 }
 
-export function setPreference(key: "railCompact" | "autoAdvance", value: boolean) {
+export function setPreference(key: "railCompact" | "autoAdvance" | "launchesHidden", value: boolean) {
   load();
   commit({ ...state, [key]: value });
 }

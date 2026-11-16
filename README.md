@@ -145,6 +145,10 @@ npx next build && npx next start -p 3123
 BASE_URL=http://localhost:3123 PLAYWRIGHT_CORE=/path/to/node_modules/playwright-core   SCREENSHOT_DIR=/tmp/im-shots node tests/media-center.test.mjs
 ```
 
+`tests/visitor-launches.feature` / `.test.mjs` run the same way. They need
+network access (they launch example.com and a GitHub repo) and the local
+database from `.env`, and they delete their own rows before and after.
+
 ## Scripts
 
 ```bash
@@ -188,3 +192,30 @@ with allegiance-realtime), `ALLEGIANCE_REALTIME_URL` (its `wss://` URL),
 `ALLEGIANCE_ORIGINS` (comma-separated game origins; defaults to
 `https://allegiance.indie-machine.com`). Run `npm run db:migrate` against
 production after schema changes.
+
+## Visitor Launches
+
+The strip under the top bar on every page (`components/shell/LaunchBar.tsx`).
+Anyone can launch a product by pasting its URL, no account. `POST
+/api/launches` fetches the page and fills the listing from its `og:` /
+`<title>` / description / icon tags, and the listing is live when the request
+returns (usually well under a second; the fetch gives up after 8s). Visitors
+can fold the strip to one line; that choice is kept in localStorage.
+
+Checks, in `lib/launches/`: one listing per product (key is the bare host, or
+host + path on shared hosts like GitHub, Steam, app stores - see
+`SHARED_HOSTS` in `url.ts`), also checked after redirects; 3 launches per IP
+per day and 120 per hour site-wide; no IPs, local names, custom ports or link
+shorteners; the fetch refuses private, loopback and link-local addresses at
+connect time and on every redirect; the page must be HTML with a title; a
+small spam-word list; a honeypot field; POSTs from other origins get 403.
+Links are `rel="nofollow ugc"`.
+
+| Route | Does |
+| --- | --- |
+| `GET /api/launches` | Latest 40 visible launches (CDN cache 10s) |
+| `POST /api/launches` `{ url }` | Launch a product |
+| `DELETE /api/launches?id=` | Hide one (`Authorization: Bearer $LAUNCHES_ADMIN_TOKEN`); its key stays taken |
+
+Env: `LAUNCHES_ADMIN_TOKEN` (takedowns; unset means DELETE always 401s),
+`LAUNCHES_SALT` (salts the stored IP hashes; set it in production).

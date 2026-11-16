@@ -110,3 +110,26 @@ model AllegianceEvent {
   @@index([at])
   @@map("allegiance_events")
 }
+
+/// A product a visitor launched from the Visitor Launches bar. No account: the page's own
+/// metadata fills the listing. `key` is what duplicate detection runs on: the bare host
+/// ("acme.dev"), or host plus path on hosts that list many products ("github.com/a/b").
+model VisitorLaunch {
+  id          String   @id @default(cuid())
+  key         String   @unique
+  url         String
+  host        String
+  title       String
+  tagline     String?
+  imageUrl    String?
+  iconUrl     String?
+  /// SHA-256 of the submitter's IP plus a salt, only for rate limits.
+  ipHash      String
+  /// Set by hand to pull a listing without deleting it (the URL stays taken).
+  hidden      Boolean  @default(false)
+  createdAt   DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([ipHash, createdAt])
+  @@map("visitor_launches")
+}

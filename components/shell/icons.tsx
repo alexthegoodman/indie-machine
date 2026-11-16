@@ -127,3 +127,15 @@ export const ListIcon = (p: IconProps) => (
     <path d="M4 6h.01M4 12h.01M4 18h.01" />
   </Svg>
 );
+export const RocketIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M14 4c3-1 5-1 6 0 1 1 1 3 0 6l-6 6-6-6z" />
+    <path d="m8 10-3 1-2 3 4 1M14 16l-1 3-3 2-1-4" />
+    <circle cx="15.5" cy="8.5" r="1.5" />
+  </Svg>
+);
+export const PlusIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="M12 5v14M5 12h14" />
+  </Svg>
+);

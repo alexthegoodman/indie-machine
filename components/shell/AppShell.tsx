@@ -8,6 +8,7 @@ import { setPreference, useLibrary } from "@/lib/library";
 import { ShellContext, type ShellApi } from "./ShellContext";
 import { SearchPalette } from "./SearchPalette";
 import { ContinueDock } from "./ContinueDock";
+import { LaunchBar } from "./LaunchBar";
 import {
   BookmarkIcon,
   DiamondIcon,
@@ -268,6 +269,7 @@ export function AppShell({
         </aside>
 
         <main id="main" className="min-w-0 flex-1">
+          <LaunchBar />
           {children}
           {footer}
         </main>
