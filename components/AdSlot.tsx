@@ -19,6 +19,7 @@ export function AdSlot({
   const ad: AdCreative = booked ?? houseAd(seed);
   const label = booked ? "SPONSOR" : "INDIE MACHINE";
   const external = /^https?:\/\//.test(ad.href);
+  const tracking = { "data-track": "ad_click", "data-track-ad": ad.name, "data-track-placement": placement, "data-track-booked": booked ? "yes" : "no" };
 
   const body = (
     <>
@@ -45,11 +46,11 @@ export function AdSlot({
         </Link>
       </div>
       {external ? (
-        <a href={ad.href} target="_blank" rel="sponsored noopener" className={linkClass}>
+        <a href={ad.href} target="_blank" rel="sponsored noopener" className={linkClass} {...tracking}>
           {body}
         </a>
       ) : (
-        <Link href={ad.href} className={linkClass}>
+        <Link href={ad.href} className={linkClass} {...tracking}>
           {body}
         </Link>
       )}

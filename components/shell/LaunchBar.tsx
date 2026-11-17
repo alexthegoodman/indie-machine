@@ -5,6 +5,7 @@ import { setPreference, useLibrary } from "@/lib/library";
 import type { LaunchView } from "@/lib/launches/store";
 import { useShell } from "./ShellContext";
 import { ChevronRightIcon, CloseIcon, PlusIcon, RocketIcon } from "./icons";
+import { track } from "@/lib/analytics/client";
 
 // Visitor Launches: a one-row strip under the header where anyone can list their product by
 // pasting its URL. The server fills in the name, tagline and icon from the page itself.
@@ -85,6 +86,7 @@ function LaunchForm({ onLaunched, onCancel }: { onLaunched: (l: LaunchView) => v
         body: JSON.stringify({ url, website: honeypot.current?.value ?? "" }),
       });
       const data = await res.json().catch(() => null);
+      track("launch_submit", { ok: res.ok && !!data?.launch, code: data?.error?.code ?? String(res.status) });
       if (!res.ok || !data?.launch) throw new Error(data?.error?.message ?? "Launch failed. Try again.");
       onLaunched(data.launch);
     } catch (err) {

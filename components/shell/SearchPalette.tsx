@@ -8,6 +8,7 @@ import { useLibrary } from "@/lib/library";
 import { useShell } from "./ShellContext";
 import { Thumb } from "@/components/media/Thumb";
 import { SearchIcon } from "./icons";
+import { track } from "@/lib/analytics/client";
 
 const LIMIT = 8;
 
@@ -42,6 +43,14 @@ export function SearchPalette({ onClose }: { onClose: () => void }) {
     return { results: merged, total: merged.length, label: recent.length ? "RECENT & TOP SCORED" : "TOP SCORED" };
   }, [query, items, bySlug, library.history]);
 
+  // Log a query once typing settles, so "rus", "rust", "rust g" count as one search.
+  useEffect(() => {
+    const q = query.trim();
+    if (!q) return;
+    const t = setTimeout(() => track("search", { q: q.toLowerCase(), results: total }), 1200);
+    return () => clearTimeout(t);
+  }, [query, total]);
+
   useEffect(() => {
     inputRef.current?.focus();
     const prev = document.body.style.overflow;
@@ -53,6 +62,7 @@ export function SearchPalette({ onClose }: { onClose: () => void }) {
 
   const go = (item: MediaItem | undefined) => {
     if (!item) return;
+    track("search_select", { q: query.trim().toLowerCase(), slug: item.slug, rank: results.indexOf(item) + 1 });
     onClose();
     router.push(`/posts/${item.slug}`);
   };

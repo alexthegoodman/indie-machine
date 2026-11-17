@@ -2,6 +2,9 @@
 
 import { useEffect, useState } from "react";
 import { recordProgress, recordVisit } from "@/lib/library";
+import { track } from "@/lib/analytics/client";
+
+const MILESTONES = [25, 50, 75, 100];
 
 export const ARTICLE_ID = "post-body";
 
@@ -22,11 +25,19 @@ export function ReaderTracker({ slug }: { slug: string }) {
   useEffect(() => {
     recordVisit(slug);
     let frame = 0;
+    let reached = 0;
     const update = () => {
       frame = 0;
       const p = articleProgress();
       setPct(p);
       recordProgress(slug, p);
+      // Each milestone once per view; 100 means the end of the article came into view.
+      for (const m of MILESTONES) {
+        if (m > reached && p >= (m === 100 ? 99 : m)) {
+          reached = m;
+          track("read_depth", { pct: m });
+        }
+      }
     };
     const onScroll = () => {
       if (!frame) frame = requestAnimationFrame(update);

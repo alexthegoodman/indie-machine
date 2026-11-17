@@ -9,6 +9,7 @@ import { ShellContext, type ShellApi } from "./ShellContext";
 import { SearchPalette } from "./SearchPalette";
 import { ContinueDock } from "./ContinueDock";
 import { LaunchBar } from "./LaunchBar";
+import { AnalyticsTracker } from "./AnalyticsTracker";
 import {
   BookmarkIcon,
   DiamondIcon,
@@ -190,6 +191,9 @@ export function AppShell({
     return () => window.removeEventListener("keydown", onKey);
   }, []);
 
+  // The analytics dashboard is a tool, not a page of the blog: no rail, bars or dock.
+  if (pathname.startsWith("/insights")) return <>{children}</>;
+
   const toggleMenu = () => {
     if (window.matchMedia("(min-width: 1024px)").matches) setPreference("railCompact", !compact);
     else setDrawer((d) => !d);
@@ -197,6 +201,7 @@ export function AppShell({
 
   return (
     <ShellContext.Provider value={api}>
+      <AnalyticsTracker />
       <a
         href="#main"
         className="sr-only z-50 bg-accent px-4 py-2 font-semibold text-ink! focus:not-sr-only focus:fixed focus:top-2 focus:left-2"

@@ -3,6 +3,7 @@
 import { toggleSaved, useLibrary } from "@/lib/library";
 import { useShell } from "@/components/shell/ShellContext";
 import { BookmarkIcon, ShareIcon } from "@/components/shell/icons";
+import { track } from "@/lib/analytics/client";
 
 const BUTTON =
   "inline-flex h-11 cursor-pointer items-center gap-2 border border-line/28 px-3.5 text-xs tracking-[0.08em] hover:border-accent hover:bg-accent/10";
@@ -16,6 +17,7 @@ export function ReaderActions({ slug, title }: { slug: string; title: string }) 
     if (navigator.share && window.matchMedia("(hover: none)").matches) {
       try {
         await navigator.share({ title, url });
+        track("share", { slug, method: "native" });
         return;
       } catch {
         // Cancelled or unsupported: fall through to copying.
@@ -24,6 +26,7 @@ export function ReaderActions({ slug, title }: { slug: string; title: string }) 
     try {
       await navigator.clipboard.writeText(url);
       toast("Link copied");
+      track("share", { slug, method: "copy" });
     } catch {
       toast("Could not copy the link");
     }
@@ -33,7 +36,11 @@ export function ReaderActions({ slug, title }: { slug: string; title: string }) 
     <>
       <button
         type="button"
-        onClick={() => toast(toggleSaved(slug) ? "Saved to your library" : "Removed from Saved")}
+        onClick={() => {
+          const nowSaved = toggleSaved(slug);
+          track("save", { slug, saved: nowSaved });
+          toast(nowSaved ? "Saved to your library" : "Removed from Saved");
+        }}
         aria-pressed={saved}
         className={`${BUTTON} ${saved ? "text-accent" : "text-ink-100"}`}
       >

@@ -133,3 +133,43 @@ model VisitorLaunch {
   @@index([ipHash, createdAt])
   @@map("visitor_launches")
 }
+
+/// One thing a visitor did on the site: a page view, time spent on a page, a scroll milestone,
+/// an outbound click, a search. Written in batches by /api/events, read by /insights.
+/// Visitors are anonymous: `visitorId` is a random id kept in the browser's localStorage and
+/// `sessionId` one kept in sessionStorage (a new one after 30 idle minutes). No IP is stored.
+/// Session attribution (source, UTM, landing page) is copied onto every event of the session so
+/// any event can be filtered by where its visitor came from without a join.
+model AnalyticsEvent {
+  id          BigInt   @id @default(autoincrement())
+  at          DateTime @default(now())
+  /// pageview | engage | read_depth | outbound_click | search | search_select | ... (see lib/analytics/events.ts)
+  name        String
+  visitorId   String
+  sessionId   String
+  path        String
+  /// Referring host of the session ("news.ycombinator.com"), or "direct".
+  source      String
+  utmSource   String?
+  utmMedium   String?
+  utmCampaign String?
+  /// The first path of the session.
+  entryPath   String
+  country     String?
+  city        String?
+  /// desktop | mobile | tablet | other
+  device      String
+  browser     String?
+  os          String?
+  screenW     Int?
+  lang        String?
+  /// Flat event properties: { href, text } for an outbound click, { pct } for read depth, ...
+  props       Json?
+
+  @@index([at])
+  @@index([name, at])
+  @@index([sessionId, at])
+  @@index([visitorId, at])
+  @@index([path, at])
+  @@map("analytics_events")
+}

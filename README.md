@@ -4,7 +4,7 @@ Rust. Native. Complex applications. Indie Machine is a build-log blog for
 Entropy, a native engine written from scratch in Rust — its own GPU compute
 pipelines, its own immediate-mode GUI kit, its own docking system. Enjoy.
 
-Built with Next.js (App Router) and MDX. No database, no CMS — every post is
+Built with Next.js (App Router) and MDX. No CMS — every post is
 a file in the repo.
 
 ## Getting started
@@ -219,3 +219,42 @@ Links are `rel="nofollow ugc"`.
 
 Env: `LAUNCHES_ADMIN_TOKEN` (takedowns; unset means DELETE always 401s),
 `LAUNCHES_SALT` (salts the stored IP hashes; set it in production).
+
+## Analytics
+
+First-party event logging, no third-party script. Every page reports to
+`POST /api/events` (`lib/analytics/client.ts`, mounted by
+`components/shell/AnalyticsTracker.tsx`); events land in `analytics_events`
+(Prisma model `AnalyticsEvent`). Visitors are anonymous: a random visitor id
+in localStorage, a session id in sessionStorage (new after 30 idle minutes),
+no cookies, no IPs. Country and city come from Vercel's edge headers. Bots
+(by user agent) are dropped, and automated browsers send nothing unless
+`localStorage.im_analytics_test = "1"`.
+
+Recorded automatically: `pageview`, `engage` (visible, in-use time and scroll
+depth per page), `read_depth` (25/50/75/100 of a post body), `link_click`,
+`outbound_click`, `search`, `search_select`, `save`, `share`,
+`launch_submit`, `ad_click`, `web_vital`, `js_error` (full list with props in
+`lib/analytics/events.ts`). To add one: `track("name", { ...props })` from a
+client component, or put `data-track="name"` and `data-track-<prop>="..."`
+on any clickable element.
+
+`/insights` is the dashboard, behind `ANALYTICS_PASSWORD`: Overview,
+Content (engagement, read-through, searches, web vitals, script errors),
+Journeys (page before/after, common paths), Funnels, Retention (weekly
+cohorts), Breakdown (any dimension or event property, or two against each
+other), Sessions (with per-session timelines and per-visitor history) and a
+raw Events explorer with CSV export. The URL is the whole state:
+`f=dim:value` filters (`f=!dim:value` excludes, `*` is a wildcard),
+`did=` / `didnt=` keep sessions that did or never did a step (`p:/posts/*`,
+`e:outbound_click`, `e:outbound_click:host=github.com`). Signing in also
+excludes that browser from the data (toggle in the header).
+
+Env: `ANALYTICS_PASSWORD` (unset means the dashboard stays locked),
+`ANALYTICS_TIMEZONE` (default zone for day/hour buckets, e.g.
+`America/New_York`; default UTC), `ANALYTICS_DB_CONCURRENCY` (how many report
+queries run at once; default 4 in production, 1 in development, since the
+local `prisma dev` server drops connections under parallel load).
+
+Tests: `tests/analytics.feature` / `tests/analytics.test.mjs` (run against
+`next start` with `ANALYTICS_PASSWORD` set; usage at the top of the file).
