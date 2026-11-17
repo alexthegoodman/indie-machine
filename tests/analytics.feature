@@ -18,6 +18,11 @@ Feature: First-party event logging and the /insights dashboard
     And read_depth events for the post up to 100
     And every event shares one session, with source "direct" and landing page "/dev"
 
+  Scenario: Web vitals are sent once per metric per page load
+    Given a browser with test tracking allowed and a known visitor id
+    When I open "/" and click through five pages client-side, interacting on each, then leave
+    Then at most 5 web_vital events are stored, none for the same metric twice
+
   Scenario: Search queries and the dashboard itself
     Given a browser with test tracking allowed and a known visitor id
     When I open the search palette and type "zzzz-no-such-post"

@@ -62,8 +62,12 @@ async function trackedPage(viewport = { width: 1440, height: 900 }) {
   const visitor = `bddtest-browser-${Date.now().toString(36)}${vseq++}`;
   const context = await browser.newContext({ viewport, reducedMotion: "reduce" });
   await context.addInitScript((v) => {
-    localStorage.setItem("im_analytics_test", "1");
-    localStorage.setItem("im_vid", v);
+    try {
+      localStorage.setItem("im_analytics_test", "1");
+      localStorage.setItem("im_vid", v);
+    } catch {
+      // about:blank (used to leave a page) has no storage
+    }
   }, visitor);
   const page = await context.newPage();
   page.errors = [];
@@ -109,6 +113,30 @@ await scenario("Browsing the site records what the visitor did", async () => {
   assert.ok(ev.every((x) => x.source === "direct" && x.entryPath === "/dev"), "session attribution on every event");
   assert.deepEqual(page.errors, []);
   console.log(`    ${ev.length} events: ${[...new Set(ev.map((x) => x.name))].join(", ")}; link_click area "${click.props.area}"`);
+  await page.context().close();
+});
+
+await scenario("Web vitals are sent once per metric per page load", async () => {
+  const { page, visitor } = await trackedPage();
+  await page.goto(BASE_URL + "/");
+  // Client-side navigations re-render the tracker; each used to add another set of vitals observers.
+  for (const href of ["/dev", "/products", "/announcements", "/dev", "/"]) {
+    await page.locator(`a[href="${href}"]`).first().click();
+    await page.waitForURL((u) => new URL(u).pathname === href);
+    await page.mouse.click(5, 300);
+    await page.keyboard.press("End");
+    await page.waitForTimeout(400);
+  }
+  await page.goto("about:blank");
+  const ev = await waitFor(async () => {
+    const e = await eventsOf(visitor);
+    return e.filter((x) => x.name === "pageview").length >= 6 && e.some((x) => x.name === "web_vital") ? e : null;
+  }, "page views and web vitals");
+  await page.waitForTimeout(1500);
+  const vitals = (await eventsOf(visitor)).filter((x) => x.name === "web_vital").map((x) => x.props.metric);
+  console.log(`    web_vital events: ${vitals.length} (${vitals.join(", ")}) over ${ev.filter((x) => x.name === "pageview").length} page views`);
+  assert.ok(vitals.length <= 5, `${vitals.length} web_vital events`);
+  assert.equal(new Set(vitals).size, vitals.length, "no metric sent twice");
   await page.context().close();
 });
 

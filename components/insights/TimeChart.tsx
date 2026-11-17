@@ -67,7 +67,8 @@ export function TimeChart({
   const hprev = hover !== null ? prev[hover] : undefined;
 
   return (
-    <div ref={box} className="relative">
+    // Clipped: before hydration the chart renders at the default width, whatever the screen.
+    <div ref={box} className="relative overflow-hidden">
       <div className="mb-2 flex flex-wrap items-center gap-x-5 gap-y-1 text-[11px] text-ink-400">
         <span className="flex items-center gap-2">
           <svg width="18" height="4" aria-hidden>
