@@ -25,10 +25,9 @@ import {
 
 const PRIMARY = [
   { href: "/", label: "Home", short: "Home", Icon: HomeIcon },
-  { href: "/products", label: "Product Reviews", short: "Reviews", Icon: ReviewIcon },
+  { href: "/products", label: "Indie Product Database", short: "Indie Products", Icon: ReviewIcon },
+  { href: "/announcements", label: "Indie Game Database", short: "Indie Games", Icon: DiamondIcon },
   { href: "/dev", label: "Dev Log", short: "Dev Log", Icon: TerminalIcon },
-  { href: "/announcements", label: "Game Announcements", short: "Games", Icon: DiamondIcon },
-  { href: "/games", label: "Play Games", short: "Play", Icon: GamepadIcon },
   { href: "/free-ai", label: "Free AI", short: "Free AI", Icon: SparkIcon },
 ] as const;
 
@@ -68,6 +67,12 @@ function Rail({
 
   return (
     <nav aria-label="Main navigation" className="flex flex-col gap-0.5 py-3">
+      <Link href={"/games"} className="h-auto bg-yellow-500 w-[90%] mx-auto flex flex-row justify-center align-center text-black! py-2 mb-4
+                                        before:ease relative h-12 w-40 overflow-hidden border border-yellow-500 bg-yellow-500 text-white shadow-2xl transition-all before:absolute before:right-0 before:top-0 before:h-12 before:w-6 before:translate-x-12 before:rotate-6 before:bg-white before:opacity-10 before:duration-700 shadow-transparent hover:shadow-yellow-300 hover:before:-translate-x-40">
+        <GamepadIcon className="mr-2" />
+        <span className={compact ? "text-center" : ""}>{compact ? "Play" : "Play Games"}</span>
+      </Link>
+
       {PRIMARY.map(({ href, label, short, Icon }) => {
         const active = isActive(pathname, href);
         return (
