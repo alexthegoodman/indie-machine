@@ -1,26 +1,6 @@
 {
     "todo": [
         {
-            "name": "Bankster",
-            "developer": "Orion Franklin"
-        },
-        {
-            "name": "Zeppelin VR",
-            "developer": "think360.today"
-        },
-        {
-            "name": "COSH",
-            "developer": "GD Forge"
-        },
-        {
-            "name": "Hentami: Vendetta",
-            "developer": "Hentami"
-        },
-        {
-            "name": "Hungry Planet",
-            "developer": "Brick by Brick Games"
-        },
-        {
             "name": "Ballz Royale",
             "developer": "Gamingtao"
         },
@@ -46,6 +26,26 @@
         }
     ],
     "finished": [
+        {
+            "name": "Bankster",
+            "developer": "Orion Franklin"
+        },
+        {
+            "name": "Zeppelin VR",
+            "developer": "think360.today"
+        },
+        {
+            "name": "COSH",
+            "developer": "GD Forge"
+        },
+        {
+            "name": "Hentami: Vendetta",
+            "developer": "Hentami"
+        },
+        {
+            "name": "Hungry Planet",
+            "developer": "Brick by Brick Games"
+        },
         {
             "name": "The Surrogate",
             "developer": "VR Playhouse"
