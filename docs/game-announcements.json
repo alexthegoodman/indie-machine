@@ -1,6 +1,71 @@
 {
-    "todo": [],
+    "todo": [
+        {
+            "name": "Bankster",
+            "developer": "Orion Franklin"
+        },
+        {
+            "name": "Zeppelin VR",
+            "developer": "think360.today"
+        },
+        {
+            "name": "COSH",
+            "developer": "GD Forge"
+        },
+        {
+            "name": "Hentami: Vendetta",
+            "developer": "Hentami"
+        },
+        {
+            "name": "Hungry Planet",
+            "developer": "Brick by Brick Games"
+        },
+        {
+            "name": "Ballz Royale",
+            "developer": "Gamingtao"
+        },
+        {
+            "name": "Virtual Soccer Zone",
+            "developer": "Orwell VR"
+        },
+        {
+            "name": "Build a Game Universe",
+            "developer": "Walker Boys Studio, Inc."
+        },
+        {
+            "name": "Seven Sins - Academic Version",
+            "developer": "much2pro4you"
+        },
+        {
+            "name": "Moshpit",
+            "developer": "Moshpit Studios"
+        },
+        {
+            "name": "Life Goals",
+            "developer": "Single Axis"
+        }
+    ],
     "finished": [
+        {
+            "name": "The Surrogate",
+            "developer": "VR Playhouse"
+        },
+        {
+            "name": "Putty Face",
+            "developer": "the3dCrew"
+        },
+        {
+            "name": "PetriDish.pw",
+            "developer": "Petri Devs"
+        },
+        {
+            "name": "The Harvest",
+            "developer": "The Harvest VR"
+        },
+        {
+            "name": "Suspended Workshops",
+            "developer": "Suspended Reality"
+        },
         {
             "name": "Disc Treks",
             "developer": "Bigtree Disc Golf"
@@ -11,7 +76,7 @@
         },
         {
             "name": "Dotarix",
-            "developer": "Gracjan Niebieszczański"
+            "developer": "Gracjan Niebieszcza\u0144ski"
         },
         {
             "name": "Legacy of Legend",
