@@ -22,6 +22,7 @@ import { rehypeFixImagePaths } from "@/lib/rehype-fix-image-paths";
 import { rehypeDropCover } from "@/lib/rehype-drop-cover";
 import { resolveRepoLink } from "@/lib/repoLink";
 import { SITE_NAME, absoluteUrl } from "@/lib/site";
+import { SupportStrip } from "@/components/SiteFooter";
 
 const QUEUE_LENGTH = 10;
 
@@ -121,17 +122,23 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
   };
 
   return (
-    <div className="px-4 pt-5 sm:px-6 lg:px-8 lg:pt-6">
+    <div className="px-4 ">
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd).replace(/</g, "\\u003c") }}
       />
+      
       <ReaderTracker slug={post.slug} />
 
       <div className="flex flex-col gap-10 xl:flex-row xl:items-start xl:gap-8">
+        
+
         <div className="min-w-0 flex-1">
+          <SupportStrip />
+          
           {/* stage */}
-          <div className="relative mx-auto max-w-[1100px]">
+          <div className="relative mx-auto max-w-[1100px] pt-5 sm:px-6 lg:px-8 lg:pt-6">
+            
             <Thumb item={item} size="lg" className="max-h-[620px] border-line/28" />
             {score !== undefined && (
               <div className="absolute top-3.5 left-3.5 border border-accent/55 bg-ink px-3 py-2">

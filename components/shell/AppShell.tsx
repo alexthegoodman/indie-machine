@@ -22,6 +22,7 @@ import {
   SparkIcon,
   TerminalIcon,
 } from "./icons";
+import { SupportStrip } from "../SiteFooter";
 
 const PRIMARY = [
   { href: "/", label: "Home", short: "Home", Icon: HomeIcon },
