@@ -100,24 +100,24 @@ export default function Home() {
       <div className="mt-14 grid gap-5 xl:grid-cols-2">
         <section aria-label="Free AI" className="flex flex-wrap border border-accent/40 bg-panel/20">
           <div className="flex min-w-0 flex-[999_1_300px] flex-col gap-3 p-6">
-            <div className="text-[11px] tracking-[0.14em] text-accent">// FREE PRODUCT RELEASE - V0.1.0</div>
-            <h2 className="font-display text-2xl font-bold text-ink-100">Free, near instant, private AI that runs on iGPU</h2>
+            <div className="text-[11px] tracking-[0.14em] text-accent">// FREE AI · RUNS IN YOUR BROWSER</div>
+            <h2 className="font-display text-2xl font-bold text-ink-100">Chat with Yumon, right on your device</h2>
             <p className="font-display text-[15px] leading-relaxed text-ink-300">
-              Yumon Pet runs 100% locally with zero cloud costs, and includes an aquarium simulation with living
-              fish and ambient tank animation.
+              A 27M-parameter model that runs on WebGPU in your browser. No account, no server. Your threads are
+              saved in your browser and nowhere else.
             </p>
             <div>
               <Link
                 href="/free-ai"
                 className="inline-flex h-11 items-center bg-accent px-5 font-display text-[13px] font-semibold tracking-[0.08em] text-ink! hover:bg-ink-100"
               >
-                GET FREE AI
+                TRY FREE AI
               </Link>
             </div>
           </div>
           <Link href="/free-ai" tabIndex={-1} aria-hidden="true" className="block max-h-64 min-w-0 flex-[1_1_240px] overflow-hidden">
             {/* eslint-disable-next-line @next/next/no-img-element */}
-            <img src="/images/yumon-pet-1.png" alt="" className="h-full w-full object-cover" />
+            <img src="/images/free-ai-yumon-threads.png" alt="" className="h-full w-full object-cover object-left-top" />
           </Link>
         </section>
 

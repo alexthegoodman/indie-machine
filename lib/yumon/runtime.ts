@@ -1,5 +1,6 @@
-// The Hyperfield side of the post page's Yumon chat. Only lib/yumon/session.ts imports this, and
-// only by dynamic import once a reader asks for Yumon, so pages never ship it otherwise.
+// The Hyperfield side of the Yumon chats (post pages and /free-ai). Only lib/yumon/session.ts and
+// lib/yumon/threads.ts import this, and only by dynamic import once a reader asks for Yumon, so
+// pages never ship it otherwise.
 import * as hf from "hyperfield";
 import { type Memory, type Yumon, TURN_STOPS, chatPromptIds, cleanReply, fromStateDict, generate, type YumonConfig } from "./model";
 
@@ -67,21 +68,46 @@ export async function loadYumon(onProgress: (p: number) => void): Promise<Loaded
   return { yumon: { model, tokenizer, config, variant: "int4", fileBytes: bytes.byteLength }, backend: backend.name, fellBack };
 }
 
-export type Reply = { text: string; message: string; tokens: number; msPerToken: number; memories: number };
+export type Reply = { text: string; message: string; tokens: number; msPerToken: number; memories: number; stopped: boolean };
+export type ReplyOptions = { temperature?: number; topK?: number; maxTokens?: number; signal?: AbortSignal };
 
-/** One chat turn, the way examples/yumon/main.ts runs it: memory on, KV cache on, top-10 at 0.9. */
-export async function reply(yumon: Yumon, prompt: string, memories: Memory[], onText: (text: string) => void): Promise<Reply> {
+class Stopped extends Error {}
+
+/**
+ * One chat turn, the way examples/yumon/main.ts runs it: KV cache on, top-10 at 0.9 unless the
+ * options say otherwise. Aborting `signal` ends the reply after the current token and returns
+ * what Yumon had said so far (stopped: true).
+ */
+export async function reply(yumon: Yumon, prompt: string, memories: Memory[], onText: (text: string) => void, opts: ReplyOptions = {}): Promise<Reply> {
+  const { temperature = 0.9, topK = 10, maxTokens = 120, signal } = opts;
   const chat = chatPromptIds(yumon.tokenizer, prompt, memories, yumon.config.max_seq_len);
-  const out = await generate(yumon, chat.ids, {
-    maxTokens: 120,
-    temperature: 0.9,
-    topK: 10,
-    kvCache: true,
-    stop: TURN_STOPS,
-    onToken: (_ids, text) => onText(cleanReply(text)),
-  });
-  // The first step runs the whole prompt (the prefill), so it is left out of the rate.
-  const steps = out.stepTimes.length > 1 ? out.stepTimes.slice(1) : out.stepTimes;
-  const msPerToken = (steps.reduce((a, b) => a + b, 0) / Math.max(1, steps.length)) * 1000;
-  return { text: cleanReply(out.text), message: chat.message, tokens: out.ids.length, msPerToken, memories: chat.memories };
+  let raw = "";
+  let tokens = 0;
+  let stopped = false;
+  // Time between tokens, so the prefill (the first step runs the whole prompt) is left out.
+  const at: number[] = [performance.now()];
+  try {
+    const out = await generate(yumon, chat.ids, {
+      maxTokens,
+      temperature,
+      topK,
+      kvCache: true,
+      stop: TURN_STOPS,
+      onToken: (ids, text) => {
+        at.push(performance.now());
+        raw = text;
+        tokens = ids.length;
+        onText(cleanReply(text));
+        // generate has no abort option; throwing here still runs its cleanup (the KV cache).
+        if (signal?.aborted) throw new Stopped();
+      },
+    });
+    raw = out.text;
+  } catch (e) {
+    if (!(e instanceof Stopped)) throw e;
+    stopped = true;
+  }
+  const span = at.length > 2 ? at.slice(1) : at;
+  const msPerToken = (span[span.length - 1] - span[0]) / Math.max(1, span.length - 1);
+  return { text: cleanReply(raw), message: chat.message, tokens, msPerToken, memories: chat.memories, stopped };
 }

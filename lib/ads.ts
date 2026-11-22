@@ -42,10 +42,10 @@ export const AD_BOOKINGS: AdBooking[] = [];
 // Our own products, shown when a slot isn't booked.
 export const HOUSE_ADS: AdCreative[] = [
   {
-    name: "Yumon Pet",
-    tagline: "Free, private AI that runs on your iGPU, with an aquarium simulation. Nothing leaves your machine.",
+    name: "Yumon",
+    tagline: "Free, private AI that runs in your browser. No account, no server, threads saved on your device.",
     href: "/free-ai",
-    cta: "GET FREE AI",
+    cta: "TRY FREE AI",
   },
   // {
   //   name: "Allegiance",

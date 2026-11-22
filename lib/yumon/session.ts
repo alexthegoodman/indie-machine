@@ -1,6 +1,7 @@
-// One Yumon chat per browser tab. The model and the conversation live at module level, so they
-// survive client-side navigation between posts; a reload starts over. Hyperfield and the model
-// code are imported only when a reader wakes Yumon (lib/yumon/runtime.ts).
+// One Yumon model per browser tab, plus the post pages' chat. The model and that conversation live
+// at module level, so they survive client-side navigation between posts; a reload starts over.
+// /free-ai keeps its own saved threads (lib/yumon/threads.ts) on the same model. Hyperfield and
+// the model code are imported only when a reader wakes Yumon (lib/yumon/runtime.ts).
 //
 // Analytics get counts and timings only, never message text: yumon_load, yumon_message,
 // yumon_clear, yumon_open (see lib/analytics/events.ts).
@@ -17,6 +18,8 @@ export type YumonState = {
   backend?: string;
   /** No usable WebGPU adapter, so Yumon runs on the (slower) CPU backend. */
   fellBack: boolean;
+  /** Context length of the loaded checkpoint, in tokens. */
+  context?: number;
   error?: string;
   messages: Message[];
 };
@@ -32,6 +35,18 @@ let loaded: Loaded | null = null;
 let loading: Promise<Loaded | null> | null = null;
 let memories: Memory[] = [];
 let nextId = 1;
+/** One generation at a time on the shared model, whichever chat asks. */
+let modelBusy = false;
+
+export function claimModel(): boolean {
+  if (modelBusy) return false;
+  modelBusy = true;
+  return true;
+}
+
+export function releaseModel() {
+  modelBusy = false;
+}
 
 function set(patch: Partial<YumonState>) {
   state = { ...state, ...patch };
@@ -68,7 +83,7 @@ export function wakeYumon(auto = false): Promise<Loaded | null> {
       const { loadYumon } = await import("./runtime");
       const l = await loadYumon((p) => set({ progress: p }));
       loaded = l;
-      set({ status: "ready", progress: 1, backend: l.backend, fellBack: l.fellBack });
+      set({ status: "ready", progress: 1, backend: l.backend, fellBack: l.fellBack, context: l.yumon.config.max_seq_len });
       track("yumon_load", { ok: true, ms: Math.round(performance.now() - t0), backend: l.backend, fallback: l.fellBack, auto });
       try {
         localStorage.setItem(AUTO_KEY, "1");
@@ -93,7 +108,7 @@ export async function sendToYumon(text: string, source: "input" | "suggestion" =
   const prompt = text.trim();
   if (!prompt || state.status === "thinking" || state.status === "loading") return;
   const l = loaded ?? (await wakeYumon());
-  if (!l) return;
+  if (!l || !claimModel()) return;
   const you: Message = { id: nextId++, who: "you", text: prompt };
   const bot: Message = { id: nextId++, who: "yumon", text: "" };
   set({ status: "thinking", messages: [...state.messages, you, bot] });
@@ -121,6 +136,8 @@ export async function sendToYumon(text: string, source: "input" | "suggestion" =
     patchMessage(bot.id, { who: "error", text: `Could not reply: ${msg}` });
     set({ status: "ready" });
     track("yumon_message", { ok: false, turn, source, chars: prompt.length, backend: l.backend, err: msg.slice(0, 120) });
+  } finally {
+    releaseModel();
   }
 }
 
