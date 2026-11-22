@@ -12,6 +12,7 @@ import { LaunchBar } from "./LaunchBar";
 import { AnalyticsTracker } from "./AnalyticsTracker";
 import {
   BookmarkIcon,
+  CapIcon,
   DiamondIcon,
   GamepadIcon,
   HomeIcon,
@@ -30,6 +31,7 @@ const PRIMARY = [
   { href: "/announcements", label: "Indie Game Database", short: "Indie Games", Icon: DiamondIcon },
   { href: "/dev", label: "Dev Log", short: "Dev Log", Icon: TerminalIcon },
   { href: "/free-ai", label: "Free AI", short: "Free AI", Icon: SparkIcon },
+  { href: "/courses", label: "Free Courses", short: "Courses", Icon: CapIcon },
 ] as const;
 
 const SECONDARY = [

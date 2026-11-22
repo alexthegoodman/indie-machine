@@ -1,6 +1,7 @@
 import type { MetadataRoute } from "next";
 import { getAllPosts, getAllSeries } from "@/lib/posts";
 import { SITE_URL } from "@/lib/site";
+import { COURSES } from "@/lib/courses";
 
 export default function sitemap(): MetadataRoute.Sitemap {
   const posts = getAllPosts();
@@ -16,6 +17,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
     { url: `${SITE_URL}/promote`, changeFrequency: "monthly", priority: 0.4 },
     { url: `${SITE_URL}/archive`, changeFrequency: "daily", priority: 0.8 },
     { url: `${SITE_URL}/series`, changeFrequency: "weekly", priority: 0.6 },
+    { url: `${SITE_URL}/courses`, changeFrequency: "weekly", priority: 0.8 },
     { url: `${SITE_URL}/about`, changeFrequency: "monthly", priority: 0.3 },
   ];
 
@@ -32,5 +34,15 @@ export default function sitemap(): MetadataRoute.Sitemap {
     priority: 0.5,
   }));
 
-  return [...staticRoutes, ...postRoutes, ...seriesRoutes];
+  const courseRoutes: MetadataRoute.Sitemap = COURSES.flatMap((c) => [
+    { url: `${SITE_URL}/courses/${c.slug}`, lastModified: c.updated, changeFrequency: "monthly" as const, priority: 0.8 },
+    ...c.lessons.map((l) => ({
+      url: `${SITE_URL}/courses/${c.slug}/${l.slug}`,
+      lastModified: c.updated,
+      changeFrequency: "monthly" as const,
+      priority: 0.7,
+    })),
+  ]);
+
+  return [...staticRoutes, ...courseRoutes, ...postRoutes, ...seriesRoutes];
 }

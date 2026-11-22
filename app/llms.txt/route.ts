@@ -2,11 +2,18 @@ import { getAllPosts, getAllSeries, getProductPosts } from "@/lib/posts";
 import { categoryLabel } from "@/lib/taxonomy";
 import { absoluteUrl, SITE_DESCRIPTION, SITE_NAME } from "@/lib/site";
 import { seriesDescription } from "@/lib/series";
+import { COURSES } from "@/lib/courses";
 
 export function GET() {
   const series = getAllSeries()
     .map(({ name }) => `- [${name}](${absoluteUrl(`/series/${encodeURIComponent(name)}`)}): ${seriesDescription(name)}`)
     .join("\n");
+
+  const courses = COURSES.map(
+    (c) =>
+      `- [${c.title}](${absoluteUrl(`/courses/${c.slug}`)}): ${c.description}\n` +
+      c.lessons.map((l, i) => `  - [Lesson ${i + 1}: ${l.title}](${absoluteUrl(`/courses/${c.slug}/${l.slug}`)}): ${l.summary}`).join("\n"),
+  ).join("\n");
 
   const posts = getAllPosts()
     .map((post) => `- [${post.title}](${absoluteUrl(`/posts/${post.slug}`)}) (${post.date})`)
@@ -31,6 +38,7 @@ Indie Machine reviews developer tools and keeps an engineering journal. Build po
 - [About](${absoluteUrl("/about")}): Scope, editorial approach, and evidence standards.
 - [Product reviews](${absoluteUrl("/products")}): Searchable index of reviewed developer tools.
 - [Game announcements](${absoluteUrl("/announcements")}): Curated indie game announcements with impression badges.
+- [Courses](${absoluteUrl("/courses")}): Free interactive courses, slide by slide with quizzes.
 - [Dev posts](${absoluteUrl("/dev")}): Rust and native engineering build log.
 - [Advertise](${absoluteUrl("/promote")}): Advertising for makers: monthly ad slots and paid reviews.
 - [Article archive](${absoluteUrl("/archive")}): All articles, newest first.
@@ -39,6 +47,10 @@ Indie Machine reviews developer tools and keeps an engineering journal. Build po
 ## Product reviews
 
 ${products}
+
+## Courses
+
+${courses}
 
 ## Series
 

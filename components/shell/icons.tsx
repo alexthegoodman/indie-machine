@@ -94,6 +94,13 @@ export const ExternalIcon = (p: IconProps) => (
     <path d="M18 14v6H4V6h6" />
   </Svg>
 );
+export const CapIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="m2 9 10-5 10 5-10 5z" />
+    <path d="M6 11v5c0 1.5 3 3 6 3s6-1.5 6-3v-5" />
+    <path d="M22 9v6" />
+  </Svg>
+);
 export const CodeIcon = (p: IconProps) => (
   <Svg {...p}>
     <path d="m8 8-4 4 4 4M16 8l4 4-4 4" />
