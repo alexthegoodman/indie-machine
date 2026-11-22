@@ -16,6 +16,7 @@ import { ARTICLE_ID, ReaderTracker } from "@/components/reader/ReaderTracker";
 import { Chapters } from "@/components/reader/Chapters";
 import { ReaderActions } from "@/components/reader/ReaderActions";
 import { EndCard, UpNextList } from "@/components/reader/UpNext";
+import { YumonChat } from "@/components/reader/YumonChat";
 import { averageScore, getAllPosts, getSimilarPosts, type Post } from "@/lib/posts";
 import { channelOf, shortDate, toMediaItem } from "@/lib/media";
 import { rehypeFixImagePaths } from "@/lib/rehype-fix-image-paths";
@@ -130,10 +131,13 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
       
       <ReaderTracker slug={post.slug} />
 
-      <div className="flex flex-col gap-10 xl:flex-row xl:items-start xl:gap-8">
-        
+      {/* chat with Yumon (40%), then the article (60%); the chat collapses above the article below xl */}
+      <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:gap-6">
+        <aside className="mt-5 w-full shrink-0 xl:sticky xl:top-[5.25rem] xl:h-[calc(100dvh-9.5rem)] xl:w-3/10">
+          <YumonChat />
+        </aside>
 
-        <div className="min-w-0 flex-1">
+        <div className="min-w-0 flex-1 xl:w-7/10">
           <SupportStrip />
           
           {/* stage */}
@@ -243,7 +247,7 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
               </div>
             )}
 
-            <div className="mt-5 xl:hidden">
+            <div className="mt-5">
               <Chapters variant="collapsible" />
             </div>
 
@@ -252,16 +256,13 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
             </article>
 
             {queue[0] && <EndCard next={queue[0]} />}
+
+            <div className="mt-12 flex flex-col gap-6 pb-6">
+              <UpNextList items={queue} columns={2} />
+              <AdSlot placement="sidebar" seed={post.slug} />
+            </div>
           </div>
         </div>
-
-        <aside className="flex w-full shrink-0 flex-col gap-5 xl:sticky xl:top-[5.5rem] xl:max-h-[calc(100dvh-6.5rem)] xl:w-[360px] xl:overflow-y-auto xl:[scrollbar-width:thin]">
-          <div className="hidden xl:block">
-            <Chapters variant="panel" />
-          </div>
-          <UpNextList items={queue} />
-          <AdSlot placement="sidebar" seed={post.slug} layout="rail" />
-        </aside>
       </div>
     </div>
   );

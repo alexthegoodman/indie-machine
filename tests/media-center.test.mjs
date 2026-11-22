@@ -107,8 +107,10 @@ await scenario("Search palette opens with the keyboard and navigates", async () 
 await scenario("Reader shows chapters, progress and save", async () => {
   const page = await newPage();
   await page.goto(BASE_URL + "/posts/kiri-lightweight-container-runtime-docker-alternative-review");
-  const chapters = page.getByRole("region", { name: "Chapters" });
+  // Chapters sit in the article column as a collapsible list (no right-hand sidebar).
+  const chapters = page.locator("details").filter({ hasText: "CHAPTERS" });
   await chapters.waitFor();
+  await chapters.locator("summary").click();
   const count = await chapters.locator("li").count();
   assert.ok(count >= 5, `chapters listed (${count})`);
   await shot(page, "03-reader-top");

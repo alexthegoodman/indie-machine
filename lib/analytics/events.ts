@@ -14,7 +14,11 @@ export const EVENT_NAMES = {
   share: "The share button on a post: { slug, method } (native | copy).",
   launch_submit: "A Visitor Launch was submitted: { ok, code }.",
   ad_click: "A sponsor or house ad was clicked: { ad, placement, booked }.",
-  web_vital: "A Core Web Vital for the page: { metric, value, rating }.",
+  yumon_open: "The Yumon chat was expanded on a narrow screen: { status }.",
+  yumon_load: "Yumon was woken on a post: { ok, ms, backend, fallback, auto, err? } (auto = loaded without a click, after an earlier visit).",
+  yumon_message: "A message to Yumon: { ok, turn, source, chars, tokens, msPerToken, memories, backend, err? } (source = input | suggestion). No message text.",
+  yumon_clear: "The Yumon chat was cleared: { turns }.",
+  web_vital:"A Core Web Vital for the page: { metric, value, rating }.",
   js_error: "An uncaught script error: { msg, src }.",
 } as const;
 

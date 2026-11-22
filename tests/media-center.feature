@@ -27,7 +27,7 @@ Feature: Media-center app shell
 
   Scenario: Reader shows chapters, progress and save
     When I open a scored product review
-    Then the chapters panel lists the article's sections
+    Then the chapters list in the article column shows the article's sections
     When I scroll halfway through the article
     Then the reading progress bar moves past 0
     When I press SAVE

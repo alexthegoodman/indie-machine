@@ -28,7 +28,7 @@ function AutoAdvanceSwitch() {
   );
 }
 
-export function UpNextList({ items }: { items: MediaItem[] }) {
+export function UpNextList({ items, columns = 1 }: { items: MediaItem[]; columns?: 1 | 2 }) {
   if (!items.length) return null;
   return (
     <section aria-label="Up next">
@@ -36,7 +36,7 @@ export function UpNextList({ items }: { items: MediaItem[] }) {
         <h2 className="font-display text-[17px] font-semibold text-ink-100">Up next</h2>
         <AutoAdvanceSwitch />
       </div>
-      <div className="flex flex-col gap-1">
+      <div className={columns === 2 ? "grid gap-1 md:grid-cols-2" : "flex flex-col gap-1"}>
         {items.map((item) => (
           <MediaRow key={item.slug} item={item} />
         ))}

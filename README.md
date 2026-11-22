@@ -108,7 +108,7 @@ reading progress live in the browser's localStorage only (`lib/library.ts`).
 | Route | What it is |
 |---|---|
 | `/` | Home - featured carousel, continue reading, filterable feed, leaderboard, game shelf |
-| `/posts/[slug]` | Reader - cover stage, actions, scorecard, chapters from the h2s, up-next queue with auto-advance |
+| `/posts/[slug]` | Reader - Yumon chat (40%) beside the article (60%); cover stage, actions, scorecard, chapters from the h2s and the up-next queue with auto-advance, all in the article column |
 | `/products`, `/dev`, `/announcements` | Channel pages with search and filters |
 | `/series`, `/series/[series]` | Series list and one series |
 | `/archive` | Every post, newest first |
@@ -144,6 +144,9 @@ point `PLAYWRIGHT_CORE` at any install:
 npx next build && npx next start -p 3123
 BASE_URL=http://localhost:3123 PLAYWRIGHT_CORE=/path/to/node_modules/playwright-core   SCREENSHOT_DIR=/tmp/im-shots node tests/media-center.test.mjs
 ```
+
+`tests/yumon-chat.feature` / `.test.mjs` run the same way and need no database
+(events are caught in the browser).
 
 `tests/visitor-launches.feature` / `.test.mjs` run the same way. They need
 network access (they launch example.com and a GitHub repo) and the local
@@ -220,6 +223,30 @@ Links are `rel="nofollow ugc"`.
 Env: `LAUNCHES_ADMIN_TOKEN` (takedowns; unset means DELETE always 401s),
 `LAUNCHES_SALT` (salts the stored IP hashes; set it in production).
 
+## Yumon chat
+
+Post pages carry a chat with Yumon (`components/reader/YumonChat.tsx`): the
+Hyperfield port of the yumon-pet decoder (27.2M params, int4 weights, 17.1 MB)
+running in the reader's browser on WebGPU, or on the CPU backend when there is
+no adapter. Nothing downloads until the reader clicks WAKE YUMON; after that,
+the same browser loads it on later visits without a click (`im_yumon_auto`).
+The model and conversation live at module level (`lib/yumon/session.ts`), so
+they survive client-side navigation between posts.
+
+Hyperfield comes from npm (`hyperfield`). `lib/yumon/model.ts` is a port of
+`hyperfield/examples/yumon/model.ts`, which the package does not include, so
+copy changes across by hand.
+
+The weights are not in the repo. `config.json`, `tokenizer.json` and
+`model-int4.safetensors` live on Vercel Blob, one folder per checkpoint
+(`yumon/cp1-int4/`), and are never overwritten. A new checkpoint goes in a new
+folder, and `DEFAULT_MODEL_URL` in `lib/yumon/runtime.ts` moves to it.
+`NEXT_PUBLIC_YUMON_MODEL_URL` overrides the folder (for example, a local copy
+under `public/`).
+
+Usage events: `yumon_load`, `yumon_message`, `yumon_clear`, `yumon_open`
+(counts and timings only, never message text).
+
 ## Analytics
 
 First-party event logging, no third-party script. Every page reports to
@@ -234,7 +261,7 @@ no cookies, no IPs. Country and city come from Vercel's edge headers. Bots
 Recorded automatically: `pageview`, `engage` (visible, in-use time and scroll
 depth per page), `read_depth` (25/50/75/100 of a post body), `link_click`,
 `outbound_click`, `search`, `search_select`, `save`, `share`,
-`launch_submit`, `ad_click`, `web_vital`, `js_error` (full list with props in
+`launch_submit`, `ad_click`, `yumon_*`, `web_vital`, `js_error` (full list with props in
 `lib/analytics/events.ts`). To add one: `track("name", { ...props })` from a
 client component, or put `data-track="name"` and `data-track-<prop>="..."`
 on any clickable element.
