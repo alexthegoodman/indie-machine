@@ -124,7 +124,7 @@ await scenario("Wide screens show the chat left of the article and no right side
   const main = await page.locator("#main").boundingBox();
   assert.ok(c.x + c.width <= column.x, "chat is left of the article column");
   const share = c.width / (c.width + column.width);
-  assert.ok(share > 0.35 && share < 0.45, `chat share ${share.toFixed(2)}`);
+  assert.ok(share > 0.27 && share < 0.33, `chat share ${share.toFixed(2)}`);
   assert.ok(article.x >= column.x, "article body is in the column");
   assert.ok(main.x + main.width - (column.x + column.width) < 40, "the article column reaches the right edge");
   assert.equal(await page.locator('section[aria-label="Chapters"]').count(), 0, "no chapters side panel");

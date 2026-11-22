@@ -133,6 +133,18 @@ rules. Tokens are in `app/globals.css`; the media components (cards, shelves,
 channel headers, carousel) are in `components/media/` and the reader pieces
 in `components/reader/`.
 
+### Post page experience
+
+Each post opens on a procedural intro: a WebGL2 fragment shader
+(`components/experience/ProceduralCanvas.tsx`, six programs) whose program,
+palette and parameters come from the slug's hash (`lib/experience.ts`). The
+palette's accent re-themes the whole page through `--color-accent`. The body
+gets numbered display-size h2s, a lede that fills in as it's read, and up to
+four interludes (stat or pulled sentence, floating words), inserted by
+`lib/rehype-experience.ts` with no MDX changes. `ScrollFx` sets `--p` /
+`--exit` / `--read` on every `[data-scroll-p]` element; styles live in
+`app/experience.css`. Reduced motion gets one still frame and resting styles.
+
 ## Tests
 
 `tests/media-center.feature` describes the app shell's behaviour, and
@@ -145,7 +157,7 @@ npx next build && npx next start -p 3123
 BASE_URL=http://localhost:3123 PLAYWRIGHT_CORE=/path/to/node_modules/playwright-core   SCREENSHOT_DIR=/tmp/im-shots node tests/media-center.test.mjs
 ```
 
-`tests/yumon-chat.feature` / `.test.mjs` run the same way and need no database
+`tests/post-experience.feature` / `.test.mjs` and `tests/yumon-chat.feature` / `.test.mjs` run the same way and need no database
 (events are caught in the browser).
 
 `tests/visitor-launches.feature` / `.test.mjs` run the same way. They need

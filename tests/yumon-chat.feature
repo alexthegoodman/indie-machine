@@ -1,7 +1,7 @@
 Feature: Chat with Yumon on post pages
   Post pages put a chat with Yumon (the Hyperfield port of the yumon-pet decoder, int4,
-  running in the reader's browser) between the site navigation and the article: 40% chat,
-  60% article on wide screens, a collapsed bar above the article on narrow ones. Chapters
+  running in the reader's browser) between the site navigation and the article: 30% chat,
+  70% article on wide screens, a collapsed bar above the article on narrow ones. Chapters
   and Up next sit in the article column; there is no right-hand sidebar. Usage goes to
   /api/events as yumon_* events with counts and timings, never message text.
 
@@ -10,7 +10,7 @@ Feature: Chat with Yumon on post pages
 
   Scenario: Wide screens show the chat left of the article and no right sidebar
     When I open a post at 1440x900
-    Then the chat column sits left of the article at about 40% of their width
+    Then the chat column sits left of the article at about 30% of their width
     And nothing is rendered to the right of the article
     And the chapters and the up next list are inside the article column
     And no model file has been requested

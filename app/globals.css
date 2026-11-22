@@ -25,6 +25,7 @@
   --color-badge: var(--color-badge);
   --font-display: var(--font-space-grotesk);
   --font-mono: var(--font-plex-mono);
+  --font-serif: var(--font-instrument-serif);
 }
 
 html {

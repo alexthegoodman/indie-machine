@@ -3,11 +3,11 @@ import { CrosshairIcon } from "./icons";
 
 const BMC_URL = "https://www.buymeacoffee.com/alexthegoodman";
 
-export function SupportStrip() {
+export function SupportStrip({ className = "mx-4 mt-4 mb-4 sm:mx-6 lg:mx-8" }: { className?: string }) {
   return (
     <section
       aria-label="Support Indie Machine"
-      className="mx-4 mt-4 mb-4 flex flex-col gap-5 border border-line/20 bg-panel/30 px-5 py-6 sm:mx-6 sm:flex-row sm:items-center sm:justify-between sm:px-6 lg:mx-8"
+      className={`${className} flex flex-col gap-5 border border-line/20 bg-panel/30 px-5 py-6 sm:flex-row sm:items-center sm:justify-between sm:px-6`}
     >
       <div className="max-w-xl">
         <div className="text-[11px] tracking-[0.1em] text-badge">SUPPORT THE WORKBENCH</div>

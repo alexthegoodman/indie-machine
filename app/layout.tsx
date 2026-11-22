@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { Space_Grotesk, IBM_Plex_Mono } from "next/font/google";
+import { Space_Grotesk, IBM_Plex_Mono, Instrument_Serif } from "next/font/google";
 import { SheetChrome } from "@/components/SheetChrome";
 import { AppShell } from "@/components/shell/AppShell";
 import { SiteFooter } from "@/components/SiteFooter";
@@ -7,6 +7,7 @@ import { getAllPosts } from "@/lib/posts";
 import { toMediaItem } from "@/lib/media";
 import { SITE_NAME, SITE_DESCRIPTION, SITE_TITLE, SITE_URL, absoluteUrl } from "@/lib/site";
 import "./globals.css";
+import "./experience.css";
 
 import { Analytics } from "@vercel/analytics/next";
 
@@ -20,6 +21,14 @@ const plexMono = IBM_Plex_Mono({
   variable: "--font-plex-mono",
   subsets: ["latin"],
   weight: ["400", "500", "600"],
+});
+
+// Italic accent face for the post page's display type.
+const instrumentSerif = Instrument_Serif({
+  variable: "--font-instrument-serif",
+  subsets: ["latin"],
+  weight: "400",
+  style: ["normal", "italic"],
 });
 
 export const metadata: Metadata = {
@@ -52,7 +61,7 @@ export default function RootLayout({ children }: LayoutProps<"/">) {
   return (
     <html
       lang="en"
-      className={`${spaceGrotesk.variable} ${plexMono.variable} h-full antialiased`}
+      className={`${spaceGrotesk.variable} ${plexMono.variable} ${instrumentSerif.variable} h-full antialiased`}
     >
       <body className="relative min-h-full bg-ink font-mono text-ink-300">
         <script

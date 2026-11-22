@@ -24,6 +24,12 @@ import { rehypeDropCover } from "@/lib/rehype-drop-cover";
 import { resolveRepoLink } from "@/lib/repoLink";
 import { SITE_NAME, absoluteUrl } from "@/lib/site";
 import { SupportStrip } from "@/components/SiteFooter";
+import { PostIntro } from "@/components/experience/PostIntro";
+import { Marquee } from "@/components/experience/Marquee";
+import { ScrollFx } from "@/components/experience/ScrollFx";
+import { introScene, marqueeWords } from "@/lib/experience";
+import { rehypeExperience } from "@/lib/rehype-experience";
+import type { CSSProperties } from "react";
 
 const QUEUE_LENGTH = 10;
 
@@ -90,6 +96,10 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
   const queue = buildQueue(post, posts).map(toMediaItem);
   const repo = resolveRepoLink(post.repo_link);
   const isGame = post.kind === "game";
+  const scene = introScene(post);
+  // Posts are listed newest first; the intro numbers them oldest first.
+  const number = posts.length - posts.indexOf(post);
+  const kindLabel = post.kind === "product" ? "Review" : isGame ? "Game drop" : post.series ? `${post.series} · Dev log` : "Dev log";
 
   const { content } = await compileMDX({
     source: post.content,
@@ -101,6 +111,7 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
           rehypeSlug,
           rehypeFixImagePaths,
           [rehypeDropCover, { src: post.image }],
+          rehypeExperience,
           [rehypePrettyCode, { theme: "poimandres" }],
         ],
       },
@@ -123,38 +134,44 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
   };
 
   return (
-    <div className="px-4 ">
+    // The post's palette re-themes the whole page, chat included, through the accent token.
+    <div className="px-4" style={{ "--color-accent": scene.palette.accent } as CSSProperties}>
       <script
         type="application/ld+json"
         dangerouslySetInnerHTML={{ __html: JSON.stringify(jsonLd).replace(/</g, "\\u003c") }}
       />
-      
-      <ReaderTracker slug={post.slug} />
 
-      {/* chat with Yumon (40%), then the article (60%); the chat collapses above the article below xl */}
+      <ReaderTracker slug={post.slug} />
+      <ScrollFx slug={post.slug} />
+
+      {/* chat with Yumon (30%), then the article (70%); the chat collapses above the article below xl */}
       <div className="flex flex-col gap-5 xl:flex-row xl:items-start xl:gap-6">
         <aside className="mt-5 w-full shrink-0 xl:sticky xl:top-[5.25rem] xl:h-[calc(100dvh-9.5rem)] xl:w-3/10">
           <YumonChat />
         </aside>
 
-        <div className="min-w-0 flex-1 xl:w-7/10">
-          <SupportStrip />
-          
-          {/* stage */}
-          <div className="relative mx-auto max-w-[1100px] pt-5 sm:px-6 lg:px-8 lg:pt-6">
-            
-            <Thumb item={item} size="lg" className="max-h-[620px] border-line/28" />
-            {score !== undefined && (
-              <div className="absolute top-3.5 left-3.5 border border-accent/55 bg-ink px-3 py-2">
-                <div className="text-[9px] tracking-[0.16em] text-ink-400">SCORE</div>
-                <div className="font-display text-[26px] leading-none font-bold text-accent">{score.toFixed(1)}</div>
-              </div>
-            )}
-          </div>
+        <div className="@container min-w-0 flex-1 xl:w-7/10">
+          <PostIntro
+            title={post.title}
+            label={kindLabel}
+            number={number}
+            date={post.date}
+            dateLabel={shortDate(post.date)}
+            minutes={item.minutes}
+            score={score}
+            scene={scene}
+          />
+
+          <Marquee words={marqueeWords(post)} />
+
+          {/* cover, opening out as it scrolls in */}
+          {post.image && (
+            <div data-scroll-p className="exp-cover relative mx-auto max-w-[1100px]">
+              <Thumb item={item} size="lg" className="max-h-[620px] border-line/28" />
+            </div>
+          )}
 
           <div className="mx-auto max-w-[1100px]">
-            <h1 className="mt-5 font-display text-2xl leading-tight font-bold text-ink-100 md:text-[28px]">{post.title}</h1>
-
             {isGame && post.badges && post.badges.length > 0 && (
               <BadgeList badges={post.badges} size="lg" className="mt-4" />
             )}
@@ -247,11 +264,13 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
               </div>
             )}
 
+            <SupportStrip className="mt-5" />
+
             <div className="mt-5">
               <Chapters variant="collapsible" />
             </div>
 
-            <article id={ARTICLE_ID} className="mt-8 max-w-[780px] min-w-0 break-words">
+            <article id={ARTICLE_ID} className="exp-article mt-16 max-w-[780px] min-w-0 break-words">
               {content}
             </article>
 
