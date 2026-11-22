@@ -153,6 +153,7 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
         <div className="@container min-w-0 flex-1 xl:w-7/10">
           <PostIntro
             title={post.title}
+            item={item}
             label={kindLabel}
             number={number}
             date={post.date}
@@ -164,12 +165,12 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
 
           <Marquee words={marqueeWords(post)} />
 
-          {/* cover, opening out as it scrolls in */}
-          {post.image && (
+          {/* cover, opening out as it scrolls in - shows in PostIntro ProceduralCanvas now as intended */}
+          {/* {post.image && (
             <div data-scroll-p className="exp-cover relative mx-auto max-w-[1100px]">
               <Thumb item={item} size="lg" className="max-h-[620px] border-line/28" />
             </div>
-          )}
+          )} */}
 
           <div className="mx-auto max-w-[1100px]">
             {isGame && post.badges && post.badges.length > 0 && (

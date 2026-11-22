@@ -22,6 +22,7 @@ function Words({ text, from, seed }: { text: string; from: number; seed: number 
 // a staggered reveal, and the post's index, kind and reading time. The title
 // words drift apart at different rates as the intro scrolls away (--exit).
 export function PostIntro({
+  item,
   title,
   label,
   number,
@@ -31,6 +32,7 @@ export function PostIntro({
   score,
   scene,
 }: {
+  item: any;
   title: string;
   label: string;
   number: number;
@@ -55,6 +57,13 @@ export function PostIntro({
       } as CSSProperties}
     >
       <div className="exp-intro-stage absolute inset-0 -z-10">
+        {item.image ? <>
+        <img
+          src={item.image}
+          alt=""
+          loading="lazy"
+          className="h-full w-full object-cover object-top transition-transform duration-300 group-hover:scale-[1.04]"
+        /></> : <></>}
         <ProceduralCanvas scene={scene} />
       </div>
       <div className="exp-intro-shade pointer-events-none absolute inset-0 -z-10" />

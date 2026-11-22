@@ -307,7 +307,7 @@ export function ProceduralCanvas({ scene }: { scene: IntroScene }) {
       ref={ref}
       aria-hidden="true"
       data-program={scene.program}
-      className="exp-canvas absolute inset-0 h-full w-full"
+      className="exp-canvas absolute inset-0 h-full w-full opacity-20!"
     />
   );
 }
