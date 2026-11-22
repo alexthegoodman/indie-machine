@@ -162,7 +162,7 @@ function Aside({ children, ...props }: ComponentProps<"aside">) {
             <span key={i}>
               <span
                 className={`exp-float ${style}`}
-                style={{ "--depth": Math.round((next() - 0.5) * 2 * 70), "--rot": Math.round((next() - 0.5) * 8) } as CSSProperties}
+                style={{ "--depth": Math.round((next() - 0.5) * 2 * 20), "--rot": Math.round((next() - 0.5) * 8) } as CSSProperties}
               >
                 {w}
               </span>{" "}
