@@ -22,7 +22,7 @@ export function CodeCompare({ children }: { children: React.ReactNode }) {
 
 /**
  * Lines of a lib/courses file between a line starting with `from` and the first later line equal
- * to `to`, so a code slide shows the exact source the page runs. Scoped to lib/courses so file
+ * to `to`, so a code step shows the exact source the page runs. Scoped to lib/courses so file
  * tracing doesn't pull in the whole project.
  */
 export function courseSnippet(file: string, from: string, to = "}"): string {

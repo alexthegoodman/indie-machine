@@ -69,7 +69,7 @@ export function LiveNgram({ showScale = false, initial = "the cat sat on the mat
       label="LIVE N-GRAMMER (HYPERFIELD, IN THIS PAGE)"
       caption={
         <>
-          This is the exact function from the code slide, running in your browser: width 8, 2 heads, K = 4, fixed weights. A word&apos;s vector comes from its
+          This is the exact function from the code step above, running in your browser: width 8, 2 heads, K = 4, fixed weights. A word&apos;s vector comes from its
           letters, so a repeated word gets the same ids. Rows marked ↺ were already read earlier in the sentence - the same bigram, the same memory.
         </>
       }

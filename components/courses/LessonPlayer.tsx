@@ -1,19 +1,22 @@
 "use client";
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useState, type ReactNode } from "react";
 import { markDone, saveSlide, useCourseProgress } from "@/lib/courses/progress";
-import { ChevronLeftIcon, ChevronRightIcon } from "@/components/shell/icons";
 
 export interface PlayerSlide {
   id: string;
   title: string;
-  quizAnswer?: number; // set on quiz slides
+  quizAnswer?: number; // set on quiz steps
   body: ReactNode;
 }
 
-// Slide-by-slide lesson. Every slide is in the server HTML (crawlable, readable without JS);
-// only the current one is shown. Arrow keys and the segment bar move between them, the hash
-// (#s-<id>) deep-links one, and reaching the last slide marks the lesson done.
+// The line (as a fraction of the viewport height) a step's top must cross to become current.
+const FOCUS_LINE = 0.42;
+
+// A lesson as one vertical sequence of steps. Everything is in the server HTML and readable top
+// to bottom; once hydrated, the step under the focus line is current and the others dim (hover
+// or focus restores them). The sticky rail jumps between steps, the hash (#s-<id>) deep-links
+// one, and reaching the last step marks the lesson done.
 export function LessonPlayer({
   course,
   lesson,
@@ -28,130 +31,151 @@ export function LessonPlayer({
   const key = `${course}/${lesson}`;
   const progress = useCourseProgress();
   const [index, setIndex] = useState(0);
-  const top = useRef<HTMLDivElement>(null);
+  const [ready, setReady] = useState(false);
+  const [resume, setResume] = useState<number | null>(null);
   const last = slides.length - 1;
 
-  // Start at the hash's slide, else where this browser left off; follow later #s-<id> links.
+  const scrollTo = useCallback(
+    (i: number) => {
+      const s = slides[Math.max(0, Math.min(last, i))];
+      document.getElementById(`s-${s.id}`)?.scrollIntoView({ behavior: "smooth", block: "start" });
+      window.history.replaceState(null, "", `#s-${s.id}`);
+    },
+    [last, slides],
+  );
+
+  // Without a hash, offer to jump back to where this browser left off (no surprise scrolling).
   useEffect(() => {
-    const fromHash = () => slides.findIndex((s) => `#s-${s.id}` === window.location.hash);
+    setReady(true);
     const saved = progress.slide[key];
-    if (fromHash() >= 0) setIndex(fromHash());
-    else if (saved && saved <= last) setIndex(saved);
-    const onHash = () => {
-      if (fromHash() >= 0) setIndex(fromHash());
-    };
-    window.addEventListener("hashchange", onHash);
-    return () => window.removeEventListener("hashchange", onHash);
+    if (!window.location.hash && saved && saved > 0 && saved <= last) setResume(saved);
     // Only on mount: later progress changes come from this player itself.
   }, []);
 
-  const go = useCallback(
-    (next: number, scroll = true) => {
-      const i = Math.max(0, Math.min(last, next));
-      setIndex(i);
-      saveSlide(key, i);
-      window.history.replaceState(null, "", `#s-${slides[i].id}`);
-      if (scroll && top.current && top.current.getBoundingClientRect().top < 0) top.current.scrollIntoView({ block: "start" });
-    },
-    [key, last, slides],
-  );
-
-  // However the last slide was reached (buttons, keys, a #hash link), the lesson is done.
+  // Track the current step from the scroll position.
   useEffect(() => {
+    let frame = 0;
+    const measure = () => {
+      frame = 0;
+      const line = window.innerHeight * FOCUS_LINE;
+      let i = 0;
+      slides.forEach((s, j) => {
+        const el = document.getElementById(`s-${s.id}`);
+        if (el && el.getBoundingClientRect().top <= line) i = j;
+      });
+      const atBottom = window.innerHeight + window.scrollY >= document.documentElement.scrollHeight - 4;
+      setIndex(atBottom ? last : i);
+    };
+    const onScroll = () => {
+      if (!frame) frame = requestAnimationFrame(measure);
+    };
+    measure();
+    window.addEventListener("scroll", onScroll, { passive: true });
+    window.addEventListener("resize", onScroll);
+    return () => {
+      cancelAnimationFrame(frame);
+      window.removeEventListener("scroll", onScroll);
+      window.removeEventListener("resize", onScroll);
+    };
+  }, [last, slides]);
+
+  useEffect(() => {
+    if (!ready) return;
+    saveSlide(key, index);
+    if (index > 0) setResume(null);
     if (index === last) markDone(key);
-  }, [index, last, key]);
+  }, [index, last, key, ready]);
 
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
       const t = e.target as HTMLElement;
       if (t.closest("input, textarea, select, [contenteditable]") || e.altKey || e.metaKey || e.ctrlKey) return;
-      if (e.key === "ArrowRight") go(index + 1, false);
-      else if (e.key === "ArrowLeft") go(index - 1, false);
+      if (e.key === "ArrowRight") scrollTo(index + 1);
+      else if (e.key === "ArrowLeft") scrollTo(index - 1);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [go, index]);
+  }, [scrollTo, index]);
 
   const quizzes = slides.filter((s) => s.quizAnswer !== undefined);
   const correct = quizzes.filter((s) => progress.answers[`${key}/${s.id}`] === s.quizAnswer).length;
 
   return (
-    <div ref={top} className="scroll-mt-4" data-lesson-player={key} data-index={index}>
-      <div className="mb-3 flex items-center justify-between gap-4 text-[11px] tracking-[0.12em] text-ink-400">
-        <span data-slide-count>
-          SLIDE {index + 1} / {slides.length}
-        </span>
-        {quizzes.length > 0 && (
-          <span>
-            QUIZ {correct} / {quizzes.length}
+    <div data-lesson-player={key} data-index={index}>
+      <div className="sticky top-16 z-30 -mx-1 mb-6 border-b border-line/14 bg-ink/94 px-1 pt-3 pb-1 backdrop-blur-sm">
+        <div className="flex items-center justify-between gap-4 text-[11px] tracking-[0.12em] text-ink-400">
+          <span data-slide-count className="truncate">
+            STEP {index + 1} / {slides.length}
+            <span className="hidden text-ink-500 sm:inline"> · {slides[index].title}</span>
           </span>
-        )}
+          {quizzes.length > 0 && (
+            <span className="shrink-0">
+              QUIZ {correct} / {quizzes.length}
+            </span>
+          )}
+        </div>
+        <nav aria-label="Steps" className="flex gap-1">
+          {slides.map((s, i) => (
+            <a
+              key={s.id}
+              href={`#s-${s.id}`}
+              onClick={(e) => {
+                e.preventDefault();
+                scrollTo(i);
+              }}
+              aria-label={`Step ${i + 1}: ${s.title}`}
+              aria-current={i === index ? "step" : undefined}
+              className="group h-6 flex-1 py-2"
+            >
+              <span
+                className={`block h-full transition-colors ${
+                  i === index
+                    ? "bg-accent"
+                    : i < index
+                      ? "bg-accent/45 group-hover:bg-accent/70"
+                      : s.quizAnswer !== undefined
+                        ? "bg-badge/35 group-hover:bg-badge/60"
+                        : "bg-line/16 group-hover:bg-line/30"
+                }`}
+              />
+            </a>
+          ))}
+        </nav>
       </div>
-      <nav aria-label="Slides" className="mb-5 flex gap-1">
-        {slides.map((s, i) => (
-          <button
-            key={s.id}
-            type="button"
-            onClick={() => go(i)}
-            aria-label={`Slide ${i + 1}: ${s.title}`}
-            aria-current={i === index ? "step" : undefined}
-            className="group h-6 flex-1 py-2"
-          >
-            <span
-              className={`block h-full transition-colors ${
-                i === index
-                  ? "bg-accent"
-                  : i < index
-                    ? "bg-accent/45 group-hover:bg-accent/70"
-                    : s.quizAnswer !== undefined
-                      ? "bg-badge/35 group-hover:bg-badge/60"
-                      : "bg-line/16 group-hover:bg-line/30"
-              }`}
-            />
-          </button>
-        ))}
-      </nav>
 
-      {slides.map((s, i) => (
-        <section
-          key={s.id}
-          id={`s-${s.id}`}
-          hidden={i !== index}
-          aria-labelledby={`h-${s.id}`}
-          className="course-slide min-h-[min(62vh,560px)] border border-line/22 bg-panel/20 p-5 sm:p-8"
-          data-slide={s.id}
-        >
-          <div className={`mb-3 text-[11px] tracking-[0.16em] ${s.quizAnswer !== undefined ? "text-badge" : "text-accent"}`}>
-            {s.quizAnswer !== undefined ? "CHECK YOURSELF" : `${String(i + 1).padStart(2, "0")} /`}
-          </div>
-          <h2 id={`h-${s.id}`} className="mb-5 font-display text-2xl leading-tight font-bold text-ink-100 md:text-3xl">
-            {s.title}
-          </h2>
-          {s.body}
-          {i === last && <div className="mt-8">{finale}</div>}
-        </section>
-      ))}
-
-      <div className="mt-4 flex items-center justify-between gap-3">
+      {resume !== null && (
         <button
           type="button"
-          onClick={() => go(index - 1)}
-          disabled={index === 0}
-          className="inline-flex h-11 items-center gap-2 border border-line/28 px-4 text-xs tracking-[0.1em] text-ink-100 hover:border-accent disabled:opacity-30 disabled:hover:border-line/28"
+          onClick={() => scrollTo(resume)}
+          data-resume={resume}
+          className="mb-6 inline-flex h-10 items-center border border-accent/50 px-4 text-xs tracking-[0.1em] text-accent hover:border-accent"
         >
-          <ChevronLeftIcon size={16} /> BACK
+          CONTINUE AT STEP {resume + 1}: {slides[resume].title.toUpperCase()}
         </button>
-        <span className="hidden text-[11px] text-ink-500 sm:inline">← → keys work too</span>
-        {index < last && (
-          <button
-            type="button"
-            onClick={() => go(index + 1)}
-            data-next
-            className="inline-flex h-11 items-center gap-2 bg-accent px-5 font-display text-[13px] font-semibold tracking-[0.08em] text-ink hover:bg-ink-100"
+      )}
+
+      <div className="flex flex-col gap-8">
+        {slides.map((s, i) => (
+          <section
+            key={s.id}
+            id={`s-${s.id}`}
+            aria-labelledby={`h-${s.id}`}
+            aria-current={ready && i === index ? "step" : undefined}
+            className={`course-slide scroll-mt-32 border p-5 transition-[opacity,border-color] duration-300 motion-reduce:transition-none sm:p-8 ${
+              ready && i !== index ? "border-line/14 opacity-40 hover:opacity-90 focus-within:opacity-100" : "border-line/22 bg-panel/20"
+            }`}
+            data-slide={s.id}
           >
-            NEXT <ChevronRightIcon size={16} />
-          </button>
-        )}
+            <div className={`mb-3 text-[11px] tracking-[0.16em] ${s.quizAnswer !== undefined ? "text-badge" : "text-accent"}`}>
+              {String(i + 1).padStart(2, "0")} / {s.quizAnswer !== undefined ? "CHECK YOURSELF" : ""}
+            </div>
+            <h2 id={`h-${s.id}`} className="mb-5 font-display text-2xl leading-tight font-bold text-ink-100 md:text-3xl">
+              {s.title}
+            </h2>
+            {s.body}
+          </section>
+        ))}
+        <div>{finale}</div>
       </div>
     </div>
   );

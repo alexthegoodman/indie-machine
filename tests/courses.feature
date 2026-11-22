@@ -1,8 +1,9 @@
 Feature: Courses
   /courses lists free interactive courses. The N-Grammer Course is six
-  lessons, each a deck of slides with interactive visualizations and quiz
-  questions. Every slide is in the server HTML for search engines; the page
-  shows one at a time. Progress lives in localStorage.
+  lessons, each a vertical sequence of steps with interactive visualizations
+  and quiz questions. Every step is in the server HTML and on the page at
+  once; the step being read is highlighted and the rest dim. Progress lives in
+  localStorage.
 
   Background:
     Given the production build is running at BASE_URL
@@ -17,18 +18,26 @@ Feature: Courses
     Then I see 6 lesson cards
     And the page has Course JSON-LD that is free and has 6 parts
 
-  Scenario: Every slide is in the HTML, one is shown
+  Scenario: Every step is in the HTML and on the page
     When I fetch the first lesson's HTML without JavaScript
-    Then it contains every slide title and quiz question
+    Then it contains every step title and quiz question
     When I open the first lesson in the browser
-    Then exactly one slide is visible
+    Then all 5 steps are visible, step 1 is current and the others are dimmed
 
-  Scenario: Slides move with the buttons and the arrow keys
+  Scenario: Scrolling, the step rail and the arrow keys move the current step
     When I open the first lesson
-    And I click Next
-    Then slide 2 is visible and the hash names it
+    And I scroll step 2 to the top
+    Then step 2 is current and step 1 is dimmed
+    When I click step 4 on the rail
+    Then step 4 is current and the hash names it
     When I press the left arrow
-    Then slide 1 is visible
+    Then step 3 is current
+
+  Scenario: A returning reader can continue where they left off
+    Given I have read to step 4 of the first lesson
+    When I open the first lesson again without a hash
+    Then a Continue button offers step 4
+    And clicking it makes step 4 current
 
   Scenario: Answering a quiz gives feedback and is remembered
     When I open the first lesson at its first quiz
@@ -37,25 +46,25 @@ Feature: Courses
     When I reload the page
     Then the quiz is still answered correctly
 
-  Scenario: Reaching the last slide finishes the lesson
-    When I open the first lesson at its last slide
+  Scenario: Reaching the last step finishes the lesson
+    When I open the first lesson at its last step
     Then the finale links to lesson 2
     When I open the course page
     Then it shows 1 of 6 lessons done
 
   Scenario: The live layer runs Hyperfield in the page
-    When I open the coding lesson at the live slide
+    When I open the coding lesson at the live step
     Then the live table has a row per word, computed on the cpu backend
     And the repeated "the cat" reads rows it already read
 
   Scenario: The live layer at zero projection is a no-op
-    When I open the training lesson at the zero-init slide
+    When I open the training lesson at the zero-init step
     Then every |y - x| is 0
     When I raise the projection scale
     Then |y - x| is above 0
 
   Scenario: The centroid demo trains and leaves a dead centroid
-    When I open the training lesson at the training slide
+    When I open the training lesson at the training step
     And I take 15 steps
     Then the centroid loss has gone down
     And centroid 3 still has 0 points

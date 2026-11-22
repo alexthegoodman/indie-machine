@@ -6,7 +6,7 @@ import { SITE_NAME, absoluteUrl } from "@/lib/site";
 
 const TITLE = "Free Interactive Machine Learning Courses | Indie Machine";
 const DESCRIPTION =
-  "Free, interactive courses on niche machine learning ideas, slide by slide, with live visualizations, quizzes and code in PyTorch and Hyperfield (TypeScript).";
+  "Free, interactive courses on niche machine learning ideas, step by step, with live visualizations, quizzes and code in PyTorch and Hyperfield (TypeScript).";
 
 export const metadata: Metadata = {
   title: TITLE,

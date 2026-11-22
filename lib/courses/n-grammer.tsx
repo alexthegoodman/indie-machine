@@ -62,7 +62,7 @@ const PIPELINE = `flowchart LR
 export const nGrammerCourse: Course = {
   slug: "n-grammer",
   title: "The N-Grammer Course",
-  tagline: "Latent n-gram memory for transformers, one slide at a time.",
+  tagline: "Latent n-gram memory for transformers, one step at a time.",
   description:
     "A free, interactive course on N-Grammer layers: product quantization, latent bigram ids, the embedding table, the centroid loss, and a working layer in PyTorch and Hyperfield (TypeScript) side by side.",
   intro: (
@@ -530,7 +530,7 @@ export const nGrammerCourse: Course = {
           body: (
             <>
               <P>
-                This table is computed by <code>ngramLayer</code> from the previous slide, live, with Hyperfield in this page. Type your own words. A
+                This table is computed by <code>ngramLayer</code> from the previous step, live, with Hyperfield in this page. Type your own words. A
                 repeated phrase like “the cat” reads the same rows each time it appears.
               </P>
               <LiveNgram />

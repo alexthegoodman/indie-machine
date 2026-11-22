@@ -55,8 +55,15 @@ async function open(page, url) {
   await page.locator("[data-lesson-player], [data-course-card], [data-lesson-card]").first().waitFor({ timeout: 15000 });
   await page.waitForTimeout(300); // hydration + hash restore
 }
-const visible = (page) => page.locator("section.course-slide:visible");
-const currentId = (page) => visible(page).getAttribute("data-slide");
+const step = (page, id) => page.locator(`#s-${id}`);
+const currentId = (page) => page.locator('section.course-slide[aria-current="step"]').getAttribute("data-slide");
+const stepIds = (page) => page.locator("section.course-slide").evaluateAll((els) => els.map((e) => e.dataset.slide));
+const opacity = (loc) => loc.evaluate((el) => Number(getComputedStyle(el).opacity));
+/** Scroll a step's top to just under the sticky header and rail, like a reader would. */
+async function scrollStep(page, id) {
+  await page.evaluate((i) => window.scrollTo(0, document.getElementById(`s-${i}`).getBoundingClientRect().top + window.scrollY - 140), id);
+  await page.waitForTimeout(450); // rAF + the 300ms dim transition
+}
 
 /** Set a range input like a user dragging it (React listens for input events). */
 async function setRange(locator, value) {
@@ -94,29 +101,55 @@ await scenario("The course page lists six lessons with Course structured data", 
   await page.context().close();
 });
 
-await scenario("Every slide is in the HTML, one is shown", async () => {
+await scenario("Every step is in the HTML and on the page", async () => {
   const html = await (await fetch(BASE_URL + L1)).text();
   for (const s of ["Language is full of local patterns", "Count some bigrams", "The problem with token bigrams", "which pairs are the bigrams?", "Why does N-Grammer pair up cluster ids"]) {
     assert.ok(html.includes(s), `HTML has "${s}"`);
   }
   const page = await newPage();
   await open(page, L1);
-  assert.equal(await visible(page).count(), 1);
-  assert.equal(await page.locator("section.course-slide").count(), 5);
-  await shot(page, "lesson1-slide1");
+  assert.equal(await page.locator("section.course-slide:visible").count(), 5, "every step is shown");
+  await page.waitForTimeout(300);
+  assert.equal(await currentId(page), "local-patterns");
+  assert.equal(await opacity(step(page, "local-patterns")), 1);
+  assert.ok((await opacity(step(page, "count"))) < 0.5, "later steps are dimmed");
+  await shot(page, "lesson1-top");
   noErrors(page);
   await page.context().close();
 });
 
-await scenario("Slides move with the buttons and the arrow keys", async () => {
+await scenario("Scrolling, the step rail and the arrow keys move the current step", async () => {
   const page = await newPage();
   await open(page, L1);
-  await page.locator("[data-next]").click();
+  await scrollStep(page, "count");
   assert.equal(await currentId(page), "count");
-  assert.equal(new URL(page.url()).hash, "#s-count");
+  assert.ok((await opacity(step(page, "local-patterns"))) < 0.5, "step 1 dimmed");
+  assert.equal(await opacity(step(page, "count")), 1);
   await shot(page, "lesson1-bigram-counter");
+  const ids = await stepIds(page);
+  await page.locator('nav[aria-label="Steps"] a').nth(3).click();
+  await page.waitForTimeout(900); // smooth scroll
+  assert.equal(await currentId(page), ids[3]);
+  assert.equal(new URL(page.url()).hash, `#s-${ids[3]}`);
   await page.keyboard.press("ArrowLeft");
-  assert.equal(await currentId(page), "local-patterns");
+  await page.waitForTimeout(900);
+  assert.equal(await currentId(page), ids[2]);
+  noErrors(page);
+  await page.context().close();
+});
+
+await scenario("A returning reader can continue where they left off", async () => {
+  const page = await newPage();
+  await open(page, L1);
+  const ids = await stepIds(page);
+  await scrollStep(page, ids[3]);
+  await open(page, L1);
+  const resume = page.locator("[data-resume]");
+  assert.equal(await resume.getAttribute("data-resume"), "3");
+  assert.match(await resume.innerText(), /CONTINUE AT STEP 4/);
+  await resume.click();
+  await page.waitForTimeout(900);
+  assert.equal(await currentId(page), ids[3]);
   noErrors(page);
   await page.context().close();
 });
@@ -124,9 +157,8 @@ await scenario("Slides move with the buttons and the arrow keys", async () => {
 await scenario("Answering a quiz gives feedback and is remembered", async () => {
   const page = await newPage();
   await open(page, `${L1}#s-q-bigram`);
-  assert.equal(await currentId(page), "q-bigram");
-  await visible(page).locator('[role="radio"]').first().click();
-  const quiz = visible(page).locator("[data-quiz]");
+  await step(page, "q-bigram").locator('[role="radio"]').first().click();
+  const quiz = step(page, "q-bigram").locator("[data-quiz]");
   assert.equal(await quiz.getAttribute("data-correct"), "true");
   assert.match(await quiz.innerText(), /CORRECT[\s\S]*Three tokens give two bigrams/);
   await shot(page, "lesson1-quiz");
@@ -137,10 +169,11 @@ await scenario("Answering a quiz gives feedback and is remembered", async () => 
   await page.context().close();
 });
 
-await scenario("Reaching the last slide finishes the lesson", async () => {
+await scenario("Reaching the last step finishes the lesson", async () => {
   const page = await newPage();
   await open(page, `${L1}#s-q-vocab`);
-  const finale = visible(page).locator("[data-finale]");
+  assert.equal(await currentId(page), "q-vocab");
+  const finale = page.locator("[data-finale]");
   assert.equal(await finale.locator(`a[href="${COURSE}/the-layer-at-a-glance"]`).count(), 1);
   await open(page, COURSE);
   assert.equal(await page.locator("[data-course-progress]").getAttribute("data-course-progress"), "1");
@@ -152,7 +185,7 @@ await scenario("Reaching the last slide finishes the lesson", async () => {
 await scenario("The live layer runs Hyperfield in the page", async () => {
   const page = await newPage();
   await open(page, `${L5}#s-live`);
-  const live = visible(page).locator("[data-live-ngram]");
+  const live = step(page, "live").locator("[data-live-ngram]");
   await live.waitFor({ timeout: 15000 });
   assert.equal(await live.getAttribute("data-backend"), "cpu");
   const rows = live.locator("tbody tr");
@@ -171,11 +204,11 @@ await scenario("The live layer runs Hyperfield in the page", async () => {
 await scenario("The live layer at zero projection is a no-op", async () => {
   const page = await newPage();
   await open(page, `${L6}#s-zero`);
-  const live = visible(page).locator("[data-live-ngram]");
+  const live = step(page, "zero").locator("[data-live-ngram]");
   await live.waitFor({ timeout: 15000 });
   const deltas = async () => (await live.locator("tbody tr td:last-child").allInnerTexts()).map(Number);
   assert.ok((await deltas()).every((d) => d === 0), "all zero at scale 0");
-  await setRange(visible(page).locator('input[type="range"]'), 0.5);
+  await setRange(step(page, "zero").locator('input[type="range"]'), 0.5);
   await page.waitForTimeout(400);
   assert.ok((await deltas()).every((d) => d > 0), "all non-zero at scale 0.5");
   noErrors(page);
@@ -185,13 +218,13 @@ await scenario("The live layer at zero projection is a no-op", async () => {
 await scenario("The centroid demo trains and leaves a dead centroid", async () => {
   const page = await newPage();
   await open(page, `${L6}#s-train`);
-  const lossEl = visible(page).locator("[data-loss]");
+  const lossEl = step(page, "train").locator("[data-loss]");
   const before = Number(await lossEl.getAttribute("data-loss"));
-  const step = visible(page).getByRole("button", { name: "ONE STEP" });
-  for (let i = 0; i < 15; i++) await step.click();
+  const oneStep = step(page, "train").getByRole("button", { name: "ONE STEP" });
+  for (let i = 0; i < 15; i++) await oneStep.click();
   const after = Number(await lossEl.getAttribute("data-loss"));
   assert.ok(after < before, `loss ${before} -> ${after}`);
-  assert.match(await visible(page).locator("li", { hasText: "centroid 3" }).innerText(), /0 pts/);
+  assert.match(await step(page, "train").locator("li", { hasText: "centroid 3" }).innerText(), /0 pts/);
   await shot(page, "lesson6-training");
   noErrors(page);
   await page.context().close();
@@ -200,19 +233,19 @@ await scenario("The centroid demo trains and leaves a dead centroid", async () =
 await scenario("Visualizations react to input", async () => {
   const page = await newPage();
   await open(page, `${L4}#s-row`);
-  const ranges = visible(page).locator('input[type="range"]'); // K, heads, head, prev, id
+  const ranges = step(page, "row").locator('input[type="range"]'); // K, heads, head, prev, id
   await setRange(ranges.nth(0), 4);
   await setRange(ranges.nth(1), 2);
   await setRange(ranges.nth(2), 1);
   await setRange(ranges.nth(3), 2);
   await setRange(ranges.nth(4), 3);
   await page.waitForTimeout(200);
-  assert.equal(await visible(page).locator("[data-row]").getAttribute("data-row"), "31");
+  assert.equal(await step(page, "row").locator("[data-row]").getAttribute("data-row"), "31");
   await shot(page, "lesson4-row-finder");
-  await open(page, `${L4}#s-size`);
-  await setRange(visible(page).locator('input[type="range"]').nth(0), 64);
-  await visible(page).getByRole("button", { name: "YUMON CP1 PRESET" }).click();
-  assert.equal(await visible(page).locator("[data-params]").getAttribute("data-params"), "16842752");
+  await scrollStep(page, "size");
+  await setRange(step(page, "size").locator('input[type="range"]').nth(0), 64);
+  await step(page, "size").getByRole("button", { name: "YUMON CP1 PRESET" }).click();
+  assert.equal(await step(page, "size").locator("[data-params]").getAttribute("data-params"), "16842752");
   await open(page, `${COURSE}/snapping-to-centroids#s-snap`);
   await shot(page, "lesson3-centroid-snap");
   await open(page, `${COURSE}/the-layer-at-a-glance#s-step`);
@@ -225,17 +258,14 @@ await scenario("Narrow screens do not scroll sideways", async () => {
   const page = await newPage({ viewport: { width: 390, height: 844 } });
   for (const l of LESSONS) {
     await open(page, `${COURSE}/${l}`);
-    const ids = await page.locator("section.course-slide").evaluateAll((els) => els.map((e) => e.dataset.slide));
-    for (const id of ids) {
-      await page.evaluate((h) => (window.location.hash = h), `s-${id}`);
-      await page.reload();
-      await page.waitForTimeout(250);
-      const over = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
-      assert.ok(over <= 1, `${l}#${id} overflows by ${over}px`);
-    }
+    await page.waitForTimeout(300); // LiveNgram fills its table after hydration
+    const over = await page.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+    assert.ok(over <= 1, `${l} overflows by ${over}px`);
   }
   await open(page, `${L5}#s-forward`);
-  await shot(page, "mobile-code", { fullPage: true });
+  await shot(page, "mobile-code");
+  await open(page, L1);
+  await shot(page, "mobile-lesson1", { fullPage: true });
   noErrors(page);
   await page.context().close();
 });

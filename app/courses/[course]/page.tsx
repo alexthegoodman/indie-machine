@@ -89,7 +89,7 @@ export default async function CoursePage({ params }: { params: Promise<{ course:
 
       <div className="mt-8 grid gap-8 lg:grid-cols-[1fr_320px]">
         <section>
-          <ShelfHeader kicker="// SLIDE BY SLIDE" title="Lessons" />
+          <ShelfHeader kicker="// STEP BY STEP" title="Lessons" />
           <ol className="flex flex-col gap-3">
             {c.lessons.map((l, i) => (
               <li key={l.slug} className="group relative flex gap-4 border border-line/22 p-4 hover:border-accent/60" data-lesson-card={l.slug}>
