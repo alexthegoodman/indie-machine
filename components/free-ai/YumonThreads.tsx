@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useMemo, useRef, useState, useSyncExternalStore } from "react";
+import { YumonMascot } from "@/components/mascot/YumonMascot";
 import { WEIGHTS_MB, wakeYumon, wantsAutoLoad, yumonStore, type YumonState } from "@/lib/yumon/session";
 import {
   DEFAULT_SETTINGS,
@@ -531,10 +532,12 @@ function AgentPanel({ y, thread, dot, busy }: { y: YumonState; thread?: Thread; 
   const tokens = replies.reduce((a, m) => a + (m.tokens ?? 0), 0);
   const avg = replies.length ? replies.reduce((a, m) => a + (m.msPerToken ?? 0), 0) / replies.length : 0;
   const memories = thread ? threadMemories(thread.messages).length : 0;
+  const last = thread?.messages[thread.messages.length - 1];
   const set = (patch: Partial<typeof st>) => thread && updateSettings(thread.id, patch);
 
   return (
     <div className="flex flex-col gap-5 p-4">
+      <YumonMascot status={y.status} writing={busy} hasText={!!last && last.who === "yumon" && !!last.text} className="h-56 shrink-0 border border-line/18 bg-ink/40" />
       <div>
         <div className="text-[10px] tracking-[0.14em] text-accent">// AGENT</div>
         <div className="mt-2 flex items-center gap-3">

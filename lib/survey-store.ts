@@ -4,7 +4,7 @@ import { userAgent } from "next/server";
 import { db } from "@/lib/allegiance/db";
 import { ID, type WireContext } from "@/lib/analytics/events";
 import { device, path, str } from "@/lib/analytics/ingest";
-import { MAX_DETAIL, SURVEY_VERSION, validChoice } from "@/lib/survey";
+import { asks, MAX_DETAIL, QUESTIONS, SURVEY_VERSION, validChoice } from "@/lib/survey";
 
 export type SurveyAnswers = {
   v: string;
@@ -12,7 +12,7 @@ export type SurveyAnswers = {
   ctx: Partial<WireContext>;
   path: string;
   version: number;
-  work: string;
+  work?: string;
   workDetail?: string;
   found: string;
   foundDetail?: string;
@@ -41,8 +41,9 @@ export async function saveAnswers(a: SurveyAnswers, headers: Headers): Promise<s
   if (!a || typeof a !== "object") return "Something went wrong. Reload the page.";
   if (!validVisitor(a.v) || !validVisitor(a.s)) return "Something went wrong. Reload the page.";
   if (a.version !== SURVEY_VERSION) return "That survey has changed. Reload the page.";
-  // if (!validChoice("work", a.work) || !validChoice("found", a.found)) return "Pick an answer for both questions.";
-  if (!validChoice("found", a.found)) return "Pick an answer for both questions.";
+  if (!QUESTIONS.every((q) => validChoice(q.id, a[q.id]))) {
+    return QUESTIONS.length > 1 ? "Pick an answer for each question." : "Pick an answer.";
+  }
   const p = path(a.path);
   if (!p) return "Something went wrong. Reload the page.";
 
@@ -54,8 +55,9 @@ export async function saveAnswers(a: SurveyAnswers, headers: Headers): Promise<s
   const answers = {
     sessionId: a.s,
     path: p,
-    work: a.work,
-    workDetail: str(a.workDetail, MAX_DETAIL) ?? null,
+    // A question that isn't asked any more leaves its columns empty.
+    work: asks("work") ? a.work! : null,
+    workDetail: asks("work") ? (str(a.workDetail, MAX_DETAIL) ?? null) : null,
     found: a.found,
     // Free text under "found" only means something next to "other".
     foundDetail: a.found === "other" ? (str(a.foundDetail, MAX_DETAIL) ?? null) : null,

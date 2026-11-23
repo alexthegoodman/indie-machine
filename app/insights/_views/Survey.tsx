@@ -3,7 +3,7 @@ import { Card, Td, Th } from "@/components/insights/ui";
 import { surveyCounts, surveyPairs, surveyResponses, surveyTotals, type Count, type Pair } from "@/lib/analytics/survey";
 import { exact, pct, when } from "@/lib/analytics/format";
 import { queryParams } from "@/lib/analytics/query";
-import { choiceLabel, QUESTIONS, SURVEY_MODE, SURVEY_VERSION } from "@/lib/survey";
+import { asks, choiceLabel, QUESTIONS, SURVEY_MODE, SURVEY_VERSION, type Question } from "@/lib/survey";
 import type { ViewProps } from "./types";
 
 function Tile({ label, value, hint }: { label: string; value: string; hint?: string }) {
@@ -17,8 +17,7 @@ function Tile({ label, value, hint }: { label: string; value: string; hint?: str
 }
 
 /** Every choice of a question, answered or not, with its share of responses. */
-function Answers({ question, counts, total }: { question: "work" | "found"; counts: Count[]; total: number }) {
-  const q = QUESTIONS.find((x) => x.id === question)!;
+function Answers({ q, counts, total }: { q: Question; counts: Count[]; total: number }) {
   const by = new Map(counts.map((c) => [c.key, c.n]));
   const rows = q.choices.map((c) => ({ key: c.key, label: c.label, n: by.get(c.key) ?? 0 })).sort((a, b) => b.n - a.n);
   const max = Math.max(1, ...rows.map((r) => r.n));
@@ -121,11 +120,13 @@ const plain = (k: string | null) => k ?? "(none)";
 
 // What readers said in the survey that opens every post (lib/survey.ts).
 export async function Survey({ q, links, params }: ViewProps) {
+  // Only the questions asked now (lib/survey.ts); one left out keeps its old answers in the CSV.
+  const working = asks("work");
   const [totals, byWork, byFound, workFound, foundSource, byPath, detailed, latest] = await Promise.all([
     surveyTotals(q),
-    surveyCounts(q, "work"),
+    working ? surveyCounts(q, "work") : [],
     surveyCounts(q, "found"),
-    surveyPairs(q, "work", "found"),
+    working ? surveyPairs(q, "work", "found") : [],
     surveyPairs(q, "found", "source"),
     surveyCounts(q, "path", 15),
     surveyResponses(q, { limit: 100, detailOnly: true }),
@@ -152,17 +153,18 @@ export async function Survey({ q, links, params }: ViewProps) {
       </div>
 
       <div className="grid gap-4 lg:grid-cols-2">
-        <Card title={QUESTIONS[0].label}>
-          <Answers question="work" counts={byWork} total={totals.responses} />
-        </Card>
-        <Card title={QUESTIONS[1].label}>
-          <Answers question="found" counts={byFound} total={totals.responses} />
-        </Card>
+        {QUESTIONS.map((x) => (
+          <Card key={x.id} title={x.label}>
+            <Answers q={x} counts={x.id === "work" ? byWork : byFound} total={totals.responses} />
+          </Card>
+        ))}
       </div>
 
-      <Card title="Working on × found us through" note="Responses in each combination, shaded by share of the row.">
-        <Cross pairs={workFound} rowLabel="Working on" colLabel="Found via" row={work} col={found} />
-      </Card>
+      {working && (
+        <Card title="Working on × found us through" note="Responses in each combination, shaded by share of the row.">
+          <Cross pairs={workFound} rowLabel="Working on" colLabel="Found via" row={work} col={found} />
+        </Card>
+      )}
 
       <Card
         title="What they said vs. where the browser came from"
@@ -179,7 +181,8 @@ export async function Survey({ q, links, params }: ViewProps) {
                 {r.workDetail && <p className="text-[13px] leading-relaxed text-ink-100">&ldquo;{r.workDetail}&rdquo;</p>}
                 {r.foundDetail && <p className="mt-1 text-ink-300">Found us: &ldquo;{r.foundDetail}&rdquo;</p>}
                 <p className="mt-1 text-[11px] text-ink-500">
-                  {work(r.work)} · {found(r.found)} · {r.source}
+                  {r.work ? `${work(r.work)} · ` : ""}
+                  {found(r.found)} · {r.source}
                   {r.country ? ` · ${r.country}` : ""} · {when(r.at, q.tz)} ·{" "}
                   <Link href={links.view("visitor", { id: r.visitorId })} className="text-ink-400! hover:text-accent!">
                     visitor
@@ -224,7 +227,7 @@ export async function Survey({ q, links, params }: ViewProps) {
                 <thead>
                   <tr>
                     <Th>When</Th>
-                    <Th>Working on</Th>
+                    {working && <Th>Working on</Th>}
                     <Th>Found via</Th>
                     <Th>Referrer</Th>
                     <Th>Country</Th>
@@ -236,7 +239,7 @@ export async function Survey({ q, links, params }: ViewProps) {
                   {latest.map((r) => (
                     <tr key={r.id}>
                       <Td className="whitespace-nowrap text-ink-400">{when(r.at, q.tz)}</Td>
-                      <Td className="text-ink-100">{work(r.work)}</Td>
+                      {working && <Td className="text-ink-100">{work(r.work)}</Td>}
                       <Td className="text-ink-100">{found(r.found)}</Td>
                       <Td>{r.utmSource ? `${r.source} (${r.utmSource})` : r.source}</Td>
                       <Td>{r.country ?? "-"}</Td>

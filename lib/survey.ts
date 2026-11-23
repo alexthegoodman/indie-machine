@@ -1,9 +1,11 @@
-// The reader survey: two questions that open the rest of a post. Shared by the gate
+// The reader survey: the questions that open the rest of a post. Shared by the gate
 // (components/reader/PostRest.tsx), the post page's actions and the Survey view in /insights,
 // so no Node or DOM APIs here.
 //
 // To make it optional, set SURVEY_MODE to "optional" (adds a Skip button); "off" removes it.
-// Changing the questions? Bump SURVEY_VERSION, so everyone is asked the new ones once.
+// Changing the questions? Bump SURVEY_VERSION, so everyone is asked the new ones once. Removing
+// one (commenting it out of QUESTIONS) needs no bump: everything below follows QUESTIONS, and
+// its column is left empty on new responses.
 
 export type SurveyMode = "required" | "optional" | "off";
 export const SURVEY_MODE: SurveyMode = "required";
@@ -67,3 +69,8 @@ export function validChoice(question: Question["id"], key: unknown): key is stri
   return typeof key === "string" && !!QUESTIONS.find((q) => q.id === question)?.choices.some((c) => c.key === key);
 }
 
+
+/** Whether a question is currently asked (commented-out questions are not). */
+export function asks(question: Question["id"]): boolean {
+  return QUESTIONS.some((q) => q.id === question);
+}

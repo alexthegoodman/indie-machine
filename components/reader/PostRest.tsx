@@ -6,7 +6,7 @@ import { MAX_DETAIL, QUESTIONS, SURVEY_DONE_KEY, SURVEY_MODE, SURVEY_VERSION } f
 import { answerSurvey, readRest } from "@/app/posts/[slug]/actions";
 import { ARTICLE_CHANGED, POST_REST_PENDING } from "./ReaderTracker";
 
-// Everything in a post after its intro. The page only sends the intro; this asks the two survey
+// Everything in a post after its intro. The page only sends the intro; this asks the survey
 // questions (lib/survey.ts) and puts the rest of the article in place once they're answered, or
 // right away (one round trip) for a browser that answered before.
 
@@ -75,8 +75,7 @@ export function PostRest({ slug }: { slug: string }) {
     return <div {...{ [POST_REST_PENDING]: "" }} aria-busy="true" className="min-h-[40vh]" />;
   }
 
-  // const ready = !!answers.work && !!answers.found;
-  const ready = !!answers.found;
+  const ready = QUESTIONS.every((q) => !!answers[q.id]);
 
   async function submit(e: React.FormEvent) {
     e.preventDefault();
@@ -129,7 +128,9 @@ export function PostRest({ slug }: { slug: string }) {
       {/* the intro fades into the survey */}
       <div aria-hidden className="pointer-events-none absolute inset-x-0 -top-24 h-24 bg-linear-to-b from-transparent to-ink" />
       <form onSubmit={submit} className="border border-accent/40 bg-panel/45 px-4 py-5 sm:px-6 sm:py-6">
-        <div className="text-[11px] tracking-[0.14em] text-accent">TWO QUESTIONS TO KEEP READING</div>
+        <div className="text-[11px] tracking-[0.14em] text-accent">
+          {QUESTIONS.length === 1 ? "ONE QUESTION" : "TWO QUESTIONS"} TO KEEP READING
+        </div>
         <p id="im-survey-title" className="mt-2 font-display text-xl font-semibold text-ink-100 sm:text-2xl">
           Help us write for you
         </p>

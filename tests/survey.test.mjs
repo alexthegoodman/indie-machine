@@ -111,12 +111,10 @@ const responsesOf = (visitor) => rows(`SELECT * FROM survey_responses WHERE "vis
 const h2s = (page) => page.locator("#post-body > h2").count();
 const chapters = (page) => page.getByText(/^CHAPTERS · \d+$/).count();
 
-async function answer(page, work, found, notes = {}) {
+async function answer(page, found, notes = {}) {
   const card = page.locator(CARD);
   await card.waitFor();
-  await card.getByLabel(work, { exact: true }).check();
   await card.getByLabel(found, { exact: true }).check();
-  if (notes.work) await card.getByPlaceholder("Tell us more").fill(notes.work);
   if (notes.found) await card.getByPlaceholder("Where?").fill(notes.found);
   await card.getByRole("button", { name: "CONTINUE READING" }).click();
   await card.waitFor({ state: "detached" });
@@ -133,8 +131,9 @@ await scenario("A new reader sees the intro and the survey, not the rest", async
   assert.ok(await page.locator("#post-body > [data-lede]").isVisible(), "the intro is visible");
   assert.equal(await h2s(page), 0, "no article h2 in the page");
   assert.equal(await chapters(page), 0, "no chapter list");
-  assert.ok(await card.getByText("What are you working on right now?").isVisible());
+  assert.ok(await card.getByText("ONE QUESTION TO KEEP READING").isVisible());
   assert.ok(await card.getByText("How did you find Indie Machine?").isVisible());
+  assert.equal(await card.getByText("What are you working on right now?").count(), 0, "the work question is not asked");
   assert.ok(await card.getByRole("button", { name: "CONTINUE READING" }).isDisabled());
   const html = await (await fetch(BASE_URL + DEV)).text();
   assert.ok(html.includes(DEV_INTRO), "the intro is in the HTML");
@@ -158,10 +157,9 @@ await scenario("Answering opens the post and stores the answers", async () => {
   await page.goto(BASE_URL + DEV + "?utm_source=bdd-newsletter");
   const card = page.locator(CARD);
   await card.waitFor();
-  await card.getByLabel("A game", { exact: true }).check();
-  assert.ok(await card.getByRole("button", { name: "CONTINUE READING" }).isDisabled(), "still disabled with one answer");
-  await card.getByLabel("Hacker News").check();
-  await card.getByPlaceholder("Tell us more").fill("A roguelike in Rust, looking for wgpu tips");
+  assert.ok(await card.getByRole("button", { name: "CONTINUE READING" }).isDisabled(), "disabled until answered");
+  await card.getByLabel("Somewhere else", { exact: true }).check();
+  await card.getByPlaceholder("Where?").fill("A Rust Discord server");
   await shot(page, "survey-02-answered");
   const t0 = performance.now();
   await card.getByRole("button", { name: "CONTINUE READING" }).click();
@@ -174,10 +172,10 @@ await scenario("Answering opens the post and stores the answers", async () => {
 
   const [r] = await responsesOf(visitor);
   assert.ok(r, "a response is stored");
-  assert.equal(r.work, "game");
-  assert.equal(r.found, "hn");
-  assert.equal(r.workDetail, "A roguelike in Rust, looking for wgpu tips");
-  assert.equal(r.foundDetail, null);
+  assert.equal(r.work, null, "no work answer while that question is left out");
+  assert.equal(r.workDetail, null);
+  assert.equal(r.found, "other");
+  assert.equal(r.foundDetail, "A Rust Discord server");
   assert.equal(r.path, DEV);
   assert.equal(r.source, "direct");
   assert.equal(r.utmSource, "bdd-newsletter");
@@ -190,7 +188,7 @@ await scenario("Answering opens the post and stores the answers", async () => {
     const e = await eventsOf(visitor);
     return e.some((x) => x.name === "survey_submit") && e.some((x) => x.name === "read_depth" && x.props.pct === 100) ? e : null;
   }, "survey_submit and read_depth 100");
-  assert.deepEqual(ev.find((x) => x.name === "survey_submit").props, { version: 1, ok: true, work: "game", found: "hn", detail: true });
+  assert.deepEqual(ev.find((x) => x.name === "survey_submit").props, { version: 1, ok: true, found: "other", detail: true });
   assert.deepEqual(page.errors, []);
   console.log(`    stored ${r.work}/${r.found} from ${r.source} (${r.utmSource}); rest of the post in ${ms.toFixed(0)} ms`);
   await page.context().close();
@@ -249,15 +247,14 @@ await scenario("Phones get the same gate", async () => {
 await scenario("Answering again replaces the earlier answers", async () => {
   const { page, visitor } = await newPage();
   await page.goto(BASE_URL + DEV);
-  await answer(page, "AI / ML models or agents", "Somewhere else", { found: "a podcast" });
+  await answer(page, "Somewhere else", { found: "a podcast" });
   const [first] = await responsesOf(visitor);
   assert.equal(first.foundDetail, "a podcast");
   await page.evaluate(() => localStorage.removeItem("im_survey_done"));
   await page.reload();
-  await answer(page, "A web app or SaaS", "Hacker News");
+  await answer(page, "Hacker News");
   const stored = await responsesOf(visitor);
   assert.equal(stored.length, 1);
-  assert.equal(stored[0].work, "web");
   assert.equal(stored[0].found, "hn");
   assert.equal(stored[0].foundDetail, null, "found free text dropped unless 'other'");
   assert.deepEqual(page.errors, []);
@@ -273,10 +270,10 @@ async function signIn(page) {
 
 await scenario("The Survey view shows what readers said", async () => {
   const seed = [
-    ...Array.from({ length: 6 }, () => ["game", null, "reddit", null, "reddit.com"]),
-    ...Array.from({ length: 4 }, () => ["ai", null, "search", null, "direct"]),
-    ["other", "BDD note: building a synth plugin", "other", "a Discord server", "direct"],
-    ["learning", "BDD note: learning wgpu", "friend", null, "direct"],
+    ...Array.from({ length: 6 }, () => [null, null, "reddit", null, "reddit.com"]),
+    ...Array.from({ length: 4 }, () => [null, null, "search", null, "direct"]),
+    [null, null, "other", "BDD note: a Discord server", "direct"],
+    [null, null, "other", "BDD note: a podcast", "direct"],
   ];
   for (const [i, [work, workDetail, found, foundDetail, source]] of seed.entries()) {
     await client.query(
@@ -292,12 +289,13 @@ await scenario("The Survey view shows what readers said", async () => {
   const tile = page.locator("div", { hasText: /^Responses/ }).locator("div.font-display").first();
   const responses = Number((await tile.textContent()).replace(/,/g, ""));
   assert.ok(responses >= 12, `Responses tile says ${responses}`);
-  for (const label of ["A game", "Dev tools or infrastructure", "Reddit", "Somewhere else"]) {
+  for (const label of ["Reddit", "Hacker News", "Product Hunt or a launch site", "Somewhere else"]) {
     assert.ok(await page.getByRole("cell", { name: label, exact: true }).first().isVisible(), `choice "${label}" listed`);
   }
   const words = page.getByRole("region", { name: "In their own words" });
-  assert.ok(await words.getByText("BDD note: building a synth plugin").isVisible());
-  assert.ok(await words.getByText("BDD note: learning wgpu").isVisible());
+  assert.ok(await words.getByText("BDD note: a Discord server", { exact: false }).isVisible());
+  assert.ok(await words.getByText("BDD note: a podcast", { exact: false }).isVisible());
+  assert.equal(await page.getByRole("columnheader", { name: "Working on" }).count(), 0, "no work column while it isn't asked");
   await shot(page, "survey-05-insights", { fullPage: true });
 
   const csvHref = await page.getByRole("link", { name: "EXPORT CSV" }).getAttribute("href");

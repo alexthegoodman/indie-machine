@@ -160,6 +160,10 @@ BASE_URL=http://localhost:3123 PLAYWRIGHT_CORE=/path/to/node_modules/playwright-
 `tests/post-experience.feature` / `.test.mjs` and `tests/yumon-chat.feature` / `.test.mjs` run the same way and need no database
 (events are caught in the browser).
 
+`tests/mascot.feature` / `.test.mjs` render every clip of both robots with no server
+(the scene module is served through `page.route`); its page scenarios run when
+`BASE_URL` is set.
+
 `tests/visitor-launches.feature` / `.test.mjs` run the same way. They need
 network access (they launch example.com and a GitHub repo) and the local
 database from `.env`, and they delete their own rows before and after.
@@ -259,6 +263,19 @@ under `public/`).
 Usage events: `yumon_load`, `yumon_message`, `yumon_clear`, `yumon_open`
 (counts and timings only, never message text).
 
+### Mascot
+
+`components/mascot/YumonMascot.tsx` puts Yumon's robot body above the post chat
+and at the top of the `/free-ai` agent panel. Two Meshy-made, Meshy-rigged looks,
+MECH (`public/models/mascot/yumon-mech.glb`, the default) and SOFT (`yumon-bot.glb`),
+3.8 MB each, picked with the toggle on the stage (`im_mascot_variant`, or `?mascot=bot|mech`).
+The camera frames a waist-up portrait that follows the rig's `head_end` bone.
+`lib/mascot/scene.ts` draws them with Three.js (`three` 0.187.0); it and the GLB load
+only once the stage is on screen. Clips follow the chat: Dozing_Elderly asleep,
+Idle awake, Confused_Scratch until the first token, Talk_with_Hands_Open while the
+reply streams, Motivational_Cheer on waking, Big_Wave_Hello on click. Reduced motion
+draws one still frame. Meshy task ids are in `assets/mascot/README.md`.
+
 ## Analytics
 
 First-party event logging, no third-party script. Every page reports to
@@ -300,8 +317,9 @@ Tests: `tests/analytics.feature` / `tests/analytics.test.mjs` (run against
 
 ### Reader survey
 
-Every post stops after its intro (the lede, or the first paragraph) with two
-questions: what the reader is working on, and how they found the site. The
+Every post stops after its intro (the lede, or the first paragraph) with the
+survey questions in `lib/survey.ts` (now one: how the reader found the site;
+"what are you working on" is commented out). The
 page only renders the intro (`lib/rehype-split-intro.ts`, via
 `lib/post-content.tsx`); `components/reader/PostRest.tsx` shows the survey and
 calls the server actions in `app/posts/[slug]/actions.ts`, which store the
@@ -309,10 +327,13 @@ answers in `survey_responses` (Prisma `SurveyResponse`, one row per visitor
 per survey version) and return the rest of the post. A browser that answered
 before gets the rest straight away, once the server finds its visitor id on
 record. The Survey tab in `/insights` shows the answers, the answer rate
-(`survey_view` vs `survey_submit` events), the two questions against each
-other and against the referrer, free text, and CSV export (`kind=survey`).
+(`survey_view` vs `survey_submit` events), each asked question, the answers
+against each other and against the referrer, free text, and CSV export
+(`kind=survey`).
 
 Questions, `SURVEY_MODE` (`required` | `optional` adds Skip | `off` sends whole
 posts again) and `SURVEY_VERSION` (bump to ask everyone again) live in
-`lib/survey.ts`. Tests: `tests/survey.feature` / `tests/survey.test.mjs`; the
+`lib/survey.ts`. The gate, the store and the Survey tab follow `QUESTIONS`, so
+a question can be commented out without other changes; its column
+(`work` is nullable) stays empty on new responses. Tests: `tests/survey.feature` / `tests/survey.test.mjs`; the
 other post suites get past it with `tests/survey-pass.mjs`.

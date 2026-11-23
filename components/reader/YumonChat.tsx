@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useRef, useState, useSyncExternalStore } from "react";
+import { YumonMascot } from "@/components/mascot/YumonMascot";
 import { track } from "@/lib/analytics/client";
 import { WEIGHTS_MB, clearYumon, sendToYumon, wakeYumon, wantsAutoLoad, yumonStore, type YumonState } from "@/lib/yumon/session";
 
@@ -26,6 +27,7 @@ export function YumonChat() {
   const listRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLInputElement>(null);
   const busy = s.status === "loading" || s.status === "thinking";
+  const last = s.messages[s.messages.length - 1];
 
   useEffect(() => {
     if (s.status === "idle" && wantsAutoLoad() && (open || window.matchMedia(WIDE).matches)) void wakeYumon(true);
@@ -94,6 +96,12 @@ export function YumonChat() {
       </header>
 
       <div className={`${open ? "flex" : "hidden"} h-[min(70dvh,560px)] min-h-0 flex-col xl:flex xl:h-auto xl:flex-1`}>
+        <YumonMascot
+          status={s.status}
+          writing={s.status === "thinking"}
+          hasText={last?.who === "yumon" && !!last.text}
+          className="h-44 shrink-0 border-b border-line/18"
+        />
         <div ref={listRef} className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3.5 [scrollbar-width:thin]">
           <Bubble who="yumon">
             Hi, I&apos;m Yumon. I&apos;m a tiny language model (27M parameters) running right here in your browser, not on a

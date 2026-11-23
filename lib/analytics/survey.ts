@@ -25,7 +25,7 @@ export type SurveyRow = {
   visitorId: string;
   sessionId: string;
   path: string;
-  work: string;
+  work: string | null;
   workDetail: string | null;
   found: string;
   foundDetail: string | null;

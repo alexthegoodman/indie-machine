@@ -185,8 +185,9 @@ model SurveyResponse {
   sessionId   String
   /// The post the survey was answered on.
   path        String
-  /// Choice keys from lib/survey.ts, plus the optional free text under each question.
-  work        String
+  /// Choice keys from lib/survey.ts, plus the optional free text under each question. A column
+  /// is null on responses given while its question wasn't asked.
+  work        String?
   workDetail  String?
   found       String
   foundDetail String?

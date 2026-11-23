@@ -1,6 +1,6 @@
 Feature: The reader survey that opens every post
-  Every post stops after its intro paragraph with two questions (what are you working on, how
-  did you find us). The page only sends the intro; a server action stores the answers and
+  Every post stops after its intro paragraph with the survey questions in lib/survey.ts (now just
+  one: how did you find us; "what are you working on" is commented out). The page only sends the intro; a server action stores the answers and
   returns the rest of the post, and on later posts returns it straight away for a visitor on
   record. Answers land in survey_responses and show in the Survey view of /insights. Questions
   and mode live in lib/survey.ts (required | optional | off).
@@ -14,17 +14,17 @@ Feature: The reader survey that opens every post
     When I open a dev post
     Then the intro paragraph is visible
     And the article has no h2, and there is no chapter list
-    And the survey shows both questions with "CONTINUE READING" disabled
+    And the survey shows "How did you find Indie Machine?" (and not the work question) with "CONTINUE READING" disabled
     And the page's HTML holds the intro but none of the rest of the post
     And a survey_view event is stored, and no read_depth event
 
   Scenario: Answering opens the post and stores the answers
     Given a browser that has never answered the survey
-    When I open a dev post, pick "A game" and "Hacker News", and type a note
+    When I open a dev post, pick "Somewhere else", and type where
     And I press "CONTINUE READING"
     Then the survey is gone and the rest of the article, with its h2s and chapters, is in place
-    And one survey response is stored with work "game", found "hn", the note and the session's source
-    And a survey_submit event is stored with the same choices and no note text
+    And one survey response is stored with found "other", the note, no work answer and the session's source
+    And a survey_submit event is stored with the same choice and no note text
     And scrolling to the end now records read_depth 100
 
   Scenario: Answered once, every post is open
@@ -45,15 +45,15 @@ Feature: The reader survey that opens every post
     Then the survey fits the screen width with no horizontal scroll
 
   Scenario: Answering again replaces the earlier answers
-    Given a browser that answered "AI / ML models or agents" and "Somewhere else" with a note
-    When it forgets that it answered, reloads, and answers "A web app or SaaS" and "Hacker News"
-    Then the visitor has exactly one stored response, holding the second answers
+    Given a browser that answered "Somewhere else" with a note
+    When it forgets that it answered, reloads, and answers "Hacker News"
+    Then the visitor has exactly one stored response, holding the second answer
     And "found" free text is dropped unless found is "other"
 
   Scenario: The Survey view shows what readers said
-    Given 12 seeded responses: 6 working on games found via Reddit, 4 on AI found via search, 2 other with notes
+    Given 12 seeded responses: 6 found via Reddit, 4 via search, 2 "Somewhere else" with notes
     When I sign in to /insights and open the Survey view
     Then the Responses tile counts at least 12
-    And both question tables list every choice
+    And the question table lists every choice, and there is no "Working on" column
     And "In their own words" shows both notes
     And the CSV export with kind=survey has a row for each seeded response
