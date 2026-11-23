@@ -3,6 +3,7 @@ import { categoryLabel } from "@/lib/taxonomy";
 import { absoluteUrl, SITE_DESCRIPTION, SITE_NAME } from "@/lib/site";
 import { seriesDescription } from "@/lib/series";
 import { COURSES } from "@/lib/courses";
+import { getAllLinks } from "@/lib/links";
 
 export function GET() {
   const series = getAllSeries()
@@ -27,6 +28,10 @@ export function GET() {
     })
     .join("\n");
 
+  const links = getAllLinks()
+    .map((l) => `- [${l.title}](${absoluteUrl(`/links/${l.slug}`)}) (${l.date}, ${l.topic}, via ${l.source})`)
+    .join("\n");
+
   const body = `# ${SITE_NAME}
 
 > ${SITE_DESCRIPTION}
@@ -38,6 +43,7 @@ Indie Machine reviews developer tools and keeps an engineering journal. Build po
 - [About](${absoluteUrl("/about")}): Scope, editorial approach, and evidence standards.
 - [Product reviews](${absoluteUrl("/products")}): Searchable index of reviewed developer tools.
 - [Game announcements](${absoluteUrl("/announcements")}): Curated indie game announcements with impression badges.
+- [Trending links](${absoluteUrl("/links")}): Trending tech, gaming and business stories with a short take on each and a link to the source.
 - [Courses](${absoluteUrl("/courses")}): Free interactive courses, step by step with quizzes.
 - [Dev posts](${absoluteUrl("/dev")}): Rust and native engineering build log.
 - [Advertise](${absoluteUrl("/promote")}): Advertising for makers: monthly ad slots and paid reviews.
@@ -51,6 +57,10 @@ ${products}
 ## Courses
 
 ${courses}
+
+## Trending links
+
+${links}
 
 ## Series
 

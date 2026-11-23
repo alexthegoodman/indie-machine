@@ -22,6 +22,7 @@ import {
   SearchIcon,
   SparkIcon,
   TerminalIcon,
+  TrendIcon,
 } from "./icons";
 import { SupportStrip } from "../SiteFooter";
 
@@ -29,6 +30,7 @@ const PRIMARY = [
   { href: "/", label: "Home", short: "Home", Icon: HomeIcon },
   { href: "/products", label: "Indie Product Database", short: "Indie Products", Icon: ReviewIcon },
   { href: "/announcements", label: "Indie Game Database", short: "Indie Games", Icon: DiamondIcon },
+  { href: "/links", label: "Trending Links", short: "Trending", Icon: TrendIcon },
   { href: "/dev", label: "Dev Log", short: "Dev Log", Icon: TerminalIcon },
   { href: "/free-ai", label: "Free AI", short: "Free AI", Icon: SparkIcon },
   { href: "/courses", label: "Free Courses", short: "Courses", Icon: CapIcon },

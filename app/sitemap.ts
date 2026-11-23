@@ -2,6 +2,7 @@ import type { MetadataRoute } from "next";
 import { getAllPosts, getAllSeries } from "@/lib/posts";
 import { SITE_URL } from "@/lib/site";
 import { COURSES } from "@/lib/courses";
+import { LINK_TOPICS, getAllLinks } from "@/lib/links";
 
 export default function sitemap(): MetadataRoute.Sitemap {
   const posts = getAllPosts();
@@ -13,6 +14,7 @@ export default function sitemap(): MetadataRoute.Sitemap {
     { url: `${SITE_URL}/products`, changeFrequency: "daily", priority: 0.9 },
     { url: `${SITE_URL}/dev`, changeFrequency: "daily", priority: 0.8 },
     { url: `${SITE_URL}/announcements`, changeFrequency: "daily", priority: 0.8 },
+    { url: `${SITE_URL}/links`, changeFrequency: "daily", priority: 0.8 },
     { url: `${SITE_URL}/games`, changeFrequency: "monthly", priority: 0.6 },
     { url: `${SITE_URL}/promote`, changeFrequency: "monthly", priority: 0.4 },
     { url: `${SITE_URL}/archive`, changeFrequency: "daily", priority: 0.8 },
@@ -44,5 +46,19 @@ export default function sitemap(): MetadataRoute.Sitemap {
     })),
   ]);
 
-  return [...staticRoutes, ...courseRoutes, ...postRoutes, ...seriesRoutes];
+  const linkRoutes: MetadataRoute.Sitemap = [
+    ...Object.keys(LINK_TOPICS).map((topic) => ({
+      url: `${SITE_URL}/links/topic/${topic}`,
+      changeFrequency: "daily" as const,
+      priority: 0.5,
+    })),
+    ...getAllLinks().map((link) => ({
+      url: `${SITE_URL}/links/${link.slug}`,
+      lastModified: link.date,
+      changeFrequency: "weekly" as const,
+      priority: 0.6,
+    })),
+  ];
+
+  return [...staticRoutes, ...courseRoutes, ...postRoutes, ...linkRoutes, ...seriesRoutes];
 }

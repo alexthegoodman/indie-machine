@@ -94,6 +94,12 @@ export const ExternalIcon = (p: IconProps) => (
     <path d="M18 14v6H4V6h6" />
   </Svg>
 );
+export const TrendIcon = (p: IconProps) => (
+  <Svg {...p}>
+    <path d="m3 17 6-6 4 4 8-8" />
+    <path d="M15 7h6v6" />
+  </Svg>
+);
 export const CapIcon = (p: IconProps) => (
   <Svg {...p}>
     <path d="m2 9 10-5 10 5-10 5z" />
