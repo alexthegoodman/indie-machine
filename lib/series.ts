@@ -8,6 +8,8 @@ export function seriesDescription(name: string): string {
       return "Technical reviews of new developer tools, grounded in source code, documentation, and hands-on tests where available.";
     case "Game Announcements":
       return "Curated announcements, mechanics breakdowns, and impression badges for new and upcoming indie games.";
+    case "AI News":
+      return "Deep-dive analysis of frontier AI research, reasoning breakthroughs, and on-device small language model architectures.";
     default:
       return `Engineering posts in the ${name} series on Indie Machine.`;
   }
