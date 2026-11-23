@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { allowPosts, storeSurveyPass } from "./survey-pass.mjs";
 
 const BASE_URL = process.env.BASE_URL ?? "http://localhost:3123";
 const SHOTS = process.env.SCREENSHOT_DIR;
@@ -46,12 +47,15 @@ async function waitFor(fn, what, ms = 20_000) {
   }
 }
 
+await storeSurveyPass();
 // WebGPU in headless Chrome needs these; without an adapter Yumon falls back to the CPU.
 const browser = await chromium.launch({ channel: "chrome", headless: true, args: ["--enable-unsafe-webgpu", "--enable-gpu"] });
 
 /** A context whose tracker may send (navigator.webdriver is set); every event lands in `events`. */
 async function newContext(viewport) {
   const context = await browser.newContext({ viewport, reducedMotion: "reduce" });
+  // Past the reader survey (tests/survey.feature), which would stop posts after their intro.
+  await allowPosts(context);
   await context.addInitScript(() => {
     try {
       localStorage.setItem("im_analytics_test", "1");

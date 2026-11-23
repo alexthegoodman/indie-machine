@@ -273,7 +273,7 @@ no cookies, no IPs. Country and city come from Vercel's edge headers. Bots
 Recorded automatically: `pageview`, `engage` (visible, in-use time and scroll
 depth per page), `read_depth` (25/50/75/100 of a post body), `link_click`,
 `outbound_click`, `search`, `search_select`, `save`, `share`,
-`launch_submit`, `ad_click`, `yumon_*`, `web_vital`, `js_error` (full list with props in
+`launch_submit`, `ad_click`, `yumon_*`, `survey_*`, `web_vital`, `js_error` (full list with props in
 `lib/analytics/events.ts`). To add one: `track("name", { ...props })` from a
 client component, or put `data-track="name"` and `data-track-<prop>="..."`
 on any clickable element.
@@ -297,3 +297,22 @@ local `prisma dev` server drops connections under parallel load).
 
 Tests: `tests/analytics.feature` / `tests/analytics.test.mjs` (run against
 `next start` with `ANALYTICS_PASSWORD` set; usage at the top of the file).
+
+### Reader survey
+
+Every post stops after its intro (the lede, or the first paragraph) with two
+questions: what the reader is working on, and how they found the site. The
+page only renders the intro (`lib/rehype-split-intro.ts`, via
+`lib/post-content.tsx`); `components/reader/PostRest.tsx` shows the survey and
+calls the server actions in `app/posts/[slug]/actions.ts`, which store the
+answers in `survey_responses` (Prisma `SurveyResponse`, one row per visitor
+per survey version) and return the rest of the post. A browser that answered
+before gets the rest straight away, once the server finds its visitor id on
+record. The Survey tab in `/insights` shows the answers, the answer rate
+(`survey_view` vs `survey_submit` events), the two questions against each
+other and against the referrer, free text, and CSV export (`kind=survey`).
+
+Questions, `SURVEY_MODE` (`required` | `optional` adds Skip | `off` sends whole
+posts again) and `SURVEY_VERSION` (bump to ask everyone again) live in
+`lib/survey.ts`. Tests: `tests/survey.feature` / `tests/survey.test.mjs`; the
+other post suites get past it with `tests/survey-pass.mjs`.

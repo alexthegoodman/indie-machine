@@ -7,6 +7,7 @@ import assert from "node:assert/strict";
 import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { allowPosts, storeSurveyPass } from "./survey-pass.mjs";
 
 const BASE_URL = process.env.BASE_URL ?? "http://localhost:3123";
 const SHOTS = process.env.SCREENSHOT_DIR;
@@ -32,9 +33,12 @@ async function shot(page, name) {
   await page.screenshot({ path: path.join(SHOTS, `${name}.png`) });
 }
 
+await storeSurveyPass();
 const browser = await chromium.launch({ channel: "chrome", headless: true });
 async function newPage(viewport = { width: 1440, height: 900 }) {
   const context = await browser.newContext({ viewport, reducedMotion: "reduce" });
+  // Past the reader survey (tests/survey.feature), which would stop posts after their intro.
+  await allowPosts(context);
   const page = await context.newPage();
   page.errors = [];
   page.on("pageerror", (e) => page.errors.push(String(e)));

@@ -143,6 +143,12 @@ function cleanProps(props?: Record<string, unknown>): Props | undefined {
   return any ? out : undefined;
 }
 
+/** This browser's visitor and session ids and the session's attribution (for the survey). */
+export function identity(): { v: string; s: string; ctx: WireContext } {
+  const s = currentSession(Date.now());
+  return { v: visitorId(), s: s.id, ctx: s.ctx };
+}
+
 /** Queue an event for the current page (or `path`, for events about the page being left). */
 export function track(name: string, props?: Record<string, unknown>, path?: string) {
   if (!analyticsEnabled()) return;

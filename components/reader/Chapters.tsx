@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { ARTICLE_ID, articleProgress } from "./ReaderTracker";
+import { ARTICLE_CHANGED, ARTICLE_ID, articleProgress } from "./ReaderTracker";
 
 type Chapter = { id: string; label: string; minute: number };
 
@@ -35,6 +35,14 @@ export function Chapters({ variant }: { variant: "panel" | "collapsible" }) {
   const [chapters, setChapters] = useState<Chapter[]>([]);
   const [active, setActive] = useState(0);
   const [pct, setPct] = useState(0);
+  // Bumped when the article's content changes (the rest of a post arrives after the survey).
+  const [revision, setRevision] = useState(0);
+
+  useEffect(() => {
+    const bump = () => setRevision((r) => r + 1);
+    window.addEventListener(ARTICLE_CHANGED, bump);
+    return () => window.removeEventListener(ARTICLE_CHANGED, bump);
+  }, []);
 
   useEffect(() => {
     const list = readChapters();
@@ -60,7 +68,7 @@ export function Chapters({ variant }: { variant: "panel" | "collapsible" }) {
       cancelAnimationFrame(frame);
       window.removeEventListener("scroll", onScroll);
     };
-  }, []);
+  }, [revision]);
 
   if (chapters.length < 2) return null;
 

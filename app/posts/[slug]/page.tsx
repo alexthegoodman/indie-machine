@@ -1,12 +1,7 @@
 import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
-import { compileMDX } from "next-mdx-remote/rsc";
-import remarkGfm from "remark-gfm";
-import rehypeSlug from "rehype-slug";
-import rehypePrettyCode from "rehype-pretty-code";
 import { SpecSheet } from "@/components/SpecSheet";
-import { mdxComponents } from "@/components/mdx-components";
 import { ProductPanel } from "@/components/ProductPanel";
 import { BadgeList } from "@/components/GameBadge";
 import { AdSlot } from "@/components/AdSlot";
@@ -17,10 +12,11 @@ import { Chapters } from "@/components/reader/Chapters";
 import { ReaderActions } from "@/components/reader/ReaderActions";
 import { EndCard, UpNextList } from "@/components/reader/UpNext";
 import { YumonChat } from "@/components/reader/YumonChat";
+import { PostRest } from "@/components/reader/PostRest";
+import { compilePost } from "@/lib/post-content";
+import { SURVEY_MODE } from "@/lib/survey";
 import { averageScore, getAllPosts, getSimilarPosts, type Post } from "@/lib/posts";
 import { channelOf, shortDate, toMediaItem } from "@/lib/media";
-import { rehypeFixImagePaths } from "@/lib/rehype-fix-image-paths";
-import { rehypeDropCover } from "@/lib/rehype-drop-cover";
 import { resolveRepoLink } from "@/lib/repoLink";
 import { SITE_NAME, absoluteUrl } from "@/lib/site";
 import { SupportStrip } from "@/components/SiteFooter";
@@ -28,7 +24,6 @@ import { PostIntro } from "@/components/experience/PostIntro";
 import { Marquee } from "@/components/experience/Marquee";
 import { ScrollFx } from "@/components/experience/ScrollFx";
 import { introScene, marqueeWords } from "@/lib/experience";
-import { rehypeExperience } from "@/lib/rehype-experience";
 import type { CSSProperties } from "react";
 
 const QUEUE_LENGTH = 10;
@@ -101,22 +96,9 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
   const number = posts.length - posts.indexOf(post);
   const kindLabel = post.kind === "product" ? "Review" : isGame ? "Game drop" : post.series ? `${post.series} · Dev log` : "Dev log";
 
-  const { content } = await compileMDX({
-    source: post.content,
-    components: mdxComponents,
-    options: {
-      mdxOptions: {
-        remarkPlugins: [remarkGfm],
-        rehypePlugins: [
-          rehypeSlug,
-          rehypeFixImagePaths,
-          [rehypeDropCover, { src: post.image }],
-          rehypeExperience,
-          [rehypePrettyCode, { theme: "poimandres" }],
-        ],
-      },
-    },
-  });
+  // While the survey is on, only the intro is sent; PostRest brings the rest after it's answered.
+  const surveyed = SURVEY_MODE !== "off";
+  const content = await compilePost(post, surveyed ? "intro" : "all");
 
   const jsonLd = {
     "@context": "https://schema.org",
@@ -273,6 +255,7 @@ export default async function PostPage({ params }: { params: Promise<{ slug: str
 
             <article id={ARTICLE_ID} className="exp-article mt-16 max-w-[780px] min-w-0 break-words">
               {content}
+              {surveyed && <PostRest key={post.slug} slug={post.slug} />}
             </article>
 
             {queue[0] && <EndCard next={queue[0]} />}

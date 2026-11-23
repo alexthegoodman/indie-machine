@@ -40,14 +40,14 @@ function rateLimited(visitorId: string, count: number, now: number): boolean {
   return r.count > RATE_MAX_EVENTS;
 }
 
-function str(v: unknown, max = 128): string | undefined {
+export function str(v: unknown, max = 128): string | undefined {
   if (typeof v !== "string") return undefined;
   // Control characters have no business in any of these fields.
   const t = v.replace(/[\u0000-\u001f\u007f]/g, "").trim();
   return t ? t.slice(0, max) : undefined;
 }
 
-function path(v: unknown): string | undefined {
+export function path(v: unknown): string | undefined {
   const p = str(v, MAX_PATH);
   return p?.startsWith("/") ? p : undefined;
 }
@@ -71,7 +71,7 @@ function props(v: unknown): Props | undefined {
   return n ? out : undefined;
 }
 
-function device(type: string | undefined): string {
+export function device(type: string | undefined): string {
   if (!type) return "desktop";
   if (type === "mobile" || type === "tablet") return type;
   return "other";

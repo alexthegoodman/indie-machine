@@ -19,6 +19,9 @@ export const EVENT_NAMES = {
   yumon_message: "A message to Yumon: { ok, turn, source, chars, tokens, msPerToken, memories, backend, stopped?, err? } (source = input | suggestion | regenerate; regenerate and stopped only on /free-ai). No message text.",
   yumon_thread: "A /free-ai thread action: { action, threads } (action = new | rename | pin | delete | delete_all | export). No titles or text.",
   yumon_clear: "The Yumon chat was cleared: { turns }.",
+  survey_view: "The reader survey closed off a post after its intro: { version }. Once per post view, only for visitors who haven't answered.",
+  survey_submit: "The reader survey was answered: { version, ok, status, work, found, detail } (choice keys from lib/survey.ts; detail = any free text given, the text itself is only in survey_responses).",
+  survey_skip: "The reader survey was skipped (only when SURVEY_MODE is optional): { version }.",
   web_vital:"A Core Web Vital for the page: { metric, value, rating }.",
   js_error: "An uncaught script error: { msg, src }.",
 } as const;

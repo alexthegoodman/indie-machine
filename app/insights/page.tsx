@@ -16,6 +16,7 @@ import { Retention } from "./_views/Retention";
 import { Breakdown } from "./_views/Breakdown";
 import { Sessions, SessionDetail, VisitorDetail } from "./_views/Sessions";
 import { Events } from "./_views/Events";
+import { Survey } from "./_views/Survey";
 import type { ViewProps } from "./_views/types";
 
 export const metadata: Metadata = {
@@ -32,6 +33,7 @@ const TABS = [
   ["breakdown", "Breakdown", Breakdown],
   ["sessions", "Sessions", Sessions],
   ["events", "Events", Events],
+  ["survey", "Survey", Survey],
 ] as const;
 
 const DETAILS: Partial<Record<string, (p: ViewProps) => Promise<React.ReactNode>>> = {

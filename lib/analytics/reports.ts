@@ -27,7 +27,7 @@ const LIMIT = Math.max(1, Number(process.env.ANALYTICS_DB_CONCURRENCY) || (proce
 let active = 0;
 const waiting: (() => void)[] = [];
 
-async function run<T>(q: Sql): Promise<T[]> {
+export async function run<T>(q: Sql): Promise<T[]> {
   if (active >= LIMIT) await new Promise<void>((r) => waiting.push(r));
   active++;
   try {

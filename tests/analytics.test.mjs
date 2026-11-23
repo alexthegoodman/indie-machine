@@ -10,6 +10,7 @@ import fs from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
 import pg from "pg";
+import { allowPosts, storeSurveyPass } from "./survey-pass.mjs";
 
 const BASE_URL = process.env.BASE_URL ?? "http://localhost:3123";
 const PASSWORD = process.env.INSIGHTS_PASSWORD ?? "bdd-test-password";
@@ -23,6 +24,7 @@ const client = new pg.Client({ connectionString: process.env.DATABASE_URL });
 await client.connect();
 const rows = async (sql, args = []) => (await client.query(sql, args)).rows;
 const clearTestEvents = () => client.query(`DELETE FROM analytics_events WHERE "visitorId" LIKE 'bddtest%'`);
+const clearSurveyPasses = () => client.query(`DELETE FROM survey_responses WHERE "visitorId" LIKE 'bddtest-browser-%'`);
 
 async function waitFor(fn, label, ms = 10_000) {
   const end = Date.now() + ms;
@@ -69,6 +71,9 @@ async function trackedPage(viewport = { width: 1440, height: 900 }) {
       // about:blank (used to leave a page) has no storage
     }
   }, visitor);
+  // Past the reader survey (tests/survey.feature), which would stop posts after their intro.
+  await storeSurveyPass(visitor);
+  await allowPosts(context, null);
   const page = await context.newPage();
   page.errors = [];
   page.on("pageerror", (e) => page.errors.push(String(e)));
@@ -308,6 +313,7 @@ await scenario("The dashboard fits a phone", async () => {
 });
 
 await clearTestEvents();
+await clearSurveyPasses();
 await client.end();
 await browser.close();
 const failed = results.filter((r) => !r.ok).length;

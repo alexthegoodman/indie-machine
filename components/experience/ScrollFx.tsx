@@ -1,6 +1,7 @@
 "use client";
 
-import { useEffect } from "react";
+import { useEffect, useState } from "react";
+import { ARTICLE_CHANGED } from "@/components/reader/ReaderTracker";
 
 // Drives the post page's scroll-linked styles. Every element marked
 // `data-scroll-p` gets three custom properties, updated once per frame while
@@ -11,6 +12,15 @@ import { useEffect } from "react";
 //   --read  how much of it has passed the reading line, 0-1 - for the lede.
 // Under reduced motion nothing is set, and the CSS fallbacks (rest state) apply.
 export function ScrollFx({ slug }: { slug: string }) {
+  // Bumped when the article's content changes (the rest of a post arrives after the survey).
+  const [revision, setRevision] = useState(0);
+
+  useEffect(() => {
+    const bump = () => setRevision((r) => r + 1);
+    window.addEventListener(ARTICLE_CHANGED, bump);
+    return () => window.removeEventListener(ARTICLE_CHANGED, bump);
+  }, []);
+
   useEffect(() => {
     if (window.matchMedia("(prefers-reduced-motion: reduce)").matches) return;
     const els = Array.from(document.querySelectorAll<HTMLElement>("[data-scroll-p]"));
@@ -45,7 +55,7 @@ export function ScrollFx({ slug }: { slug: string }) {
       window.removeEventListener("scroll", onScroll);
       window.removeEventListener("resize", onScroll);
     };
-  }, [slug]);
+  }, [slug, revision]);
 
   return null;
 }

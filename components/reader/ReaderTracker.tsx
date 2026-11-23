@@ -7,6 +7,10 @@ import { track } from "@/lib/analytics/client";
 const MILESTONES = [25, 50, 75, 100];
 
 export const ARTICLE_ID = "post-body";
+/** Window event: the article's content changed (the rest of the post arrived after the survey). */
+export const ARTICLE_CHANGED = "im-article-change";
+/** Attribute on the placeholder or survey standing in for the rest of the post (PostRest). */
+export const POST_REST_PENDING = "data-post-rest-pending";
 
 // How far through the article body the bottom of the viewport is, 0-100.
 export function articleProgress(): number {
@@ -28,6 +32,8 @@ export function ReaderTracker({ slug }: { slug: string }) {
     let reached = 0;
     const update = () => {
       frame = 0;
+      // Until the rest of the post arrives, the intro alone would read as the whole post.
+      if (document.querySelector(`[${POST_REST_PENDING}]`)) return;
       const p = articleProgress();
       setPct(p);
       recordProgress(slug, p);
@@ -45,10 +51,12 @@ export function ReaderTracker({ slug }: { slug: string }) {
     update();
     window.addEventListener("scroll", onScroll, { passive: true });
     window.addEventListener("resize", onScroll);
+    window.addEventListener(ARTICLE_CHANGED, onScroll);
     return () => {
       cancelAnimationFrame(frame);
       window.removeEventListener("scroll", onScroll);
       window.removeEventListener("resize", onScroll);
+      window.removeEventListener(ARTICLE_CHANGED, onScroll);
     };
   }, [slug]);
 

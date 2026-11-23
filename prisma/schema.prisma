@@ -173,3 +173,33 @@ model AnalyticsEvent {
   @@index([path, at])
   @@map("analytics_events")
 }
+
+/// One reader's answers to the survey that opens a post (lib/survey.ts). One row per visitor
+/// per survey version. `visitorId`/`sessionId` are the analytics ids, so a response joins to
+/// that visitor's events; source and landing page are the session's, copied at answer time.
+model SurveyResponse {
+  id          String   @id @default(cuid())
+  at          DateTime @default(now())
+  version     Int
+  visitorId   String
+  sessionId   String
+  /// The post the survey was answered on.
+  path        String
+  /// Choice keys from lib/survey.ts, plus the optional free text under each question.
+  work        String
+  workDetail  String?
+  found       String
+  foundDetail String?
+  /// Referring host of the session ("news.ycombinator.com"), or "direct".
+  source      String
+  utmSource   String?
+  entryPath   String
+  country     String?
+  /// desktop | mobile | tablet | other
+  device      String
+  lang        String?
+
+  @@unique([visitorId, version])
+  @@index([at])
+  @@map("survey_responses")
+}

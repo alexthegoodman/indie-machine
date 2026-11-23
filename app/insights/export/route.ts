@@ -2,10 +2,16 @@
 import { isSignedIn } from "@/lib/analytics/auth";
 import { parseQuery } from "@/lib/analytics/query";
 import { exportRows } from "@/lib/analytics/reports";
+import { surveyExport } from "@/lib/analytics/survey";
 
 const COLUMNS = [
   "id", "at", "name", "path", "visitorId", "sessionId", "source", "utmSource", "utmMedium", "utmCampaign",
   "entryPath", "country", "city", "device", "browser", "os", "screenW", "lang", "props",
+] as const;
+
+const SURVEY_COLUMNS = [
+  "id", "at", "version", "path", "work", "workDetail", "found", "foundDetail", "visitorId", "sessionId", "source",
+  "utmSource", "entryPath", "country", "device", "lang",
 ] as const;
 
 function cell(v: unknown): string {
@@ -21,14 +27,17 @@ export async function GET(req: Request): Promise<Response> {
   const params: Record<string, string[]> = {};
   for (const [k, v] of new URL(req.url).searchParams) (params[k] ??= []).push(v);
   const q = parseQuery(params);
-  const rows = await exportRows(q);
-  const lines = [COLUMNS.join(",")];
-  for (const r of rows) lines.push(COLUMNS.map((c) => cell((r as Record<string, unknown>)[c])).join(","));
+  // ?kind=survey exports the survey answers in the date range instead of events.
+  const survey = params.kind?.[0] === "survey";
+  const columns: readonly string[] = survey ? SURVEY_COLUMNS : COLUMNS;
+  const rows = survey ? await surveyExport(q) : await exportRows(q);
+  const lines = [columns.join(",")];
+  for (const r of rows) lines.push(columns.map((c) => cell((r as Record<string, unknown>)[c])).join(","));
   const stamp = new Date().toISOString().slice(0, 10);
   return new Response(lines.join("\n") + "\n", {
     headers: {
       "Content-Type": "text/csv; charset=utf-8",
-      "Content-Disposition": `attachment; filename="indie-machine-events-${stamp}.csv"`,
+      "Content-Disposition": `attachment; filename="indie-machine-${survey ? "survey" : "events"}-${stamp}.csv"`,
       "Cache-Control": "no-store",
     },
   });
