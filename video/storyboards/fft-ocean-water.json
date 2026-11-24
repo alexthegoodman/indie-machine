@@ -1,0 +1,94 @@
+{
+  "scenes": [
+    {
+      "type": "intro",
+      "say": "An FFT ocean for the Entropy engine, computed entirely on the GPU. Here's how it works, in about a minute.",
+      "speak": "An F.F.T. ocean for the Entropy engine, computed entirely on the G.P.U. Here's how it works, in about a minute."
+    },
+    {
+      "type": "point",
+      "kicker": "The model",
+      "head": "Tessendorf's ocean starts from a Phillips spectrum",
+      "say": "It follows Tessendorf's model: a Phillips spectrum, shaped by wind, seeds a 512 by 512 grid of wave amplitudes at startup.",
+      "speak": "It follows Tessendorf's model: a Phillips spectrum, shaped by wind, seeds a five twelve by five twelve grid of wave amplitudes at startup.",
+      "visual": {
+        "kind": "code",
+        "file": "fft_water_addon.ts  /  SPECTRUM_INIT_SHADER",
+        "size": 19,
+        "lines": [
+          "fn phillips_spectrum(k: vec2<f32>) -> f32 {",
+          "    let k_length = length(k);",
+          "    if (k_length < 0.0001) { return 0.0; }",
+          "    let L = (params.wind_speed * params.wind_speed) / params.gravity;",
+          "    let wind_dir = normalize(vec2<f32>(params.wind_direction_x,",
+          "                                       params.wind_direction_y));",
+          "    let k_dot_w = dot(k / k_length, wind_dir);",
+          "    ...",
+          "    return params.amplitude *",
+          "           exp(-1.0 / (k_length2 * L * L)) / k_length4 *",
+          "           k_dot_w2 * exp(-k_length2 * l2);",
+          "}"
+        ]
+      }
+    },
+    {
+      "type": "point",
+      "kicker": "Every frame",
+      "head": "Rotate the spectrum in time, then inverse FFT",
+      "say": "Each frame, every wave rotates forward in time, and a 2D inverse FFT, nine butterfly stages per axis, turns it into choppy displacement and foam.",
+      "speak": "Each frame, every wave rotates forward in time, and a two D inverse F.F.T., nine butterfly stages per axis, turns it into choppy displacement and foam.",
+      "visual": {
+        "kind": "list",
+        "items": [
+          "Dispersion: omega = sqrt(g * |k|)",
+          "Dx / Dz spectra for choppy crests",
+          "9 Cooley-Tukey stages per axis, ping-pong textures",
+          "Jacobian foam mask where the surface folds"
+        ]
+      }
+    },
+    {
+      "type": "point",
+      "kicker": "Standalone",
+      "head": "One TypeScript addon, run by an 11-line binary",
+      "say": "It's one TypeScript addon with seven WGSL shaders, run by an eleven-line Rust binary outside Entropy Studio.",
+      "speak": "It's one TypeScript addon with seven W.G.S.L. shaders, run by an eleven line Rust binary outside Entropy Studio.",
+      "visual": {
+        "kind": "image",
+        "src": "/images/fft-water-ocean-glints.png",
+        "label": "The running window, Intel UHD 770"
+      }
+    },
+    {
+      "type": "point",
+      "kicker": "Evidence",
+      "head": "21 compute dispatches per update",
+      "say": "That's 21 compute dispatches per update, and on integrated Intel graphics it held 120 updates a second, locked to vsync.",
+      "speak": "That's twenty-one compute dispatches per update, and on integrated Intel graphics it held a hundred and twenty updates a second, locked to vee-sync.",
+      "visual": {
+        "kind": "stat",
+        "value": "120",
+        "unit": "updates / s",
+        "label": "2,206 calls in 18.38 s, Intel UHD 770 at 120 Hz",
+        "sub": "Tracks the 120 Hz display 1:1 (Fifo present mode)"
+      }
+    },
+    {
+      "type": "point",
+      "kicker": "Failure notes",
+      "head": "Foam textures don't load outside a Studio project",
+      "say": "One limitation: foam textures need a Studio project, so standalone, the foam falls back to a transparent placeholder."
+    },
+    {
+      "type": "verdict",
+      "kicker": "What's next",
+      "head": "Rivers from the dormant JONSWAP spectrum, then buoyancy and wakes",
+      "say": "Next up: rivers, using the JONSWAP spectrum that's already written, then buoyancy and wakes.",
+      "speak": "Next up: rivers, using the JON-swap spectrum that's already written, then buoyancy and wakes."
+    },
+    {
+      "type": "outro",
+      "say": "The full write-up is on Indie Machine."
+    }
+  ]
+}

@@ -1,0 +1,116 @@
+{
+  "scenes": [
+    {
+      "type": "intro",
+      "say": "Kiri is a free, open-source container runtime written in Rust, built to replace Docker Desktop. Here's the review in about a minute."
+    },
+    {
+      "type": "point",
+      "kicker": "The problem",
+      "head": "Docker Desktop can idle at 2 to 4.5 GB of RAM",
+      "say": "Docker Desktop can hold up to 4.5 gigabytes of RAM before a single container runs.",
+      "visual": {
+        "kind": "stat",
+        "value": "4.5",
+        "unit": "GB",
+        "label": "Docker Desktop resident memory, upper end",
+        "sub": "Before running a single container"
+      },
+      "speak": "Docker Desktop can hold up to four and a half gigabytes of RAM before a single container runs."
+    },
+    {
+      "type": "point",
+      "kicker": "Architecture",
+      "head": "One 900 KB agent replaces the daemon stack",
+      "say": "Kiri replaces its daemon chain with one 900 kilobyte agent inside a 10 megabyte Linux kernel, and launches containers with a single clone3 system call.",
+      "speak": "Kiri replaces its daemon chain with one nine hundred kilobyte agent inside a ten megabyte Linux kernel, and launches containers with a single clone-three system call.",
+      "visual": {
+        "kind": "image",
+        "src": "/images/kiri-window.png",
+        "label": "Kiri's native desktop window"
+      }
+    },
+    {
+      "type": "point",
+      "kicker": "Speed",
+      "head": "Container start-and-exit in 2.55 ms",
+      "say": "Through the Docker Engine API, a container starts and exits in 2.55 milliseconds. Docker Desktop takes 213.",
+      "speak": "Through the Docker Engine A.P.I., a container starts and exits in two point five five milliseconds. Docker Desktop takes two hundred thirteen.",
+      "visual": {
+        "kind": "bars",
+        "unit": "ms",
+        "label": "Start-and-exit latency via the Docker Engine API",
+        "items": [
+          {
+            "label": "Kiri 0.2.0",
+            "value": 2.55
+          },
+          {
+            "label": "Docker Desktop",
+            "value": 213
+          },
+          {
+            "label": "OrbStack",
+            "value": 380
+          }
+        ]
+      }
+    },
+    {
+      "type": "point",
+      "kicker": "Compatibility",
+      "head": "Speaks the Docker Engine API natively",
+      "say": "The docker CLI and Compose work unchanged, and the VM sleeps when idle, then wakes in 0.15 seconds.",
+      "speak": "The docker C.L.I. and Compose work unchanged, and the V.M. sleeps when idle, then wakes in fifteen hundredths of a second.",
+      "visual": {
+        "kind": "list",
+        "items": [
+          "docker, Compose, buildx and Dev Containers work unchanged",
+          "Idle sleep after 60 s, 0.15 s wake",
+          "Locked-down Windows named pipe",
+          "Built-in k3s and *.kiri.local domains"
+        ]
+      }
+    },
+    {
+      "type": "point",
+      "kicker": "Rough edges",
+      "head": "host-gateway builds fail, and Winsock behaves differently",
+      "say": "Rough edges: host-gateway builds fail, and cancelling a download on Windows can hang until a socket timeout.",
+      "speak": "Rough edges: host gateway builds fail, and cancelling a download on Windows can hang until a socket timeout.",
+      "visual": {
+        "kind": "code",
+        "file": "terminal",
+        "size": 19,
+        "lines": [
+          "$ docker build --add-host host.docker.internal:host-gateway .",
+          "ERROR: host-gateway is not supported by the",
+          "       docker-container driver",
+          "",
+          "$ cargo test -p kiri-image   # Windows 11",
+          "test cancel::tests::cancel_ends_a_read_that_is_waiting",
+          "  ... FAILED",
+          "panicked at crates\\kiri-image\\src\\cancel.rs:132:9:",
+          "  120.1043835s"
+        ]
+      }
+    },
+    {
+      "type": "scores",
+      "say": "It scores nine out of ten overall, with a perfect ten for performance."
+    },
+    {
+      "type": "verdict",
+      "head": "Ready for daily development duty",
+      "pros": "Single-syscall clone3 spawning: containers start at near-process speed.",
+      "cons": "Move BuildKit into the daemon so host-gateway builds just work.",
+      "say": "Favorite feature: that single clone3 spawn. What we'd change: build BuildKit into the daemon. Verdict: ready for daily development.",
+      "speak": "Favorite feature: that single clone-three spawn. What we'd change: build BuildKit into the daemon. Verdict: ready for daily development."
+    },
+    {
+      "type": "outro",
+      "head": "Read the full review",
+      "say": "Read the full review on Indie Machine."
+    }
+  ]
+}
