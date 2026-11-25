@@ -1,26 +1,6 @@
 {
     "todo": [
         {
-            "name": "Ballz Royale",
-            "developer": "Gamingtao"
-        },
-        {
-            "name": "Virtual Soccer Zone",
-            "developer": "Orwell VR"
-        },
-        {
-            "name": "Build a Game Universe",
-            "developer": "Walker Boys Studio, Inc."
-        },
-        {
-            "name": "Seven Sins - Academic Version",
-            "developer": "much2pro4you"
-        },
-        {
-            "name": "Moshpit",
-            "developer": "Moshpit Studios"
-        },
-        {
             "name": "Life Goals",
             "developer": "Single Axis"
         },
@@ -178,6 +158,22 @@
         }
     ],
     "finished": [
+        {
+            "name": "Virtual Soccer Zone",
+            "developer": "Orwell VR"
+        },
+        {
+            "name": "Build a Game Universe",
+            "developer": "Walker Boys Studio, Inc."
+        },
+        {
+            "name": "Seven Sins - Academic Version",
+            "developer": "much2pro4you"
+        },
+        {
+            "name": "Moshpit",
+            "developer": "Moshpit Studios"
+        },
         {
             "name": "Bankster",
             "developer": "Orion Franklin"
