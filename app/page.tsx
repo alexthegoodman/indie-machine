@@ -8,6 +8,7 @@ import { Thumb } from "@/components/media/Thumb";
 import { ScoreMeter } from "@/components/ScoreMeter";
 import { getAllPosts } from "@/lib/posts";
 import { toMediaItem, type MediaItem } from "@/lib/media";
+import { YumonThreads } from "@/components/free-ai/YumonThreads";
 
 const TOP_COUNT = 5;
 
@@ -32,7 +33,13 @@ export default function Home() {
     <PageBody className="pb-4">
       <h1 className="sr-only">Indie Machine - developer tools tested from source, and a Rust build log</h1>
 
-      <FreeAiBanner />
+      {/* <FreeAiBanner /> */}
+
+      {/* To benefit those coming from getfreeai.online, which would be most of the home page visitors, this is included directly */}
+      <div className="mb-8">
+        <YumonThreads />
+      </div>
+
       <Billboard items={featured} />
       <ContinueShelf />
 
