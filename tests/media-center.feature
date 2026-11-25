@@ -13,6 +13,15 @@ Feature: Media-center app shell
     And the featured carousel can move to the next slide
     And the feed shows post cards
 
+  Scenario: A Free AI banner tops the home page and opens /free-ai
+    When I open / at 1440x900
+    Then a gold "Free AI" banner sits above the featured carousel
+    And Yumon's mascot appears on the left of the banner after the page has loaded, with no look toggle
+    When I click the banner
+    Then I am on /free-ai
+    And on a 390px wide viewport the banner fits without sideways scroll
+    And the phone never downloads the mascot model
+
   Scenario: Feed chips filter the home feed
     When I open "/"
     And I pick the "Game drops" chip

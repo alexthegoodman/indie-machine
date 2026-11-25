@@ -1,5 +1,6 @@
 import Link from "next/link";
 import { AdSlot } from "@/components/AdSlot";
+import { FreeAiBanner } from "@/components/free-ai/FreeAiBanner";
 import { Billboard } from "@/components/media/Billboard";
 import { ContinueShelf, HomeFeed } from "@/components/media/HomeFeed";
 import { PageBody, ShelfHeader } from "@/components/media/ChannelHeader";
@@ -31,6 +32,7 @@ export default function Home() {
     <PageBody className="pb-4">
       <h1 className="sr-only">Indie Machine - developer tools tested from source, and a Rust build log</h1>
 
+      <FreeAiBanner />
       <Billboard items={featured} />
       <ContinueShelf />
 

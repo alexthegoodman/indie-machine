@@ -79,6 +79,41 @@ await scenario("Home renders the shell, featured carousel and feed", async () =>
   await page.context().close();
 });
 
+await scenario("A Free AI banner tops the home page and opens /free-ai", async () => {
+  const page = await newPage();
+  await page.goto(BASE_URL + "/");
+  const banner = page.getByRole("link", { name: /^Free AI: chat with Yumon/ });
+  await banner.waitFor();
+  const carousel = page.getByRole("region", { name: "Featured posts" });
+  const [b, c] = [await banner.boundingBox(), await carousel.boundingBox()];
+  assert.ok(b.y + b.height <= c.y, "banner sits above the carousel");
+  assert.ok(b.y < 900, "banner is above the fold");
+  const color = await banner.evaluate((el) => getComputedStyle(el.closest("section")).borderTopColor);
+  assert.equal(color, "rgb(255, 200, 87)", "banner border is the gold badge color");
+  // The mascot mounts after load + idle and then fetches its model.
+  const mascot = page.getByRole("region", { name: "Free AI banner" }).getByTestId("yumon-mascot");
+  await mascot.and(page.locator("[data-ready]")).waitFor({ timeout: 30_000 });
+  const m = await mascot.boundingBox();
+  assert.ok(m.x + m.width <= (await banner.boundingBox()).x, "mascot sits left of the banner text");
+  assert.equal(await mascot.getByRole("group", { name: "Yumon's look" }).count(), 0, "no MECH / SOFT toggle in the banner");
+  await shot(page, "01b-home-free-ai-banner");
+  await banner.click();
+  await page.waitForURL(/\/free-ai$/);
+  assert.deepEqual(page.errors, []);
+  await page.context().close();
+
+  const phone = await newPage({ width: 390, height: 844 });
+  await phone.goto(BASE_URL + "/");
+  await phone.getByRole("link", { name: /^Free AI: chat with Yumon/ }).waitFor();
+  const overflow = await phone.evaluate(() => document.documentElement.scrollWidth - window.innerWidth);
+  assert.ok(overflow <= 0, `no sideways scroll (${overflow}px)`);
+  await phone.waitForTimeout(4000);
+  const glb = await phone.evaluate(() => performance.getEntriesByType("resource").filter((r) => r.name.endsWith(".glb")).length);
+  assert.equal(glb, 0, "phone never downloads the mascot model");
+  await shot(phone, "01c-home-free-ai-banner-phone");
+  await phone.context().close();
+});
+
 await scenario("Feed chips filter the home feed", async () => {
   const page = await newPage();
   await page.goto(BASE_URL + "/");

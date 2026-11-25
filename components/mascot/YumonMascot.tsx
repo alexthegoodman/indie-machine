@@ -57,6 +57,7 @@ export function YumonMascot({
   status,
   writing = false,
   hasText = false,
+  toggle = true,
   className = "",
 }: {
   status: Status;
@@ -64,6 +65,8 @@ export function YumonMascot({
   writing?: boolean;
   /** That reply has text yet. */
   hasText?: boolean;
+  /** Show the MECH / SOFT look picker. */
+  toggle?: boolean;
   className?: string;
 }) {
   const variant = useSyncExternalStore(variantStore.subscribe, readVariant, () => "mech" as Variant);
@@ -157,19 +160,21 @@ export function YumonMascot({
           {seen ? "ASSEMBLING..." : ""}
         </span>
       )}
-      <div className="absolute top-2 right-2 flex border border-line/22 bg-ink/70 text-[9px] tracking-[0.12em]" role="group" aria-label="Yumon's look">
-        {(Object.keys(LABELS) as Variant[]).map((v) => (
-          <button
-            key={v}
-            type="button"
-            onClick={() => pickVariant(v)}
-            aria-pressed={v === variant}
-            className={`h-6 cursor-pointer px-2 ${v === variant ? "bg-accent/15 text-accent" : "text-ink-500 hover:text-ink-100"}`}
-          >
-            {LABELS[v]}
-          </button>
-        ))}
-      </div>
+      {toggle && (
+        <div className="absolute top-2 right-2 flex border border-line/22 bg-ink/70 text-[9px] tracking-[0.12em]" role="group" aria-label="Yumon's look">
+          {(Object.keys(LABELS) as Variant[]).map((v) => (
+            <button
+              key={v}
+              type="button"
+              onClick={() => pickVariant(v)}
+              aria-pressed={v === variant}
+              className={`h-6 cursor-pointer px-2 ${v === variant ? "bg-accent/15 text-accent" : "text-ink-500 hover:text-ink-100"}`}
+            >
+              {LABELS[v]}
+            </button>
+          ))}
+        </div>
+      )}
     </div>
   );
 }
