@@ -86,7 +86,7 @@ export async function Overview({ q, links, params }: ViewProps) {
         <Card title="Sections">
           <BarList rows={sections} dim="section" links={links} total={total} />
         </Card>
-        <Card title="Countries" note={countries.every((r) => r.key === null) ? "Countries come from Vercel's edge headers, so local runs have none." : undefined}>
+        <Card title="Countries" action={<Link href={links.view("map")}>MAP -&gt;</Link>} note={countries.every((r) => r.key === null) ? "Countries come from Vercel's edge headers, so local runs have none." : undefined}>
           <BarList rows={countries} dim="country" links={links} total={total} />
         </Card>
         <Card title="UTM campaigns" note="utm_campaign on the landing URL. ?ref= counts as a UTM source.">

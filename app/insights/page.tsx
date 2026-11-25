@@ -14,6 +14,7 @@ import { Journeys } from "./_views/Journeys";
 import { Funnels } from "./_views/Funnels";
 import { Retention } from "./_views/Retention";
 import { Breakdown } from "./_views/Breakdown";
+import { MapView } from "./_views/Map";
 import { Sessions, SessionDetail, VisitorDetail } from "./_views/Sessions";
 import { Events } from "./_views/Events";
 import { Survey } from "./_views/Survey";
@@ -31,6 +32,7 @@ const TABS = [
   ["funnels", "Funnels", Funnels],
   ["retention", "Retention", Retention],
   ["breakdown", "Breakdown", Breakdown],
+  ["map", "Map", MapView],
   ["sessions", "Sessions", Sessions],
   ["events", "Events", Events],
   ["survey", "Survey", Survey],

@@ -86,6 +86,11 @@ function decodeHeader(v: string | null): string | undefined {
   }
 }
 
+function coord(v: string | null, max: number): number | null {
+  const n = v ? Number(v) : NaN;
+  return Number.isFinite(n) && Math.abs(n) <= max ? Math.round(n * 100) / 100 : null;
+}
+
 /** Store a batch. Returns how many events were written. */
 export async function ingest(body: unknown, headers: Headers, now = Date.now()): Promise<number> {
   if (!body || typeof body !== "object") throw new IngestError(400, "Body must be a JSON object.");
@@ -113,6 +118,8 @@ export async function ingest(body: unknown, headers: Headers, now = Date.now()):
     // Vercel's edge sets these; locally they're absent.
     country: str(headers.get("x-vercel-ip-country"), 8) ?? null,
     city: decodeHeader(headers.get("x-vercel-ip-city")) ?? null,
+    lat: coord(headers.get("x-vercel-ip-latitude"), 90),
+    lon: coord(headers.get("x-vercel-ip-longitude"), 180),
     device: device(ua.device.type),
     browser: ua.browser.name ?? null,
     os: ua.os.name ?? null,

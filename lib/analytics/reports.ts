@@ -156,6 +156,20 @@ export async function crosstab(q: Query, a: Dim, b: Dim, name: string | undefine
   return { rows: byTotal(rowTotals), cols: byTotal(colTotals), cells, rowTotals };
 }
 
+export type CityPoint = { city: string; country: string | null; lat: number; lon: number; visitors: number };
+
+/** Visitors by city, at the city's coordinates (only events stored with lat/lon). */
+export async function cities(q: Query, limit = 300): Promise<CityPoint[]> {
+  return run<CityPoint>(sql`
+    SELECT e.city, min(e.country) AS country, avg(e.lat)::float8 AS lat, avg(e.lon)::float8 AS lon,
+      count(DISTINCT e."visitorId")::int AS "visitors"
+    FROM analytics_events e
+    WHERE ${where(q)} AND e.city IS NOT NULL AND e.lat IS NOT NULL AND e.lon IS NOT NULL
+    GROUP BY e.city, e.country ORDER BY "visitors" DESC, 1
+    LIMIT ${limit}
+  `);
+}
+
 /** Sessions with a page view, by weekday (1 = Monday) and hour, in the query's zone. */
 export async function heatmap(q: Query): Promise<{ dow: number; hour: number; n: number }[]> {
   return run(sql`

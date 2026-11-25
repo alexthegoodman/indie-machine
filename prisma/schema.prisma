@@ -157,6 +157,9 @@ model AnalyticsEvent {
   entryPath   String
   country     String?
   city        String?
+  /// The city's coordinates from Vercel's edge (a city centre, not the visitor), for the map.
+  lat         Float?
+  lon         Float?
   /// desktop | mobile | tablet | other
   device      String
   browser     String?

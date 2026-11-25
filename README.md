@@ -283,7 +283,8 @@ First-party event logging, no third-party script. Every page reports to
 `components/shell/AnalyticsTracker.tsx`); events land in `analytics_events`
 (Prisma model `AnalyticsEvent`). Visitors are anonymous: a random visitor id
 in localStorage, a session id in sessionStorage (new after 30 idle minutes),
-no cookies, no IPs. Country and city come from Vercel's edge headers. Bots
+no cookies, no IPs. Country, city and the city's coordinates come from
+Vercel's edge headers. Bots
 (by user agent) are dropped, and automated browsers send nothing unless
 `localStorage.im_analytics_test = "1"`.
 
@@ -299,7 +300,10 @@ on any clickable element.
 Content (engagement, read-through, searches, web vitals, script errors),
 Journeys (page before/after, common paths), Funnels, Retention (weekly
 cohorts), Breakdown (any dimension or event property, or two against each
-other), Sessions (with per-session timelines and per-visitor history) and a
+other), Map (countries shaded by visitors, a dot per city; Natural Earth
+1:110m outlines pre-projected to SVG in `lib/analytics/world-map.ts` by
+`node scripts/build-world-map.mjs`, so no map library, tiles or API key),
+Sessions (with per-session timelines and per-visitor history) and a
 raw Events explorer with CSV export. The URL is the whole state:
 `f=dim:value` filters (`f=!dim:value` excludes, `*` is a wildcard),
 `did=` / `didnt=` keep sessions that did or never did a step (`p:/posts/*`,
