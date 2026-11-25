@@ -8,7 +8,7 @@
 // its column is left empty on new responses.
 
 export type SurveyMode = "required" | "optional" | "off";
-export const SURVEY_MODE: SurveyMode = "required";
+export const SURVEY_MODE: SurveyMode = "off";
 export const SURVEY_VERSION = 1;
 
 /** localStorage key holding the version this browser answered (or skipped). */
