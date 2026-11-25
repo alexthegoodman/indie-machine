@@ -10,7 +10,7 @@ export function FreeAiBanner() {
       aria-label="Free AI banner"
       className="group relative mb-6 flex items-stretch md:min-h-36 border border-badge bg-badge/12 hover:bg-badge/18"
     >
-      <BannerMascot className="relative z-10 hidden w-40 shrink-0 border-r border-badge/40 md:block" />
+      {/* <BannerMascot className="relative z-10 hidden w-40 shrink-0 border-r border-badge/40 md:block" /> */}
       <div className="flex min-w-0 flex-1 flex-wrap items-center gap-x-6 gap-y-3 px-5 py-4 sm:px-6">
         <span className="flex items-center gap-2 text-[11px] font-semibold tracking-[0.14em] text-badge">
           <span aria-hidden="true" className="relative flex h-2 w-2">
