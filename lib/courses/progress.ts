@@ -63,6 +63,13 @@ export function useCourseProgress(): CourseProgress {
   );
 }
 
+/** The stored progress right now. Effects that run during hydration need this: the hook still
+ * returns the empty server snapshot on that first render. */
+export function readProgress(): CourseProgress {
+  load();
+  return state;
+}
+
 export function markDone(key: string) {
   load();
   if (!state.done[key]) commit({ ...state, done: { ...state.done, [key]: true } });

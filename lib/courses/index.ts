@@ -1,7 +1,8 @@
 import type { Course, Lesson } from "./types";
 import { nGrammerCourse } from "./n-grammer";
+import { engramCourse } from "./engram";
 
-export const COURSES: Course[] = [nGrammerCourse];
+export const COURSES: Course[] = [nGrammerCourse, engramCourse];
 
 export const KIND_LABEL: Record<Lesson["kind"], string> = { concept: "CONCEPT", math: "MATH", code: "CODE" };
 

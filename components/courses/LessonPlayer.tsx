@@ -1,7 +1,7 @@
 "use client";
 
 import { useCallback, useEffect, useState, type ReactNode } from "react";
-import { markDone, saveSlide, useCourseProgress } from "@/lib/courses/progress";
+import { markDone, readProgress, saveSlide, useCourseProgress } from "@/lib/courses/progress";
 
 export interface PlayerSlide {
   id: string;
@@ -47,7 +47,7 @@ export function LessonPlayer({
   // Without a hash, offer to jump back to where this browser left off (no surprise scrolling).
   useEffect(() => {
     setReady(true);
-    const saved = progress.slide[key];
+    const saved = readProgress().slide[key]; // not `progress`: on this render it is still the server snapshot
     if (!window.location.hash && saved && saved > 0 && saved <= last) setResume(saved);
     // Only on mount: later progress changes come from this player itself.
   }, []);
