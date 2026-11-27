@@ -19,6 +19,8 @@ export const EVENT_NAMES = {
   yumon_message: "A message to Yumon: { ok, turn, source, chars, tokens, msPerToken, memories, backend, stopped?, err? } (source = input | suggestion | regenerate; regenerate and stopped only on /free-ai). No message text.",
   yumon_thread: "A /free-ai thread action: { action, threads } (action = new | rename | pin | delete | delete_all | export). No titles or text.",
   yumon_clear: "The Yumon chat was cleared: { turns }.",
+  gherkin_load: "The Gherkin Yumon (/free-ai/gherkin) was loaded: { ok, ms, backend, fallback, err? }.",
+  gherkin_write: "A /free-ai/gherkin continuation: { ok, source, promptTokens, tokens, msPerToken, end, temperature, backend, err? } (source = input | example; end = eos | context | max | stopped). No text.",
   survey_view: "The reader survey closed off a post after its intro: { version }. Once per post view, only for visitors who haven't answered.",
   survey_submit: "The reader survey was answered: { version, ok, work, found, detail } (choice keys from lib/survey.ts, work only while that question is asked; detail = any free text given, the text itself is only in survey_responses).",
   survey_skip: "The reader survey was skipped (only when SURVEY_MODE is optional): { version }.",

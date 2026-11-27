@@ -470,6 +470,11 @@ export function promptIds(tok: hf.text.Tokenizer, prompt: string): number[] {
   return [BOS, ...tok.encode(HUMAN + prompt, { addSpecialTokens: false }), ...tok.encode(SEPARATOR, { addSpecialTokens: false })];
 }
 
+/** [BOS] text, for checkpoints trained on plain continuations (Gherkin, pseudo-code): no turn labels. */
+export function rawPromptIds(tok: hf.text.Tokenizer, text: string): number[] {
+  return [BOS, ...tok.encode(text, { addSpecialTokens: false })];
+}
+
 /**
  * Text of `ids` without PAD/BOS/EOS. "\n", ":", "," and the brackets are special tokens in this
  * vocabulary, so skipSpecialTokens would drop them too.

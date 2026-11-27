@@ -53,14 +53,22 @@ async function pickBackend(): Promise<{ backend: hf.Backend; fellBack: boolean }
   return { backend: await hf.init({ backend: "cpu" }), fellBack: true };
 }
 
-export async function loadYumon(onProgress: (p: number) => void): Promise<Loaded> {
+export function loadYumon(onProgress: (p: number) => void): Promise<Loaded> {
+  return loadYumonFrom(MODEL_URL, onProgress);
+}
+
+/** Loads the int4 checkpoint in folder `url` (ends with "/"); /free-ai/gherkin uses its own folder. */
+export async function loadYumonFrom(url: string, onProgress: (p: number) => void): Promise<Loaded> {
   const { backend, fellBack } = await pickBackend();
   const [config, tokenizer, bytes] = await Promise.all([
-    fetch(MODEL_URL + "config.json")
-      .then((r) => r.json())
+    fetch(url + "config.json")
+      .then((r) => {
+        if (!r.ok) throw new Error(`${url}config.json: HTTP ${r.status}`);
+        return r.json();
+      })
       .then((c) => c.model as YumonConfig),
-    hf.text.Tokenizer.fromUrl(MODEL_URL + "tokenizer.json"),
-    fetchWithProgress(MODEL_URL + WEIGHTS, onProgress),
+    hf.text.Tokenizer.fromUrl(url + "tokenizer.json"),
+    fetchWithProgress(url + WEIGHTS, onProgress),
   ]);
   const model = fromStateDict(config, hf.io.loadSafetensors(bytes));
   await hf.sync();

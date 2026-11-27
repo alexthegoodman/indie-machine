@@ -1,4 +1,5 @@
 import type { Metadata } from "next";
+import Link from "next/link";
 import { SectionDivider } from "@/components/SectionDivider";
 import { YumonThreads } from "@/components/free-ai/YumonThreads";
 import { SITE_NAME } from "@/lib/site";
@@ -72,6 +73,23 @@ export default function FreeAiPage() {
     <div className="relative z-10">
       <div className="mt-8 px-3 pb-10 sm:px-6 lg:px-8">
         <YumonThreads />
+      </div>
+
+      <div className="px-3 pb-10 sm:px-6 lg:px-8">
+        <Link
+          href="/free-ai/gherkin"
+          className="group flex flex-wrap items-center justify-between gap-3 border border-accent/30 bg-accent/5 p-5 hover:border-accent/60"
+          data-testid="gherkin-link"
+        >
+          <span>
+            <span className="block text-[11px] tracking-[0.14em] text-accent">// NEW · FINE-TUNE</span>
+            <span className="mt-1 block font-display text-lg font-bold text-ink-100">Yumon writes Gherkin</span>
+            <span className="mt-1 block text-xs text-ink-400">
+              The same model fine-tuned on Given/When/Then feature files. Start a feature and it writes the scenarios.
+            </span>
+          </span>
+          <span className="text-xs font-semibold text-accent group-hover:underline">TRY IT -&gt;</span>
+        </Link>
       </div>
 
       <SectionDivider label="HOW IT WORKS" />
