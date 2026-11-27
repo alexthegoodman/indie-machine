@@ -17,7 +17,7 @@ const STATUS_TEXT: Record<YumonState["status"], string> = {
   error: "ERROR",
 };
 
-// The post page's chat with Yumon, the Hyperfield port of the yumon-pet decoder (27M params,
+// The post page's chat with Yumon, the Hyperfield port of the yumon-pet decoder (21M params,
 // int4). It runs in the reader's browser; nothing is downloaded until they wake it, or until a
 // later visit from a browser that already did.
 export function YumonChat() {
@@ -104,7 +104,7 @@ export function YumonChat() {
         />
         <div ref={listRef} className="flex min-h-0 flex-1 flex-col gap-3 overflow-y-auto p-3.5 [scrollbar-width:thin]">
           <Bubble who="yumon">
-            Hi, I&apos;m Yumon. I&apos;m a tiny language model (27M parameters) running right here in your browser, not on a
+            Hi, I&apos;m Yumon. I&apos;m a tiny language model (21M parameters) running right here in your browser, not on a
             server. I&apos;m still learning, so I say strange things. Talk to me anyway?
           </Bubble>
 

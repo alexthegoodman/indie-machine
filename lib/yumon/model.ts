@@ -10,7 +10,9 @@ type Tensor = hf.Tensor;
  * inference. Parameter names match the PyTorch state dict, so `model.pt` loads strictly.
  * Covers what the RunPod configs use: tied, factorized embeddings (token_embed_dim), a frozen
  * JL map in front of each SwiGLU MLP, an N-Grammer layer, elementwise attention gates,
- * interleaved-pair RoPE and RMSNorm (eps 1e-6).
+ * interleaved-pair RoPE and RMSNorm (eps 1e-6). Burn-trained checkpoints
+ * (yumon-pet `export_dec_safetensors`) also bring Engram layers (engram.rs) and a looped
+ * core (looped.rs); their config.json names a `model.safetensors`.
  */
 
 export interface NgramConfig {
@@ -33,10 +35,64 @@ export interface YumonConfig {
   jl_from_layer?: number;
   ngram?: NgramConfig | null;
   gated_attention?: "none" | "headwise" | "elementwise";
+  engram?: EngramConfig | null;
+  loop?: LoopConfig | null;
+  /** f32 weights file (default model.pt). */
+  weights?: string;
+}
+
+/** yumon-pet engram.rs, as written by export_dec_safetensors (hash constants included). */
+export interface EngramConfig {
+  layers: number[];
+  max_ngram: number;
+  heads: number;
+  head_dim: number;
+  table_rows: number;
+  kernel: number;
+  pad_id: number;
+  /** Per layer: the StdRng multipliers and each head's prime table size (order-major). */
+  hash: Record<string, { multipliers: number[]; primes: number[] }>;
+}
+
+/** yumon-pet looped.rs: blocks core[0]..=core[1] run `passes` times. */
+export interface LoopConfig {
+  core: [number, number];
+  passes: number;
+  inject: "none" | "add" | "add_norm";
+}
+
+/** One block application: block, pass, KV cache slot (looped.rs `steps`). */
+export interface LoopStep {
+  layer: number;
+  pass: number;
+  slot: number;
+}
+
+export function loopSteps(loop: LoopConfig | null | undefined, nLayers: number): LoopStep[] {
+  const once = (layer: number): LoopStep => ({ layer, pass: 0, slot: layer });
+  if (!loop) return Array.from({ length: nLayers }, (_, l) => once(l));
+  const [a, b] = loop.core;
+  const len = b - a + 1;
+  const out: LoopStep[] = [];
+  for (let l = 0; l < a; l++) out.push(once(l));
+  for (let pass = 0; pass < loop.passes; pass++) {
+    for (let l = a; l <= b; l++) out.push({ layer: l, pass, slot: pass === 0 ? l : nLayers + (pass - 1) * len + l - a });
+  }
+  for (let l = b + 1; l < nLayers; l++) out.push(once(l));
+  return out;
 }
 
 const EPS = 1e-6;
 const ROPE_THETA = 10_000;
+
+/** looped.rs `inject`: x is the state after a pass, e the prelude output. */
+function inject(mode: LoopConfig["inject"], x: Tensor, e: Tensor): Tensor {
+  if (mode === "none") return x;
+  if (mode === "add") return x.add(e);
+  const rms = (t: Tensor) => t.square().mean(-1, true).add(EPS).sqrt();
+  const y = x.add(e);
+  return y.mul(rms(x).div(rms(y)));
+}
 
 const linear = (i: number, o: number) => new nn.Linear(i, o, { bias: false });
 /** Linear layers become QLinear when a quantized checkpoint is loaded. */
@@ -113,6 +169,8 @@ interface Step {
   /** Positions before this call's tokens (the cache length). */
   offset: number;
   cache?: hf.nn.KVCache;
+  /** KV cache slot of this application (a looped block has one per pass). */
+  slot: number;
 }
 
 /** Causal mask for `s` new queries at `offset` over offset + s keys (bottom-right aligned). */
@@ -124,7 +182,6 @@ function causalMask(s: number, offset: number): Tensor {
 }
 
 class Block extends nn.Module<[Tensor, Step], Tensor> {
-  readonly layer: number;
   readonly heads: number;
   readonly attn_norm: hf.nn.RMSNorm;
   readonly q: Lin;
@@ -139,7 +196,6 @@ class Block extends nn.Module<[Tensor, Step], Tensor> {
   constructor(cfg: YumonConfig, layer: number) {
     super();
     const w = cfg.embed_dim;
-    this.layer = layer;
     this.heads = cfg.attn_heads;
     const hd = w / this.heads;
     this.attn_norm = new nn.RMSNorm(w, { eps: EPS });
@@ -161,14 +217,14 @@ class Block extends nn.Module<[Tensor, Step], Tensor> {
     this.mlp = new SwiGLU(mlpIn, cfg.ff_dim, w);
   }
 
-  forward([x, { rope, offset, cache }]: [Tensor, Step]): Tensor {
+  forward([x, { rope, offset, cache, slot }]: [Tensor, Step]): Tensor {
     const [b, s, w] = x.shape;
     const n = this.attn_norm.call(x);
     const split = (t: Tensor) => t.reshape([b, s, this.heads, -1]).transpose(1, 2);
     const q = rope.forward(split(this.q.call(n)), offset);
     let k = rope.forward(split(this.k.call(n)), offset);
     let v = split(this.v.call(n));
-    if (cache) [k, v] = cache.append(this.layer, k, v);
+    if (cache) [k, v] = cache.append(slot, k, v);
     // One new token sees every cached key; a prompt after cached tokens needs the offset mask.
     const opts = offset === 0 ? { isCausal: s > 1 } : s > 1 ? { attnMask: causalMask(s, offset) } : {};
     let attn = nn.F.scaledDotProductAttention(q, k, v, opts);
@@ -255,6 +311,8 @@ export interface ForwardOptions {
    * cached positions; the cache grows by their count.
    */
   cache?: hf.nn.KVCache;
+  /** The token ids as numbers: Engram hashes them on the host. Required when the model has Engram layers. */
+  ids?: ArrayLike<number>;
 }
 
 export class YumonDec extends nn.Module<Tensor, Tensor> {
@@ -263,6 +321,8 @@ export class YumonDec extends nn.Module<Tensor, Tensor> {
   readonly embed_in: Lin | null;
   readonly blocks: Block[];
   readonly ngram: Ngram[];
+  readonly engram: hf.nn.Engram[];
+  readonly steps: LoopStep[];
   readonly norm: hf.nn.RMSNorm;
   readonly head_down: Lin | null;
   readonly token_head: Lin | null;
@@ -281,6 +341,20 @@ export class YumonDec extends nn.Module<Tensor, Tensor> {
     // Sparse array indexed by layer, so names come out as "ngram.<layer>" like the ModuleDict.
     this.ngram = [];
     for (const l of cfg.ngram?.layers ?? []) this.ngram[l] = new Ngram(cfg.ngram!, w);
+    this.engram = [];
+    const e = cfg.engram;
+    for (const l of e?.layers ?? []) {
+      const hash = e!.hash[String(l)];
+      const layer = new nn.Engram({
+        layerId: l, layerIds: e!.layers, hiddenSize: w, hcMult: 1, maxNgram: e!.max_ngram, headsPerNgram: e!.heads,
+        embedPerNgram: e!.heads * e!.head_dim, tableSizes: Array(e!.max_ngram - 1).fill(e!.table_rows), vocabSize: cfg.vocab_size,
+        padId: e!.pad_id, multipliers: { [l]: hash.multipliers }, kernel: e!.kernel, bias: false, normEps: EPS,
+      });
+      // engram.rs takes consecutive primes over all heads and layers; NgramHash must agree.
+      if (layer.hash.sizes(l).join() !== hash.primes.join()) throw new Error(`engram.${l}: primes ${layer.hash.sizes(l)} differ from the checkpoint's ${hash.primes}`);
+      this.engram[l] = layer;
+    }
+    this.steps = loopSteps(cfg.loop, cfg.n_layers);
     this.norm = new nn.RMSNorm(w, { eps: EPS });
     this.head_down = tied && t !== w ? linear(w, t) : null;
     this.token_head = tied ? null : new nn.Linear(w, cfg.vocab_size);
@@ -288,22 +362,36 @@ export class YumonDec extends nn.Module<Tensor, Tensor> {
   }
 
   /** Token ids [b, s] (integer-valued floats) -> logits [b, s, vocab] (or [b, 1, vocab]). */
-  forward(tokens: Tensor, { lastOnly = false, onStage, cache }: ForwardOptions = {}): Tensor {
+  forward(tokens: Tensor, { lastOnly = false, onStage, cache, ids }: ForwardOptions = {}): Tensor {
     const offset = cache?.length ?? 0;
     if (offset + tokens.shape[1] > this.cfg.max_seq_len) throw new Error(`${offset + tokens.shape[1]} positions exceed the context of ${this.cfg.max_seq_len}`);
-    const step: Step = { rope: this.rope, offset, cache };
+    if (this.cfg.engram && !ids) throw new Error("this checkpoint has Engram layers: pass the token ids (logitsFor, or ForwardOptions.ids)");
     let x = this.embedding.call(tokens);
     if (this.embed_in) x = this.embed_in.call(x);
     onStage?.("embed_in", x);
-    this.blocks.forEach((block, l) => {
-      const ng = this.ngram[l];
-      if (ng) {
-        x = ng.forward(x, cache, `ngram.${l}`);
-        onStage?.(`ngram.${l}`, x);
+    const loop = this.cfg.loop;
+    let prelude: Tensor | undefined;
+    for (const { layer: l, pass, slot } of this.steps) {
+      if (pass === 0) {
+        const ng = this.ngram[l];
+        if (ng) {
+          x = ng.forward(x, cache, `ngram.${l}`);
+          onStage?.(`ngram.${l}`, x);
+        }
+        const en = this.engram[l];
+        if (en) {
+          x = x.add(en.call({ hidden: x, ids: ids!, cache }));
+          onStage?.(`engram.${l}`, x);
+        }
       }
-      x = block.call([x, step]);
-      onStage?.(`blocks.${l}`, x);
-    });
+      // looped.rs loop_entry: keep the prelude output, re-inject it on later passes.
+      if (loop && l === loop.core[0] && loop.passes > 1 && loop.inject !== "none") {
+        if (pass === 0) prelude = x;
+        else x = inject(loop.inject, x, prelude!);
+      }
+      x = this.blocks[l].call([x, { rope: this.rope, offset, cache, slot }]);
+      onStage?.(pass === 0 ? `blocks.${l}` : `blocks.${l}.pass${pass}`, x);
+    }
     if (lastOnly && x.shape[1] > 1) x = x.indexSelect(1, hf.tensor([x.shape[1] - 1]));
     x = this.norm.call(x);
     onStage?.("norm", x);
@@ -316,6 +404,11 @@ export class YumonDec extends nn.Module<Tensor, Tensor> {
   logits(tokens: Tensor, opts: ForwardOptions = {}): Tensor {
     return this.forward(tokens, opts);
   }
+
+  /** Logits for one sequence of token ids [1, ids.length]; passes the ids on for Engram. */
+  logitsFor(ids: ArrayLike<number>, opts: Omit<ForwardOptions, "ids"> = {}): Tensor {
+    return this.forward(hf.tensor(Float32Array.from(ids), [1, ids.length]), { ...opts, ids });
+  }
 }
 
 export const PAD = 0;
@@ -324,12 +417,19 @@ export const EOS = 2;
 /** samples.rs LANGUAGE_SEPARATOR. */
 export const SEPARATOR = "\nYumon: ";
 
-/** f32 (model.pt) or the quantized copies from `npm run quantize:yumon`. */
+/** f32 (model.pt, or config.weights) or the quantized copies from `npm run quantize:yumon`. */
 export type Variant = "f32" | "int8" | "int4";
 export const VARIANTS: Variant[] = ["f32", "int8", "int4"];
 
-export function weightsFile(variant: Variant): string {
-  return variant === "f32" ? "model.pt" : `model-${variant}.safetensors`;
+/** `f32File`: config.weights for Burn exports (model.safetensors). */
+export function weightsFile(variant: Variant, f32File = "model.pt"): string {
+  return variant === "f32" ? f32File : `model-${variant}.safetensors`;
+}
+
+/** The checkpoint's config.json "model" section. */
+export async function fetchConfig(baseUrl: string): Promise<YumonConfig> {
+  const base = baseUrl.endsWith("/") ? baseUrl : baseUrl + "/";
+  return fetch(base + "config.json").then((r) => r.json()).then((c) => c.model as YumonConfig);
 }
 
 /** Everything needed to chat with a checkpoint directory (model.pt, config.json, tokenizer.json). */
@@ -344,13 +444,10 @@ export interface Yumon {
 
 export async function loadYumon(baseUrl: string, variant: Variant = "f32"): Promise<Yumon> {
   const base = baseUrl.endsWith("/") ? baseUrl : baseUrl + "/";
-  const url = base + weightsFile(variant);
-  const [config, tokenizer, bytes] = await Promise.all([
-    fetch(base + "config.json").then((r) => r.json()).then((c) => c.model as YumonConfig),
-    hf.text.Tokenizer.fromUrl(base + "tokenizer.json"),
-    hf.data.fetchBytes(url),
-  ]);
-  const weights = variant === "f32" ? hf.io.loadTorch(bytes) : hf.io.loadSafetensors(bytes);
+  const config = await fetchConfig(base);
+  const file = weightsFile(variant, config.weights);
+  const [tokenizer, bytes] = await Promise.all([hf.text.Tokenizer.fromUrl(base + "tokenizer.json"), hf.data.fetchBytes(base + file)]);
+  const weights = file.endsWith(".pt") ? hf.io.loadTorch(bytes) : hf.io.loadSafetensors(bytes);
   return { config, tokenizer, variant, fileBytes: bytes.byteLength, model: fromStateDict(config, weights) };
 }
 
@@ -502,9 +599,7 @@ export async function generate({ model, tokenizer }: Yumon, prompt: number[], op
     for (let step = 0; step < maxTokens && ids.length < model.cfg.max_seq_len; step++) {
       const t0 = performance.now();
       const feed = kvCache ? ids.slice(cache.length) : ids;
-      const logits = await hf.scope(async () =>
-        hf.noGrad(() => model.logits(hf.tensor(Float32Array.from(feed), [1, feed.length]), { lastOnly: true, cache: kvCache ? cache : undefined })).data(),
-      );
+      const logits = await hf.scope(async () => hf.noGrad(() => model.logitsFor(feed, { lastOnly: true, cache: kvCache ? cache : undefined })).data());
       const next = temperature <= 0 ? argmax(logits) : sampleTopK(logits, temperature, topK, rng);
       stepTimes.push((performance.now() - t0) / 1000);
       if (next === PAD || next === EOS) break;

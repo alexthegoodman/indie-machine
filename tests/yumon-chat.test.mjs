@@ -137,7 +137,7 @@ await scenario("Wide screens show the chat left of the article and no right side
     return { chapters: !!col.querySelector("details summary"), upNext: !!col.querySelector('section[aria-label="Up next"]') };
   });
   assert.ok(inColumn.chapters && inColumn.upNext, `chapters + up next in the column: ${JSON.stringify(inColumn)}`);
-  assert.ok(!context.requests.some((u) => u.includes("/yumon/cp1-int4/")), "no model file requested before waking");
+  assert.ok(!context.requests.some((u) => u.includes("/yumon/loop1-int4/")), "no model file requested before waking");
   await shot(page, "yumon-01-layout-desktop");
   await page.evaluate(() => document.querySelector('section[aria-label="Up next"]').scrollIntoView());
   await page.waitForTimeout(300);
@@ -242,7 +242,7 @@ await scenario("Narrow screens collapse the chat above the article", async () =>
   await shot(page, "yumon-07-mobile-open");
   await flushEvents(page);
   await waitFor(() => yumonEvents(context, "yumon_open")[0], "yumon_open");
-  assert.ok(!context.requests.some((u) => u.includes("/yumon/cp1-int4/")), "opening alone downloads nothing");
+  assert.ok(!context.requests.some((u) => u.includes("/yumon/loop1-int4/")), "opening alone downloads nothing");
   assert.deepEqual(page.errors, []);
   await context.close();
 });

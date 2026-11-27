@@ -163,7 +163,7 @@ await scenario("The page shows the thread manager and downloads nothing until Yu
   assert.ok(nav.x + nav.width <= head.x && head.x + head.width <= side.x, "list | thread | agent, left to right");
   assert.equal(await app(page).locator("h2").first().innerText(), "New thread");
   assert.equal(await page.locator('a[href*="YumonPortal"], a[href*="releases/download"]').count(), 0, "no Portal download");
-  assert.ok(!context.requests.some((u) => u.includes("/yumon/cp1-int4/")), "no model file requested before waking");
+  assert.ok(!context.requests.some((u) => u.includes("/yumon/loop1-int4/")), "no model file requested before waking");
   await shot(page, "free-ai-01-asleep");
   assert.deepEqual(page.errors, []);
   await context.close();

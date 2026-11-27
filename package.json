@@ -15,7 +15,7 @@
     "@prisma/client": "7.10.0",
     "@vercel/analytics": "^2.0.1",
     "gray-matter": "^4.0.3",
-    "hyperfield": "^0.1.0",
+    "hyperfield": "^0.2.0",
     "mermaid": "^12.1.0",
     "next": "16.3.4",
     "next-mdx-remote": "^6.0.0",

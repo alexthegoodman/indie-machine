@@ -25,7 +25,7 @@ export type YumonState = {
 };
 
 /** Size of public/models/yumon/model-int4.safetensors, for the wake button. */
-export const WEIGHTS_MB = 17.1;
+export const WEIGHTS_MB = 12.1;
 /** localStorage: "1" once this browser has woken Yumon, so later visits load it without a click. */
 const AUTO_KEY = "im_yumon_auto";
 

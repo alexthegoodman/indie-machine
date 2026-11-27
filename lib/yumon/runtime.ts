@@ -6,10 +6,10 @@ import { type Memory, type Yumon, TURN_STOPS, chatPromptIds, cleanReply, fromSta
 
 /**
  * Folder with config.json, tokenizer.json and model-int4.safetensors. Each checkpoint gets its
- * own folder (cp1-int4, cp2-int4, ...) so a URL's bytes never change. NEXT_PUBLIC_YUMON_MODEL_URL
+ * own folder (cp1-int4, loop1-int4, ...) so a URL's bytes never change. NEXT_PUBLIC_YUMON_MODEL_URL
  * overrides it, e.g. with a local copy under public/.
  */
-const DEFAULT_MODEL_URL = "https://pbd11pvl9gfr63ve.public.blob.vercel-storage.com/yumon/cp1-int4/";
+const DEFAULT_MODEL_URL = "https://pbd11pvl9gfr63ve.public.blob.vercel-storage.com/yumon/loop1-int4/";
 const configured = process.env.NEXT_PUBLIC_YUMON_MODEL_URL || DEFAULT_MODEL_URL;
 export const MODEL_URL = configured.endsWith("/") ? configured : configured + "/";
 const WEIGHTS = "model-int4.safetensors";

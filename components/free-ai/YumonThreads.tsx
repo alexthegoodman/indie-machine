@@ -439,7 +439,7 @@ function EmptyThread({ y }: { y: YumonState }) {
     <div className="max-w-xl border border-accent/30 bg-accent/5 p-4">
       <div className="text-[10px] tracking-[0.14em] text-accent">YUMON</div>
       <p className="mt-1 font-display text-sm leading-relaxed text-ink-100">
-        Hi, I&apos;m Yumon. I&apos;m a tiny language model (27M parameters) running right here in your browser, not on a
+        Hi, I&apos;m Yumon. I&apos;m a tiny language model (21M parameters) running right here in your browser, not on a
         server. I&apos;m still learning, so I say strange things. Start a thread with me anyway?
       </p>
       {y.status === "idle" && (
@@ -554,8 +554,8 @@ function AgentPanel({ y, thread, dot, busy }: { y: YumonState; thread?: Thread; 
           </span>
         </div>
         <dl className="mt-3 divide-y divide-line/15 font-mono text-[11px]">
-          <Row k="CHECKPOINT" v="cp1 · int4" />
-          <Row k="PARAMETERS" v="27.2M" />
+          <Row k="CHECKPOINT" v="loop1 · int4" />
+          <Row k="PARAMETERS" v="21.1M" />
           <Row k="WEIGHTS" v={`${WEIGHTS_MB} MB`} />
           <Row k="CONTEXT" v={y.context ? `${y.context} tokens` : "-"} />
           <Row k="RUNTIME" v="Hyperfield (WebGPU / CPU)" />

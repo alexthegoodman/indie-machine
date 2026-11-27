@@ -112,7 +112,7 @@ export default function Home() {
             <div className="text-[11px] tracking-[0.14em] text-accent">// FREE AI · RUNS IN YOUR BROWSER</div>
             <h2 className="font-display text-2xl font-bold text-ink-100">Chat with Yumon, right on your device</h2>
             <p className="font-display text-[15px] leading-relaxed text-ink-300">
-              A 27M-parameter model that runs on WebGPU in your browser. No account, no server. Your threads are
+              A 21M-parameter model that runs on WebGPU in your browser. No account, no server. Your threads are
               saved in your browser and nowhere else.
             </p>
             <div>

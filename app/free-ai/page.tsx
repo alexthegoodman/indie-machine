@@ -10,7 +10,7 @@ const IMAGE = "/images/free-ai-yumon-threads.png";
 
 const TITLE = "Free AI In Your Browser | Yumon | Indie Machine";
 const DESCRIPTION =
-  "Chat with Yumon, a free 27M-parameter AI that runs in your browser on WebGPU. No account, no server, no API key. Threads are saved on your device.";
+  "Chat with Yumon, a free 21M-parameter AI that runs in your browser on WebGPU. No account, no server, no API key. Threads are saved on your device.";
 
 export const metadata: Metadata = {
   title: TITLE,
@@ -38,7 +38,7 @@ const FACTS: { label: string; title: string; body: React.ReactNode }[] = [
     title: "No server in the loop",
     body: (
       <>
-        Yumon&apos;s weights (17.1 MB, int4) download once, then every reply is computed on your machine with WebGPU, or on
+        Yumon&apos;s weights (12.1 MB, int4) download once, then every reply is computed on your machine with WebGPU, or on
         the CPU when the browser has no WebGPU adapter. There is no inference endpoint to send your messages to.
       </>
     ),
@@ -59,7 +59,7 @@ const FACTS: { label: string; title: string; body: React.ReactNode }[] = [
     title: "Small, and honest about it",
     body: (
       <>
-        Yumon is a 27.2M-parameter decoder trained in the yumon-pet project. It chats, it remembers the
+        Yumon is a 21.1M-parameter decoder trained in the yumon-pet project. It chats, it remembers the
         thread it is in, and it often says odd things. It does not use tools or browse yet. This page grows as Yumon
         does.
       </>
