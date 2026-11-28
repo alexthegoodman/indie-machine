@@ -1,4 +1,4 @@
-// /free-ai/gherkin: Yumon fine-tuned on procedural Gherkin (yumon-pet checkpoints/yumon-gherkin-proc-loop1,
+// /free-ai/gherkin: Yumon fine-tuned on procedural Gherkin (yumon-pet checkpoints/yumon-gherkin-proc-1024-extended,
 // int4). It is not a chat model: it was trained on whole feature files, so the reader's text goes in as
 // [BOS] text and Yumon continues it until it ends the feature (EOS) or runs out of context. The model
 // lives at module level next to the chat's (lib/yumon/session.ts) and loads only when asked.
@@ -8,7 +8,7 @@ import { track } from "@/lib/analytics/client";
 import type { Loaded } from "./runtime";
 
 /** Folder with config.json, tokenizer.json and model-int4.safetensors; never overwritten. */
-const DEFAULT_MODEL_URL = "https://pbd11pvl9gfr63ve.public.blob.vercel-storage.com/yumon/gherkin-proc-loop1-int4/";
+const DEFAULT_MODEL_URL = "https://pbd11pvl9gfr63ve.public.blob.vercel-storage.com/yumon/gherkin-proc-1024-extended-int4/";
 const configured = process.env.NEXT_PUBLIC_YUMON_GHERKIN_URL || DEFAULT_MODEL_URL;
 export const GHERKIN_MODEL_URL = configured.endsWith("/") ? configured : configured + "/";
 /** Size of model-int4.safetensors in that folder. */
@@ -20,7 +20,7 @@ export const GHERKIN_DEFAULTS: GherkinSettings = { temperature: 0.7, topK: 10, m
 export const GHERKIN_LIMITS = {
   temperature: { min: 0, max: 1.5, step: 0.05 },
   topK: { min: 1, max: 40, step: 1 },
-  maxTokens: { min: 16, max: 255, step: 1 },
+  maxTokens: { min: 16, max: 1023, step: 1 },
 };
 
 export type Draft = {
@@ -30,7 +30,7 @@ export type Draft = {
   tokens: number;
   promptTokens: number;
   msPerToken: number;
-  /** "eos" = Yumon ended the feature, "context" = 256 tokens used, "max" = the token limit, "stopped" = STOP. */
+  /** "eos" = Yumon ended the feature, "context" = all 1,024 tokens used, "max" = the token limit, "stopped" = STOP. */
   end?: "eos" | "context" | "max" | "stopped";
   error?: string;
 };

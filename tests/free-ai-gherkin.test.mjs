@@ -19,7 +19,7 @@ const pwPath = process.env.PLAYWRIGHT_CORE;
 const { chromium } = await import(pwPath ? pathToFileURL(path.join(pwPath, "index.mjs")).href : "playwright-core");
 
 const PAGE = "/free-ai/gherkin";
-const MODEL_FOLDER = "/yumon/gherkin-proc-loop1-int4/";
+const MODEL_FOLDER = "/yumon/gherkin-proc-1024-extended-int4/";
 const VEHICLES =
   "Feature: Vehicles API\n  As an API client\n  I want to create, read, update and delete vehicles over HTTP\n  So that other systems can work with vehicles\n\n  Background:\n    Given";
 const TYPED = "Feature: Invoice export\n  As an accountant\n  I want to export invoices\n  So that I can file my taxes\n\n  Scenario: Export as CSV\n    Given";
@@ -130,7 +130,7 @@ await scenario("The page downloads nothing until Yumon is woken, and /free-ai li
   assert.ok((await editor(page).inputValue()).startsWith("Feature: Recipe form"), "first example preloaded");
   assert.equal(await writer(page).getByTestId("gherkin-examples").getByRole("button").count(), 6);
   assert.match(await status(page).innerText(), /ASLEEP/);
-  assert.match(await panel(page).innerText(), /gherkin-proc-loop1 · int4/);
+  assert.match(await panel(page).innerText(), /gherkin-proc-1024-extended · int4/);
   assert.ok(!context.requests.some((u) => u.includes(MODEL_FOLDER)), "no model file requested before waking");
   await shot(page, "gherkin-01-asleep");
   assert.deepEqual(page.errors, []);

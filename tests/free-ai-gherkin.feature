@@ -1,6 +1,6 @@
 Feature: Gherkin writer on /free-ai/gherkin
   /free-ai/gherkin runs Yumon fine-tuned on procedural Gherkin (yumon-pet
-  checkpoints/yumon-gherkin-proc-loop1, int4, Vercel Blob yumon/gherkin-proc-loop1-int4/) in the
+  checkpoints/yumon-gherkin-proc-1024-extended, int4, Vercel Blob yumon/gherkin-proc-1024-extended-int4/) in the
   visitor's browser. It is not a chat: the opening goes in as [BOS] text and Yumon continues it.
   Usage goes to /api/events as gherkin_* events with counts and timings, never text.
 

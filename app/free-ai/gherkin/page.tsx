@@ -38,10 +38,11 @@ const FACTS: { label: string; title: string; body: React.ReactNode }[] = [
     title: "The chat Yumon, retrained on Gherkin",
     body: (
       <>
-        This is the loop1 checkpoint from the <Link href="/free-ai" className="text-accent hover:underline">/free-ai</Link>{" "}
-        chat, fine-tuned on 12,000 generated feature files: forms, lists, toolbars, sign-in, settings and CRUD APIs over
-        17 domains. Recipes, vehicles, playlists and courses were left out of training, so the examples test whether
-        it generalizes. It is not a chat model: it only continues text.
+        This is the loop1 model from the <Link href="/free-ai" className="text-accent hover:underline">/free-ai</Link>{" "}
+        chat, extended to a 1,024-token context and fine-tuned on 12,000 generated feature files (7.5M tokens, mostly
+        300 to 950 tokens each): forms, lists, toolbars, sign-in, settings and CRUD APIs, plus creative apps and games,
+        over 36 domains. Recipes, vehicles, playlists and courses were left out of training, so the examples test
+        whether it generalizes. It is not a chat model: it only continues text.
       </>
     ),
   },
@@ -50,7 +51,7 @@ const FACTS: { label: string; title: string; body: React.ReactNode }[] = [
     title: "Fluent, not reliable",
     body: (
       <>
-        On 240 held-out features it predicts the next token right 95.1% of the time at int4 (95.5% at full precision).
+        On 240 held-out features it predicts the next token right 88.9% of the time at full precision.
         That is mostly the format: the steps read like Gherkin, but domains bleed together, values repeat and
         scenarios can contradict each other. Treat it as a demo, not a test author.
       </>

@@ -46,7 +46,7 @@ const STATUS_TEXT: Record<GherkinState["status"], string> = {
 
 const END_TEXT = {
   eos: "ended the feature",
-  context: "used the whole 256-token context",
+  context: "used the whole 1,024-token context",
   max: "hit the token limit",
   stopped: "stopped",
 };
@@ -211,11 +211,11 @@ export function GherkinWriter() {
             </p>
           )}
           <dl className="mt-3 divide-y divide-line/15 font-mono text-[11px]">
-            <Row k="CHECKPOINT" v="gherkin-proc-loop1 · int4" />
-            <Row k="BASE" v="loop1 (the /free-ai chat)" />
+            <Row k="CHECKPOINT" v="gherkin-proc-1024-extended · int4" />
+            <Row k="BASE" v="loop-extended (loop1 at 1,024 tokens)" />
             <Row k="PARAMETERS" v="21.1M" />
             <Row k="WEIGHTS" v={`${GHERKIN_WEIGHTS_MB} MB`} />
-            <Row k="CONTEXT" v="256 tokens" />
+            <Row k="CONTEXT" v="1,024 tokens" />
             <Row k="RUNTIME" v="Hyperfield (WebGPU / CPU)" />
           </dl>
           {g.status === "idle" && (
