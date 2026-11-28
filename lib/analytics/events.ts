@@ -21,7 +21,7 @@ export const EVENT_NAMES = {
   yumon_clear: "The Yumon chat was cleared: { turns }.",
   gherkin_load: "The Gherkin Yumon (/free-ai/gherkin) was loaded: { ok, ms, backend, fallback, err? }.",
   gherkin_write: "A /free-ai/gherkin continuation: { ok, source, promptTokens, tokens, msPerToken, end, temperature, backend, err? } (source = input | example; end = eos | context | max | stopped). No text.",
-  gherkin_compile: "Gherkin compiled to TypeScript on /free-ai/gherkin: { features, scenarios, steps, matched, implemented, stubs, edited } (edited = the Gherkin was changed after Compile filled it in). No text.",
+  gherkin_compile: "Gherkin compiled to a TypeScript app + Playwright tests on /free-ai/gherkin: { features, scenarios, steps, matched, implemented, stubs, functions, edited } (functions = library functions copied into the app; edited = the Gherkin was changed after Compile filled it in). No text.",
   survey_view: "The reader survey closed off a post after its intro: { version }. Once per post view, only for visitors who haven't answered.",
   survey_submit: "The reader survey was answered: { version, ok, work, found, detail } (choice keys from lib/survey.ts, work only while that question is asked; detail = any free text given, the text itself is only in survey_responses).",
   survey_skip: "The reader survey was skipped (only when SURVEY_MODE is optional): { version }.",

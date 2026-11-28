@@ -60,13 +60,13 @@ const FACTS: { label: string; title: string; body: React.ReactNode }[] = [
   },
   {
     label: "// TO TYPESCRIPT",
-    title: "Compile it to Playwright tests",
+    title: "Compile it to an app",
     body: (
       <>
         Every step Yumon learned comes from 316 templates, so its lines can be matched back to them. Compile to
-        TypeScript turns the feature into a Playwright Test file: one typed method per step on a steps class, real
-        locator code for forms, lists, toolbars, navigation and HTTP APIs, and fixme stubs where the step needs your
-        app (seeding records, signing in a role, game or canvas state). Edit the Gherkin and compile again.
+        TypeScript reads each step as a page, a field, an action or an expected result, copies in only the reusable
+        functions those need, and writes the handlers that tie them together: a small working app you can try in a
+        sandboxed preview, plus a Playwright test per scenario that drives it. Edit the Gherkin and compile again.
       </>
     ),
   },
@@ -96,7 +96,7 @@ export default function GherkinPage() {
         <h1 className="mt-2 font-display text-3xl font-bold text-ink-100 md:text-4xl">Yumon writes Gherkin</h1>
         <p className="mt-2 max-w-3xl text-sm leading-relaxed text-ink-300">
           Write the start of a feature file (a title, a user story, a scenario, the first Given) and a 21M-parameter
-          Yumon continues it in your browser, then compile the result to Playwright TypeScript. Expect it to be wrong in
+          Yumon continues it in your browser, then compile the result to a small TypeScript app with Playwright tests and try it in a sandboxed preview. Expect it to be wrong in
           interesting ways.
         </p>
       </div>

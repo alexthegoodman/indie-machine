@@ -199,22 +199,6 @@ export const BODIES: Record<string, string> = {
   "t_.btn_enabled": `await expect(this.page.getByRole("button", { name: button })).toBeEnabled();`,
   "t_.btn_hidden": `await expect(this.page.getByRole("button", { name: button })).toHaveCount(0);`,
   "t_.btn_visible": `await expect(this.page.getByRole("button", { name: button })).toBeVisible();`,
-  // A page's link and the side navigation's can share a name; both go to the same page.
-  "w.click_link": `await this.page.getByRole("link", { name: link }).first().click();`,
-  // A field the app made a select (the Gherkin picks from it elsewhere) takes the value as an option.
-  "w.change": [
-    `const field = this.page.getByLabel(label);`,
-    `if (await field.evaluate((e) => e.tagName === "SELECT")) await field.selectOption({ label: value });`,
-    `else await field.fill(value);`,
-  ].join("\n"),
-  "w.fill": [
-    `const field = this.page.getByLabel(label);`,
-    `if (await field.evaluate((e) => e.tagName === "SELECT")) await field.selectOption({ label: value });`,
-    `else await field.fill(value);`,
-  ].join("\n"),
-  "t_.g_screen": "await expect(this.page.getByRole(\"heading\", { name: this.exactly(`${screen} screen`) })).toBeVisible();",
-  // Action buttons say what they do ("Import the file "notes.docx""); they are not what a Then looks at.
-  "t_.not_see": `await expect(this.page.getByText(text).and(this.page.locator(":not(button)"))).toHaveCount(0);`,
   "t_.signed_out": `await expect(this.page.getByRole("button", { name: "Sign in" })).toBeVisible();`,
   "t_.in_list": `await expect(this.item(name)).toBeVisible();`,
   "t_.not_in_list": `await expect(this.rows().filter({ hasText: name })).toHaveCount(0);`,
@@ -414,6 +398,22 @@ export const HELPERS: { name: string; uses: RegExp; code: string[]; needs?: stri
 
 /** Bodies that differ when the tests target the compiled app. */
 export const APP_BODIES: Record<string, string> = {
+  // A page's link and the side navigation's can share a name; both go to the same page.
+  "w.click_link": `await this.page.getByRole("link", { name: link }).first().click();`,
+  // A field the app made a select (the Gherkin picks from it elsewhere) takes the value as an option.
+  "w.change": [
+    `const field = this.page.getByLabel(label);`,
+    `if (await field.evaluate((e) => e.tagName === "SELECT")) await field.selectOption({ label: value });`,
+    `else await field.fill(value);`,
+  ].join("\n"),
+  "w.fill": [
+    `const field = this.page.getByLabel(label);`,
+    `if (await field.evaluate((e) => e.tagName === "SELECT")) await field.selectOption({ label: value });`,
+    `else await field.fill(value);`,
+  ].join("\n"),
+  "t_.g_screen": "await expect(this.page.getByRole(\"heading\", { name: this.exactly(`${screen} screen`) })).toBeVisible();",
+  // Action buttons say what they do ("Import the file "notes.docx""); they are not what a Then looks at.
+  "t_.not_see": `await expect(this.page.getByText(text).and(this.page.locator(":not(button)"))).toHaveCount(0);`,
   "t_.on_page": `await expect(this.page).toHaveURL((url) => url.hash === this.urlFor(page));`,
   "w.go_url": `await this.page.goto(this.urlFor(url.split("/").filter(Boolean).join(" ")));`,
   "w.sort": "await this.page.getByRole(\"button\", { name: `Sort by ${label}` }).click();",
