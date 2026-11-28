@@ -13,6 +13,7 @@ import {
   type GherkinSettings,
   type GherkinState,
 } from "@/lib/yumon/gherkin";
+import { GherkinCompiler } from "./GherkinCompiler";
 
 /**
  * Typical openings on recipe / vehicle (domains the procedural training set left out), creative-app
@@ -80,6 +81,7 @@ export function GherkinWriter() {
   const [settings, setSettings] = useState<GherkinSettings>({ ...GHERKIN_DEFAULTS });
   const [asWritten, setAsWritten] = useState(false);
   const [copied, setCopied] = useState(false);
+  const [compileReq, setCompileReq] = useState<{ source: string; stamp: number } | null>(null);
 
   const writing = g.status === "writing";
   const draft = g.draft;
@@ -185,6 +187,15 @@ export function GherkinWriter() {
               >
                 USE AS OPENING
               </button>
+              <button
+                type="button"
+                className={`${btn} border-accent/50 text-accent`}
+                disabled={!draft?.text || writing}
+                onClick={() => setCompileReq({ source: displayGherkin(full), stamp: Date.now() })}
+                data-testid="gherkin-compile"
+              >
+                COMPILE TO TYPESCRIPT
+              </button>
             </div>
           </div>
           {draft ? (
@@ -213,6 +224,8 @@ export function GherkinWriter() {
             </p>
           )}
         </div>
+
+        {compileReq && <GherkinCompiler source={compileReq.source} stamp={compileReq.stamp} />}
       </section>
 
       <aside aria-label="Model" className="flex flex-col gap-5 border border-line/25 bg-panel/15 p-4">

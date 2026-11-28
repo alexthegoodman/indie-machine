@@ -211,6 +211,45 @@ await scenario("A typed opening, STOP, and USE AS OPENING", async () => {
   await context.close();
 });
 
+await scenario("Compile Yumon's feature to TypeScript, edit it and compile again", async () => {
+  const context = await newContext({ width: 1440, height: 900 });
+  const page = await newPage(context);
+  await page.goto(BASE_URL + PAGE);
+  await writer(page).waitFor();
+  await writer(page).getByRole("button", { name: "Sign in" }).click();
+  await setSlider(page, "Temperature", 0);
+  await setSlider(page, "Max new tokens", 160);
+  await continueButton(page).click();
+  await finished(page);
+  await writer(page).getByTestId("gherkin-compile").click();
+  const compiler = writer(page).getByTestId("gherkin-compiler");
+  const ts = compiler.getByTestId("gherkin-ts");
+  await waitFor(async () => /test\.describe\(/.test(await ts.innerText()), "the TypeScript");
+  const code = await ts.innerText();
+  assert.match(code, /import \{ test as base, expect, .* \} from "@playwright\/test";/);
+  assert.match(code, /class SignInSteps \{/);
+  assert.match(code, /test\.describe\("Sign in", \(\) => \{/);
+  const report = await compiler.getByTestId("gherkin-compile-report").innerText();
+  console.log(`    ${report}`);
+  const [, steps, matched] = /(\d+) steps · (\d+) matched/.exec(report).map(Number);
+  assert.ok(steps > 0, "some steps");
+  console.log(`    matched ${matched}/${steps}`);
+  await shot(page, "gherkin-05-compiled", compiler);
+  // An edit: one more step, one no template knows.
+  const src = compiler.getByTestId("gherkin-compile-src");
+  await src.fill((await src.inputValue()) + '\n    And I should see the "Forgot password" button\n    And I frobnicate the widget\n');
+  await compiler.getByRole("button", { name: "COMPILE", exact: true }).click();
+  await waitFor(async () => /steps\.pending\("And I frobnicate the widget"\)/.test(await ts.innerText()), "the recompiled TypeScript");
+  assert.match(await compiler.getByTestId("gherkin-compile-notes").innerText(), /No template matches this step/);
+  await flushEvents(page);
+  const compiles = await waitFor(() => (events(context, "gherkin_compile").length >= 2 ? events(context, "gherkin_compile") : null), "two gherkin_compile events");
+  assert.equal(compiles[0].props.edited, false);
+  assert.equal(compiles[1].props.edited, true);
+  for (const e of compiles) assert.ok(!JSON.stringify(e).includes("frobnicate"), "no Gherkin text in the event");
+  assert.deepEqual(page.errors, []);
+  await context.close();
+});
+
 await scenario("Narrow screens stack the editor above the model panel", async () => {
   const context = await newContext({ width: 390, height: 844 });
   const page = await newPage(context);

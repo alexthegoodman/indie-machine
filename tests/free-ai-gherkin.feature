@@ -35,6 +35,15 @@ Feature: Gherkin writer on /free-ai/gherkin
     When I press USE AS OPENING
     Then the editor holds the opening plus Yumon's text
 
+  Scenario: Compile Yumon's feature to TypeScript, edit it and compile again
+    Given Yumon has written a greedy continuation of the "Sign in" example
+    When I press COMPILE TO TYPESCRIPT
+    Then the compile panel shows a Playwright Test file with a SignInSteps class and a "Sign in" describe
+    And the report counts the steps and how many matched a template
+    When I add a known step and a step no template knows, and press COMPILE
+    Then the TypeScript calls steps.pending() for the unknown step and the notes name it
+    And two gherkin_compile events are sent, the second with edited true, neither with any Gherkin text
+
   Scenario: Narrow screens stack the editor above the model panel
     When I open /free-ai/gherkin at 390x844
     Then the editor comes before the model panel
