@@ -199,6 +199,22 @@ export const BODIES: Record<string, string> = {
   "t_.btn_enabled": `await expect(this.page.getByRole("button", { name: button })).toBeEnabled();`,
   "t_.btn_hidden": `await expect(this.page.getByRole("button", { name: button })).toHaveCount(0);`,
   "t_.btn_visible": `await expect(this.page.getByRole("button", { name: button })).toBeVisible();`,
+  // A page's link and the side navigation's can share a name; both go to the same page.
+  "w.click_link": `await this.page.getByRole("link", { name: link }).first().click();`,
+  // A field the app made a select (the Gherkin picks from it elsewhere) takes the value as an option.
+  "w.change": [
+    `const field = this.page.getByLabel(label);`,
+    `if (await field.evaluate((e) => e.tagName === "SELECT")) await field.selectOption({ label: value });`,
+    `else await field.fill(value);`,
+  ].join("\n"),
+  "w.fill": [
+    `const field = this.page.getByLabel(label);`,
+    `if (await field.evaluate((e) => e.tagName === "SELECT")) await field.selectOption({ label: value });`,
+    `else await field.fill(value);`,
+  ].join("\n"),
+  "t_.g_screen": "await expect(this.page.getByRole(\"heading\", { name: this.exactly(`${screen} screen`) })).toBeVisible();",
+  // Action buttons say what they do ("Import the file "notes.docx""); they are not what a Then looks at.
+  "t_.not_see": `await expect(this.page.getByText(text).and(this.page.locator(":not(button)"))).toHaveCount(0);`,
   "t_.signed_out": `await expect(this.page.getByRole("button", { name: "Sign in" })).toBeVisible();`,
   "t_.in_list": `await expect(this.item(name)).toBeVisible();`,
   "t_.not_in_list": `await expect(this.rows().filter({ hasText: name })).toHaveCount(0);`,
@@ -353,7 +369,9 @@ export const HELPERS: { name: string; uses: RegExp; code: string[]; needs?: stri
     code: [
       `/** Playwright key name for a lowercase one: "control+s" -> "Control+s", "escape" -> "Escape". */`,
       `key(k: string): string {`,
-      `  const named: Record<string, string> = { controlormeta: "ControlOrMeta", arrowup: "ArrowUp", arrowdown: "ArrowDown", arrowleft: "ArrowLeft", arrowright: "ArrowRight", pageup: "PageUp", pagedown: "PageDown" };`,
+      `  const named: Record<string, string> = { esc: "Escape", spacebar: "Space", ctrl: "Control", control: "Control", cmd: "Meta", meta: "Meta", controlormeta: "ControlOrMeta", arrowup: "ArrowUp", arrowdown: "ArrowDown", arrowleft: "ArrowLeft", arrowright: "ArrowRight", pageup: "PageUp", pagedown: "PageDown" };`,
+      `  const arrow = /^(up|down|left|right) arrow$/i.exec(k.trim());`,
+      `  if (arrow) return "Arrow" + arrow[1][0].toUpperCase() + arrow[1].slice(1).toLowerCase();`,
       `  return k`,
       `    .split("+")`,
       `    .map((part) => named[part.toLowerCase()] ?? (part.length > 1 ? part[0].toUpperCase() + part.slice(1).toLowerCase() : part))`,
@@ -388,5 +406,87 @@ export const HELPERS: { name: string; uses: RegExp; code: string[]; needs?: stri
       `  return Array.isArray(body) ? body : body.items ?? body.data;`,
       `}`,
     ],
+  },
+];
+
+// ---- Tests for the app compiled from the same Gherkin (lib/gherkin-app) ----
+// Its pages are hash routes, its lists are ul.records, and it answers window.gherkinApp.
+
+/** Bodies that differ when the tests target the compiled app. */
+export const APP_BODIES: Record<string, string> = {
+  "t_.on_page": `await expect(this.page).toHaveURL((url) => url.hash === this.urlFor(page));`,
+  "w.go_url": `await this.page.goto(this.urlFor(url.split("/").filter(Boolean).join(" ")));`,
+  "w.sort": "await this.page.getByRole(\"button\", { name: `Sort by ${label}` }).click();",
+  "w.sort_desc": [
+    `// The first click sorts ascending, the second descending.`,
+    "await this.page.getByRole(\"button\", { name: `Sort by ${label}` }).click();",
+    "await this.page.getByRole(\"button\", { name: `Sort by ${label}` }).click();",
+  ].join("\n"),
+  "w.submit": `await this.page.getByRole("button", { name: /^(save|submit|create)$/i }).first().click();`,
+  "w.leave_page": `await this.page.getByRole("button", { name: "Back", exact: true }).click();`,
+  "w.open": `await this.item(name).locator("button.open").click();`,
+  // An open dialog takes the click when it has the button.
+  // Not a toolbar's button: "I click "Save" in the toolbar" is its own step.
+  "w.click_button": `await this.page.locator("dialog[open], body").last().getByRole("button", { name }).and(this.page.locator(":not([role=toolbar]) > button")).first().click();`.replace("{ name }", "{ name: button }"),
+  "t_.signed_out": `await expect(this.page.getByRole("button", { name: "Sign in" }).first()).toBeVisible();`,
+  "w.signin_as": [
+    `await this.page.getByLabel(/^email$/i).fill(email);`,
+    `await this.page.getByLabel(/^password$/i).fill(password);`,
+    `await this.page.getByRole("button", { name: /^sign in$/i }).last().click();`,
+  ].join("\n"),
+  "w.signin_empty": `await this.page.getByRole("button", { name: /^sign in$/i }).last().click();`,
+  "w.signout": [`await this.page.getByRole("button", { name: "User menu" }).click();`, `await this.page.getByRole("menuitem", { name: "Sign out" }).click();`].join("\n"),
+  "t_.g_popup": `await expect(this.page.getByText(text).first()).toBeVisible();`,
+  // Select the word inside the editor, not wherever else it appears on the page.
+  "w.select_text": BODIES["w.select_text"].replace("document.body", 'document.querySelector("[contenteditable=true]") ?? document.body'),
+  // Studio and game state the app keeps without an element: asked through window.gherkinApp.
+  ...Object.fromEntries(
+    ["t_.c_open", "t_.c_selected", "t_.c_tool", "t_.c_color", "t_.c_zoom", "t_.c_playing", "t_.c_stopped", "t_.c_tempo", "t_.c_split", "t_.c_access", "t_.c_order", "t_.c_words", "t_.c_comment", "t_.c_asset", "t_.c_exported", "t_.downloaded"].map((k) => [k, ""]),
+  ),
+  // The app has no HTTP API yet: requests are action buttons and their outcomes app checks.
+  ...Object.fromEntries(
+    ["t_.status", "t_.body_field", "t_.body_key", "t_.body_list", "t_.body_error", "t_.body_total", "t_.body_first", "t_.header_location", "t_.header_json", "t_.header_retry", "t_.store_field", "t_.store_unchanged", "t_.store_gone", "t_.store_still", "t_.store_count"].map((k) => [k, ""]),
+  ),
+};
+
+const appWindow = "(window as unknown as { gherkinApp: { load(i: number): boolean; check(text: string): boolean | null } }).gherkinApp";
+
+/** Helpers for the compiled app; urlFor and rows replace the general ones. */
+export const APP_HELPERS: { name: string; uses: RegExp; code: string[]; needs?: string[] }[] = [
+  {
+    name: "start",
+    uses: /this\.start\(/,
+    code: [
+      `/** Loads a scenario's starting state (its Givens) in the app. */`,
+      `async start(scenario: number): Promise<void> {`,
+      `  await this.page.evaluate((i) => ${appWindow}.load(i), scenario);`,
+      `}`,
+    ],
+  },
+  {
+    name: "act",
+    uses: /this\.act\(/,
+    code: [`/** Clicks one of the app's action buttons. */`, `async act(label: string): Promise<void> {`, `  await this.page.getByRole("button", { name: label, exact: true }).click();`, `}`],
+  },
+  {
+    name: "check",
+    uses: /this\.check\(/,
+    code: [
+      `/** Asks the app about state no element shows (counters, inventory, facts). */`,
+      `async check(text: string): Promise<void> {`,
+      `  await expect.poll(() => this.page.evaluate((t) => ${appWindow}.check(t), text)).toBe(true);`,
+      `}`,
+    ],
+  },
+  {
+    name: "urlFor",
+    uses: /this\.urlFor\(/,
+    code: [`/** The app's route for a page ("new task" -> "#/new-task"). */`, `urlFor(page: string): string {`, `  return "#/" + (page.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "") || "home");`, `}`],
+  },
+  {
+    name: "rows",
+    uses: /this\.(rows|item)\(/,
+    code: [`/** Rows of the app's record lists. */`, `rows(): Locator {`, `  return this.page.locator("ul.records > li");`, `}`],
+    needs: ["Locator"],
   },
 ];

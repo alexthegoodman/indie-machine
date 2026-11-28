@@ -13,7 +13,7 @@
 //
 // Lines no template matches still compile, to `steps.pending(...)` with the line as written.
 // Pure and synchronous; no DOM, so tests can run it under Node.
-import { BODIES, HELPERS } from "./bodies.ts";
+import { APP_BODIES, APP_HELPERS, BODIES, HELPERS } from "./bodies.ts";
 import { SINGULAR, STEP_TEMPLATES } from "./templates.ts";
 
 const NUMERIC = new Set(["n", "m", "id", "status", "w", "h", "bpm"]);
@@ -285,8 +285,10 @@ export type CompileReport = {
   steps: number;
   /** Steps that matched a template. */
   matched: number;
-  /** Matched steps whose template has a Playwright body (the rest are fixme stubs). */
+  /** Steps compiled to working code: a Playwright body, or (for an app) its starting state, an action or a check. */
   implemented: number;
+  /** Steps compiled to pending(): the test runs as fixme. */
+  pending: number;
   /** Distinct step methods emitted, and how many of them are stubs. */
   methods: number;
   stubs: number;
@@ -320,34 +322,81 @@ function stubBody(t: Template): string {
   return "this.pending(`" + msg.join("") + "`);";
 }
 
-function methodCode(t: Template): string {
+/**
+ * Tests for the app compiled from the same Gherkin (lib/gherkin-app): each test loads its scenario's
+ * starting state, Givens are part of that state, and steps with no element of their own click the
+ * app's action button or ask the app (window.gherkinApp.check).
+ */
+export type AppTarget = { checks: Map<string, string>; actions: Map<string, string> };
+type Mode = "call" | "act" | "check" | "given" | "pending";
+
+function bodyOf(t: Template, app: AppTarget | undefined): string | undefined {
+  if (!app) return BODIES[t.key];
+  // "" in APP_BODIES: no body for the app (it checks that state itself).
+  const body = t.key in APP_BODIES ? APP_BODIES[t.key] || undefined : BODIES[t.key];
+  // The app's labels and names are the Gherkin's words, so match them whole (any case):
+  // "password" must not also find "New password".
+  return body
+    ?.replace(/\{ name(?:: (\w+))? \}/g, (_, v: string | undefined) => `{ name: this.exactly(${v ?? "name"}) }`)
+    .replace(/getByLabel\((\w+)\)/g, "getByLabel(this.exactly($1))");
+}
+
+function methodCode(t: Template, app?: AppTarget): string {
   const sig = t.params.map((p) => `${p.name}: ${p.numeric ? "number" : "string"}`).join(", ");
-  const body = BODIES[t.key] ?? stubBody(t);
+  const body = bodyOf(t, app) ?? stubBody(t);
   return [`/** ${t.text} */`, `async ${t.method}(${sig}): Promise<void> {`, indent(body, "  "), `}`].join("\n");
 }
 
-function callCode(s: Step, by: string): string {
+/** How a step compiles: a method call, an app action or check, a comment (app Givens), or pending. */
+function stepMode(s: Step, app: AppTarget | undefined, afterWhen: boolean): Mode {
+  const kind = s.match?.template.kind ?? (s.keyword === "Given" ? "g" : s.keyword === "When" ? "w" : s.keyword === "Then" ? "t" : afterWhen ? "t" : "g");
+  const text = s.text.toLowerCase();
+  if (app && kind === "g") return "given";
+  // A Then before any When describes the starting state; check it when we can.
+  if (app && kind === "t" && !afterWhen) return s.match && bodyOf(s.match.template, app) ? "call" : app.checks.has(text) ? "check" : "given";
+  // The app made this When an action button: its general body would look for something else.
+  if (app && kind === "w" && app.actions.has(text)) return "act";
+  if (s.match && bodyOf(s.match.template, app)) return "call";
+  if (app && kind === "t" && app.checks.has(text)) return "check";
+  return s.match && !app ? "call" : "pending";
+}
+
+function callCode(s: Step, by: string, mode: Mode = "call", app?: AppTarget): string {
   const comment = `${by}// ${s.keyword} ${s.text}`;
-  if (!s.match) return `${comment}\n${by}steps.pending(${str(`${s.keyword} ${s.text}`)});`;
+  if (mode === "given") return `${comment} (starting state)`;
+  if (mode === "act") return `${comment}\n${by}await steps.act(${str(app!.actions.get(s.text.toLowerCase())!)});`;
+  if (mode === "check") return `${comment}\n${by}await steps.check(${str(s.text.toLowerCase())});`;
+  if (mode === "pending" || !s.match) return `${comment}\n${by}steps.pending(${str(`${s.keyword} ${s.text}`)});`;
   const args = s.match.args.map((a) => (typeof a === "number" ? String(a) : str(a))).join(", ");
   return `${comment}\n${by}await steps.${s.match.template.method}(${args});`;
 }
 
-function featureCode(f: Feature, className: string, testName: string): { code: string; used: Template[]; types: Set<string> } {
-  const all = [...f.background, ...f.scenarios.flatMap((s) => s.steps)];
+function featureCode(f: Feature, className: string, testName: string, app?: AppTarget): { code: string; used: Template[]; types: Set<string>; modes: Map<Step, Mode> } {
+  // Each step's mode; a Background runs before each scenario, so its Whens count for all of them.
+  const modes = new Map<Step, Mode>();
+  for (const sc of [{ steps: f.background }, ...f.scenarios]) {
+    let afterWhen = false;
+    for (const s of sc.steps) {
+      if ((s.match?.template.kind ?? (s.keyword === "When" ? "w" : "")) === "w") afterWhen = true;
+      modes.set(s, stepMode(s, app, afterWhen));
+    }
+  }
   const used: Template[] = [];
-  for (const s of all) if (s.match && !used.includes(s.match.template)) used.push(s.match.template);
-  const methods = used.map(methodCode);
-  const bodies = methods.join("\n");
+  for (const [s, m] of modes) if (m === "call" && s.match && !used.includes(s.match.template)) used.push(s.match.template);
+  const methods = used.map((t) => methodCode(t, app));
+  const modeList = [...modes.values()];
+  const appHelpers = app ? APP_HELPERS.filter((h) => h.name === "start" || modeList.includes(h.name as Mode)).map((h) => h.code.join("\n")) : [];
+  const bodies = [...methods, ...appHelpers].join("\n");
   const api = /this\.(response|request|data|headers)\b|this\.(res|json|items)\(/.test(bodies);
   const downloads = /this\.downloads\b/.test(bodies);
 
   // Helpers can call each other (item -> rows, exactly -> escape): resolve to a fixed point.
   let helperText = bodies;
   const helpers = new Set<string>();
+  const helperSet = app ? HELPERS.map((h) => APP_HELPERS.find((a) => a.name === h.name) ?? h) : HELPERS;
   for (let grew = true; grew; ) {
     grew = false;
-    for (const h of HELPERS) {
+    for (const h of helperSet) {
       if (!helpers.has(h.name) && h.uses.test(helperText)) {
         helpers.add(h.name);
         helperText += "\n" + h.code.join("\n");
@@ -356,7 +405,7 @@ function featureCode(f: Feature, className: string, testName: string): { code: s
     }
   }
   const types = new Set<string>(["Page", "APIRequestContext"]);
-  const helperCode = HELPERS.filter((h) => helpers.has(h.name)).map((h) => {
+  const helperCode = helperSet.filter((h) => helpers.has(h.name)).map((h) => {
     for (const n of h.needs ?? []) types.add(n);
     return h.code.join("\n");
   });
@@ -377,12 +426,13 @@ function featureCode(f: Feature, className: string, testName: string): { code: s
     "}",
   ];
 
-  const classParts = [fields.join("\n"), ctor.join("\n"), ...methods, ...helperCode, pending.join("\n")];
+  const classParts = [fields.join("\n"), ctor.join("\n"), ...methods, ...appHelpers, ...helperCode, pending.join("\n")];
   const cls = [`/** Steps for "${capFirst(f.title).replace(/\*\//g, "* /")}". */`, `class ${className} {`, indent(classParts.join("\n\n"), "  "), `}`].join("\n");
 
   const fixture = [
     `const ${testName} = base.extend<{ steps: ${className} }>({`,
     `  steps: async ({ page, request }, use) => {`,
+    ...(app ? [`    // The app: its index.html at use.baseURL in playwright.config.ts.`, `    await page.goto("./");`] : []),
     `    await use(new ${className}(page, request));`,
     `  },`,
     `});`,
@@ -391,7 +441,7 @@ function featureCode(f: Feature, className: string, testName: string): { code: s
   const body: string[] = [];
   if (f.description.length) body.push(f.description.map((d) => `// ${d}`).join("\n"));
   if (f.background.length) {
-    body.push(`${testName}.beforeEach(async ({ steps }) => {\n${f.background.map((s) => callCode(s, "  ")).join("\n")}\n});`);
+    body.push(`${testName}.beforeEach(async ({ steps }) => {\n${f.background.map((s) => callCode(s, "  ", modes.get(s), app)).join("\n")}\n});`);
   }
   const titles = new Map<string, number>();
   for (const s of f.scenarios) {
@@ -400,17 +450,19 @@ function featureCode(f: Feature, className: string, testName: string): { code: s
     const seen = titles.get(title.toLowerCase()) ?? 0;
     titles.set(title.toLowerCase(), seen + 1);
     if (seen) title += ` (${seen + 1})`;
-    const steps = s.steps.length ? s.steps.map((st) => callCode(st, "  ")).join("\n") : "  // No steps.";
+    const start = app ? [`  await steps.start(${f.scenarios.indexOf(s)});`] : [];
+    const steps = s.steps.length || app ? [...start, ...s.steps.map((st) => callCode(st, "  ", modes.get(st), app))].join("\n") : "  // No steps.";
     const note = s.outline ? "// Scenario Outline: compiled once, without its Examples.\n" : "";
     body.push(`${note}${testName}(${str(title)}, async ({ steps }) => {\n${steps}\n});`);
   }
   const describe = `${testName}.describe(${str(capFirst(f.title))}, () => {\n${indent(body.join("\n\n"), "  ")}\n});`;
-  return { code: [cls, fixture, describe].join("\n\n"), used, types };
+  return { code: [cls, fixture, describe].join("\n\n"), used, types, modes };
 }
 
-export function compileGherkin(src: string): { code: string; report: CompileReport } {
+/** With `app`, the tests are for the app compiled from the same Gherkin (its first feature). */
+export function compileGherkin(src: string, app?: AppTarget): { code: string; report: CompileReport } {
   const { features, notes } = parseGherkin(src);
-  const report: CompileReport = { features: features.length, scenarios: 0, steps: 0, matched: 0, implemented: 0, methods: 0, stubs: 0, notes };
+  const report: CompileReport = { features: features.length, scenarios: 0, steps: 0, matched: 0, implemented: 0, pending: 0, methods: 0, stubs: 0, notes };
   if (!features.length) {
     return { code: "// Nothing to compile: write or generate a Feature first.\n", report };
   }
@@ -424,22 +476,31 @@ export function compileGherkin(src: string): { code: string; report: CompileRepo
     for (let i = 2; classNames.has(className); i++) className = `${base}${i}Steps`;
     classNames.add(className);
     const testName = features.length === 1 ? "test" : className[0].toLowerCase() + className.slice(1, -"Steps".length) + "Test";
-    const out = featureCode(f, className, testName);
+    const target = features.indexOf(f) === 0 ? app : undefined;
+    const out = featureCode(f, className, testName, target);
     parts.push(out.code);
     for (const t of out.types) types.add(t);
     const steps = [...f.background, ...f.scenarios.flatMap((s) => s.steps)];
     report.scenarios += f.scenarios.length;
     report.steps += steps.length;
     report.matched += steps.filter((s) => s.match).length;
-    report.implemented += steps.filter((s) => s.match && BODIES[s.match.template.key]).length;
+    report.implemented += steps.filter((s) => out.modes.get(s) !== "pending").length;
+    report.pending += steps.filter((s) => out.modes.get(s) === "pending").length;
     report.methods += out.used.length;
-    report.stubs += out.used.filter((t) => !BODIES[t.key]).length;
+    report.stubs += out.used.filter((t) => !bodyOf(t, target)).length;
   });
   const typeList = ["Page", "APIRequestContext", "APIResponse", "Locator"].filter((t) => types.has(t)).map((t) => `type ${t}`);
   const header = [
     "// Compiled from Gherkin by the Yumon Gherkin compiler (indie-machine.com/free-ai/gherkin).",
-    "// Playwright Test: save as tests/<name>.spec.ts and run `npx playwright test`.",
-    "// Steps marked pending() need your app's data or state; their tests run as fixme until filled in.",
+    ...(app
+      ? [
+          "// Playwright Test for the app compiled from the same Gherkin: serve its index.html, point use.baseURL",
+          "// at it in playwright.config.ts, save this as tests/app.spec.ts and run `npx playwright test`.",
+        ]
+      : [
+          "// Playwright Test: save as tests/<name>.spec.ts and run `npx playwright test`.",
+          "// Steps marked pending() need your app's data or state; their tests run as fixme until filled in.",
+        ]),
     `import { test as base, expect, ${typeList.join(", ")} } from "@playwright/test";`,
   ].join("\n");
   return { code: `${header}\n\n${parts.join("\n\n")}\n`, report };
