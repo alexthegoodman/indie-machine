@@ -41,8 +41,9 @@ const FACTS: { label: string; title: string; body: React.ReactNode }[] = [
         This is the loop1 model from the <Link href="/free-ai" className="text-accent hover:underline">/free-ai</Link>{" "}
         chat, extended to a 1,024-token context and fine-tuned on 12,000 generated feature files (7.5M tokens, mostly
         300 to 950 tokens each): forms, lists, toolbars, sign-in, settings and CRUD APIs, plus creative apps and games,
-        over 36 domains. Recipes, vehicles, playlists and courses were left out of training, so the examples test
-        whether it generalizes. It is not a chat model: it only continues text.
+        over 36 domains. Recipes, vehicles, playlists and courses were left out of training, and the app and game
+        examples use names it never saw, so the examples test whether it generalizes. It is not a chat model: it only
+        continues text.
       </>
     ),
   },

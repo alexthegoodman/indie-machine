@@ -128,7 +128,7 @@ await scenario("The page downloads nothing until Yumon is woken, and /free-ai li
   await page.waitForURL("**" + PAGE);
   await writer(page).waitFor();
   assert.ok((await editor(page).inputValue()).startsWith("Feature: Recipe form"), "first example preloaded");
-  assert.equal(await writer(page).getByTestId("gherkin-examples").getByRole("button").count(), 6);
+  assert.equal(await writer(page).getByTestId("gherkin-examples").getByRole("button").count(), 9);
   assert.match(await status(page).innerText(), /ASLEEP/);
   assert.match(await panel(page).innerText(), /gherkin-proc-1024-extended · int4/);
   assert.ok(!context.requests.some((u) => u.includes(MODEL_FOLDER)), "no model file requested before waking");

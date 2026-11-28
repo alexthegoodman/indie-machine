@@ -15,8 +15,9 @@ import {
 } from "@/lib/yumon/gherkin";
 
 /**
- * Openings on recipe / vehicle / playlist / course: the domains the procedural training set left
- * out (yumon-pet gherkin_proc_eval_prompts), plus two shorter ones.
+ * Typical openings on recipe / vehicle (domains the procedural training set left out), creative-app
+ * and game openings phrased like the training set but with app and game names it never saw (some
+ * from yumon-pet gherkin_proc_eval_prompts), and a short sign-in one.
  */
 const EXAMPLES: { label: string; text: string }[] = [
   {
@@ -27,11 +28,29 @@ const EXAMPLES: { label: string; text: string }[] = [
     label: "Vehicles API",
     text: "Feature: Vehicles API\n  As an API client\n  I want to create, read, update and delete vehicles over HTTP\n  So that other systems can work with vehicles\n\n  Background:\n    Given",
   },
-  { label: "Playlist toolbar", text: "Feature: Playlist toolbar\n\n  Scenario: Delete several playlists at once\n    Given" },
-  { label: "Course search", text: "Feature: Course list\n\n  Scenario: Search courses\n    Given I am logged in as a teacher\n    And" },
   {
-    label: "Delete a recipe",
-    text: 'Feature: Manage recipes\n\n  Scenario: Delete a recipe\n    Given I am logged in as a cook\n    And I am on the recipes page\n    And a recipe "Tomato soup" exists\n    When',
+    label: "Comic panels",
+    text: "Feature: Comic editor\n  As a comic artist\n  I want to split my comic into panels\n  So that I can change one part without touching the rest\n\n  Scenario:",
+  },
+  {
+    label: "Photo touch-up",
+    text: 'Feature: Darkroom tools\n  As a photographer\n  I want to touch up my photos\n  So that they look their best\n\n  Background:\n    Given I have a photo "Lighthouse at dusk" open\n\n  Scenario:',
+  },
+  {
+    label: "Mute a track",
+    text: 'Feature: Song editor\n\n  Scenario: Mute a track\n    Given I have a song "Night drive" open\n    And the song has the tracks "Drums" and "Synth"\n    When',
+  },
+  {
+    label: "Platformer",
+    text: "Feature: Platforming in Moon Diver\n\n  Scenario: Collect a moon rock\n    Given I am playing the Crater Rim\n    And",
+  },
+  {
+    label: "Match three",
+    text: "Feature: Crystal Crush board\n  As a player\n  I want to clear every board\n  So that I can unlock new worlds\n\n  Background:\n    Given I am playing level 7\n\n  Scenario: Match three red gems\n    Given",
+  },
+  {
+    label: "Crafting",
+    text: "Feature: Crafting in Driftwood Isle\n  As a player\n  I want to survive on the island\n  So that I can build a raft\n\n  Scenario: Craft a stone axe\n    Given",
   },
   { label: "Sign in", text: "Feature: Sign in\n\n  Scenario: Wrong password\n    Given" },
 ];
